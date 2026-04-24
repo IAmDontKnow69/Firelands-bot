@@ -8,11 +8,9 @@ const {
   ChannelSelectMenuBuilder,
   ChannelType,
   PermissionFlagsBits,
-  ButtonBuilder,
-  ButtonStyle,
   EmbedBuilder
 } = require('discord.js');
-const { loadDb, saveDb, setResponse } = require('../utils/database');
+const { loadDb, saveDb, setResponse, setAbsenceTicket, deleteAbsenceTicket } = require('../utils/database');
 const { updateConfig } = require('../utils/config');
 const { fetchCalendarEvents } = require('../utils/googleCalendar');
 const coachCommand = require('../commands/coach');
@@ -59,6 +57,8 @@ function createTeamConfigActionRow(team) {
         { label: 'Set Player Role ID', value: 'player_role', description: `Set ${label} player role` },
         { label: 'Set Coach Role ID', value: 'coach_role', description: `Set ${label} coach role` },
         { label: 'Set Team Chat ID', value: 'team_chat', description: `Set ${label} team chat channel` },
+        { label: 'Set Staff Room ID', value: 'staff_room', description: `Set ${label} staff room channel` },
+        { label: 'Set Private Chat Category', value: 'private_category', description: `Set category for attendance chats` },
         { label: 'Set Fixture Team', value: 'fixture_team', description: `Assign a fixture to ${label}` }
       ])
   );
@@ -110,6 +110,10 @@ function chunkLines(lines, size = 20) {
   const chunks = [];
   for (let i = 0; i < lines.length; i += size) chunks.push(lines.slice(i, i + size));
   return chunks;
+}
+
+function getEventDateLabel(eventDate) {
+  return new Date(eventDate).toISOString().slice(0, 10);
 }
 
 function summarizeAttendance(event, db, guild, teamRolesMap) {
@@ -171,6 +175,7 @@ module.exports = {
         });
 
         await interaction.reply({ content: '✅ You are marked as attending.', ephemeral: true });
+        await context.sendLog(`🟢 ${interaction.user.tag} marked attending for **${event.title}** (${getEventDateLabel(event.date)}).`);
         return;
       }
 
@@ -222,13 +227,13 @@ module.exports = {
         });
 
         await interaction.reply({ content: `✅ Absence confirmed for <@${targetUserId}>.`, ephemeral: false });
+        deleteAbsenceTicket(interaction.channelId);
+        await context.sendLog(`✅ ${interaction.user.tag} confirmed absence for <@${targetUserId}> on **${event.title}**.`);
 
         try {
-          await interaction.channel.permissionOverwrites.edit(teamRoles.player, {
-            SendMessages: false
-          });
+          await interaction.channel.delete('Absence confirmed via button');
         } catch (error) {
-          console.error('Failed to lock ticket channel:', error);
+          console.error('Failed to delete ticket channel:', error);
         }
 
         return;
@@ -387,6 +392,42 @@ module.exports = {
           return;
         }
 
+        if (selectedAction === 'staff_room') {
+          const row = new ActionRowBuilder().addComponents(
+            new ChannelSelectMenuBuilder()
+              .setCustomId(`admin_set_channel:channels.staffRooms.${team}:${team}`)
+              .setPlaceholder(`Choose ${teamLabel} Staff Room`)
+              .setChannelTypes(ChannelType.GuildText)
+              .setMinValues(1)
+              .setMaxValues(1)
+          );
+
+          await interaction.update({
+            content: `Select the channel to assign for **${teamLabel} Staff Room**.`,
+            embeds: [],
+            components: [row]
+          });
+          return;
+        }
+
+        if (selectedAction === 'private_category') {
+          const row = new ActionRowBuilder().addComponents(
+            new ChannelSelectMenuBuilder()
+              .setCustomId(`admin_set_channel:channels.privateChatCategories.${team}:${team}`)
+              .setPlaceholder(`Choose ${teamLabel} Private Chat Category`)
+              .setChannelTypes(ChannelType.GuildCategory)
+              .setMinValues(1)
+              .setMaxValues(1)
+          );
+
+          await interaction.update({
+            content: `Select the category where **${teamLabel}** private attendance chats will be created.`,
+            embeds: [],
+            components: [row]
+          });
+          return;
+        }
+
         if (selectedAction === 'fixture_team') {
           const db = loadDb();
           const upcomingEvents = Object.entries(db.events)
@@ -507,14 +548,16 @@ module.exports = {
       });
 
       const shortEventId = eventId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12);
-      const channelName = sanitizeChannelName(`ticket-${interaction.user.username}-${shortEventId}`);
+      const eventDateLabel = getEventDateLabel(event.date);
+      const displayName = interaction.member?.displayName || interaction.user.username;
+      const channelName = sanitizeChannelName(`${displayName}-${eventDateLabel}-${shortEventId}`);
 
       let ticketChannel;
       try {
         ticketChannel = await interaction.guild.channels.create({
           name: channelName,
           type: ChannelType.GuildText,
-          parent: config.channels.ticket || null,
+          parent: config.channels.privateChatCategories?.[event.team] || config.channels.ticket || null,
           permissionOverwrites: [
             {
               id: interaction.guild.id,
@@ -535,17 +578,36 @@ module.exports = {
       }
 
       if (ticketChannel) {
-        const confirmButton = new ButtonBuilder()
-          .setCustomId(`confirm_no:${eventId}:${interaction.user.id}`)
-          .setLabel('✅ Confirm Absence')
-          .setStyle(ButtonStyle.Success);
-
-        const row = new ActionRowBuilder().addComponents(confirmButton);
+        setAbsenceTicket(ticketChannel.id, {
+          eventId,
+          playerId: interaction.user.id,
+          team: event.team,
+          createdBy: interaction.user.id,
+          createdAt: new Date().toISOString()
+        });
 
         await ticketChannel.send({
-          content: `${interaction.user} cannot attend **${event.title}**\nReason: ${reason}`,
-          components: [row]
+          content: [
+            `Player's name: ${interaction.user}`,
+            `Date of event: ${eventDateLabel}`,
+            `Name of event: ${event.title}`,
+            `Reason for not attending: ${reason}`,
+            '',
+            'Staff/coaches: use `/confirm` once this conversation is complete.'
+          ].join('\n')
         });
+
+        const staffRoomId = config.channels.staffRooms?.[event.team];
+        if (staffRoomId) {
+          const staffRoom = await interaction.guild.channels.fetch(staffRoomId).catch(() => null);
+          if (staffRoom?.isTextBased()) {
+            await staffRoom.send(`🚨 New absence ticket opened for ${interaction.user} — ${event.title}: <#${ticketChannel.id}>`);
+          }
+        }
+
+        await context.sendLog(
+          `🔴 ${interaction.user.tag} submitted not-attending for **${event.title}** (${eventDateLabel}). Ticket: <#${ticketChannel.id}>`
+        );
       }
 
       await interaction.reply({

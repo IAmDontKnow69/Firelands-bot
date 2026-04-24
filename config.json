@@ -19,7 +19,16 @@
     "events": "",
     "logs": "",
     "ticket": "",
+    "admin": "",
     "teamChats": {
+      "mens": "",
+      "womens": ""
+    },
+    "staffRooms": {
+      "mens": "",
+      "womens": ""
+    },
+    "privateChatCategories": {
       "mens": "",
       "womens": ""
     }

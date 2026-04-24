@@ -123,7 +123,7 @@ module.exports = {
       .setTitle('Admin UI')
       .setDescription([
         'Use this UI command set:',
-        '• Set Roles & Team Chats opens a team picker first, then role/chat/fixture team options.',
+        '• Set Roles & Team Chats opens a team picker first, then role/chat/staff/private-category/fixture options.',
         '• `/admin set-emoji` to set team labels with emoji.',
         '• `/admin club-report` to review attendance for every team.',
         '• `/admin-config` remains available for full low-level config fields.',

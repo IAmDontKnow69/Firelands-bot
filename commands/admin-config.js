@@ -10,8 +10,13 @@ const FIELD_MAP = {
   events_channel_id: 'channels.events',
   logs_channel_id: 'channels.logs',
   ticket_channel_id: 'channels.ticket',
+  admin_channel_id: 'channels.admin',
   mens_team_channel_id: 'channels.teamChats.mens',
-  womens_team_channel_id: 'channels.teamChats.womens'
+  womens_team_channel_id: 'channels.teamChats.womens',
+  mens_staff_room_id: 'channels.staffRooms.mens',
+  womens_staff_room_id: 'channels.staffRooms.womens',
+  mens_private_chat_category_id: 'channels.privateChatCategories.mens',
+  womens_private_chat_category_id: 'channels.privateChatCategories.womens'
 };
 
 function isSnowflake(value) {
@@ -68,9 +73,14 @@ module.exports = {
               { name: 'Womens coach role ID', value: 'womens_coach_role_id' },
               { name: 'Events channel ID', value: 'events_channel_id' },
               { name: 'Logs channel ID', value: 'logs_channel_id' },
+              { name: 'Admin channel ID', value: 'admin_channel_id' },
               { name: 'Ticket channel/category ID', value: 'ticket_channel_id' },
               { name: 'Mens team chat channel ID', value: 'mens_team_channel_id' },
-              { name: 'Womens team chat channel ID', value: 'womens_team_channel_id' }
+              { name: 'Womens team chat channel ID', value: 'womens_team_channel_id' },
+              { name: 'Mens staff room channel ID', value: 'mens_staff_room_id' },
+              { name: 'Womens staff room channel ID', value: 'womens_staff_room_id' },
+              { name: 'Mens private chat category ID', value: 'mens_private_chat_category_id' },
+              { name: 'Womens private chat category ID', value: 'womens_private_chat_category_id' }
             )
         )
         .addStringOption((opt) =>
@@ -114,7 +124,12 @@ module.exports = {
         `Events Channel: ${config.channels.events || 'not set'}`,
         `Mens Team Chat Channel: ${config.channels.teamChats?.mens || 'not set'}`,
         `Womens Team Chat Channel: ${config.channels.teamChats?.womens || 'not set'}`,
+        `Mens Staff Room Channel: ${config.channels.staffRooms?.mens || 'not set'}`,
+        `Womens Staff Room Channel: ${config.channels.staffRooms?.womens || 'not set'}`,
+        `Mens Private Chat Category: ${config.channels.privateChatCategories?.mens || 'not set'}`,
+        `Womens Private Chat Category: ${config.channels.privateChatCategories?.womens || 'not set'}`,
         `Logs Channel: ${config.channels.logs || 'not set'}`,
+        `Admin Channel: ${config.channels.admin || 'not set'}`,
         `Ticket Channel/Category: ${config.channels.ticket || 'not set'}`,
         `Mens Label Emoji: ${config.teams?.mens?.emoji || 'not set'}`,
         `Womens Label Emoji: ${config.teams?.womens?.emoji || 'not set'}`,

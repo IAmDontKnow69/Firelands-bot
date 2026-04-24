@@ -16,6 +16,7 @@ const adminConfigCommand = require('./commands/admin-config');
 const playerCommand = require('./commands/player');
 const coachCommand = require('./commands/coach');
 const adminCommand = require('./commands/admin');
+const confirmCommand = require('./commands/confirm');
 const interactionHandler = require('./events/interactionCreate');
 const { fetchUpcomingEvents } = require('./utils/googleCalendar');
 const { loadDb, upsertEvent, setEventMessageId } = require('./utils/database');
@@ -47,6 +48,7 @@ client.commands.set(adminConfigCommand.data.name, adminConfigCommand);
 client.commands.set(playerCommand.data.name, playerCommand);
 client.commands.set(coachCommand.data.name, coachCommand);
 client.commands.set(adminCommand.data.name, adminCommand);
+client.commands.set(confirmCommand.data.name, confirmCommand);
 
 function getConfig() {
   return loadConfig();
@@ -54,7 +56,7 @@ function getConfig() {
 
 async function sendLog(message) {
   const config = getConfig();
-  const logsChannelId = config.channels.logs;
+  const logsChannelId = config.channels.admin || config.channels.logs;
 
   if (!logsChannelId) return;
 
@@ -87,7 +89,8 @@ async function registerSlashCommands() {
         adminConfigCommand.data.toJSON(),
         playerCommand.data.toJSON(),
         coachCommand.data.toJSON(),
-        adminCommand.data.toJSON()
+        adminCommand.data.toJSON(),
+        confirmCommand.data.toJSON()
       ]
     });
     console.log('Slash commands registered.');

@@ -194,6 +194,7 @@ module.exports = {
         content: `✅ You are marked as **available** for **${team}** on **${dateInput}**.`,
         ephemeral: true
       });
+      await context.sendLog(`🟢 ${interaction.user.tag} marked available for ${team} on ${dateInput}.`);
       return;
     }
 
@@ -205,13 +206,14 @@ module.exports = {
     });
 
     const teamConfig = teamRoles[team];
-    const channelName = sanitizeChannelName(`future-${team}-${interaction.user.username}-${dateInput}`);
+    const displayName = interaction.member?.displayName || interaction.user.username;
+    const channelName = sanitizeChannelName(`${displayName}-${dateInput}-future`);
 
     try {
       const discussionChannel = await interaction.guild.channels.create({
         name: channelName,
         type: ChannelType.GuildText,
-        parent: config.channels.ticket || null,
+        parent: config.channels.privateChatCategories?.[team] || config.channels.ticket || null,
         permissionOverwrites: [
           {
             id: interaction.guild.id,
@@ -228,11 +230,25 @@ module.exports = {
         ]
       });
 
-      await discussionChannel.send(
-        `📌 Future availability update\nPlayer: ${interaction.user}\nTeam: **${team}**\nDate: **${dateInput}**\nStatus: **Unavailable**\nReason: ${reason}`
-      );
+      await discussionChannel.send([
+        `Player's name: ${interaction.user}`,
+        `Date of event: ${dateInput}`,
+        'Name of event: Future event date not yet specified',
+        `Reason for not attending: ${reason}`
+      ].join('\n'));
+
+      const staffRoomId = config.channels.staffRooms?.[team];
+      if (staffRoomId) {
+        const staffRoom = await interaction.guild.channels.fetch(staffRoomId).catch(() => null);
+        if (staffRoom?.isTextBased()) {
+          await staffRoom.send(`🚨 Future unavailability chat opened for ${interaction.user} (${dateInput}): <#${discussionChannel.id}>`);
+        }
+      }
+
+      await context.sendLog(`🔴 ${interaction.user.tag} marked unavailable for ${team} on ${dateInput}. Chat: <#${discussionChannel.id}>`);
     } catch (error) {
       console.error('Failed to create future availability discussion channel:', error);
+      await context.sendLog(`⚠️ Failed to create future unavailability chat for ${interaction.user.tag} (${team}, ${dateInput}).`);
     }
 
     await interaction.reply({

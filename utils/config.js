@@ -26,9 +26,18 @@ function defaultConfig() {
       events: process.env.EVENTS_CHANNEL_ID || '',
       logs: process.env.LOGS_CHANNEL_ID || '',
       ticket: process.env.TICKET_CHANNEL_ID || '',
+      admin: process.env.ADMIN_LOGS_CHANNEL_ID || '',
       teamChats: {
         mens: process.env.MENS_TEAM_CHANNEL_ID || '',
         womens: process.env.WOMENS_TEAM_CHANNEL_ID || ''
+      },
+      staffRooms: {
+        mens: process.env.MENS_STAFF_ROOM_ID || '',
+        womens: process.env.WOMENS_STAFF_ROOM_ID || ''
+      },
+      privateChatCategories: {
+        mens: process.env.MENS_PRIVATE_CHAT_CATEGORY_ID || '',
+        womens: process.env.WOMENS_PRIVATE_CHAT_CATEGORY_ID || ''
       }
     },
     teams: {
@@ -63,6 +72,14 @@ function ensureConfig() {
       teamChats: {
         ...defaultConfig().channels.teamChats,
         ...(current.channels?.teamChats || {})
+      },
+      staffRooms: {
+        ...defaultConfig().channels.staffRooms,
+        ...(current.channels?.staffRooms || {})
+      },
+      privateChatCategories: {
+        ...defaultConfig().channels.privateChatCategories,
+        ...(current.channels?.privateChatCategories || {})
       }
     },
     teams: {

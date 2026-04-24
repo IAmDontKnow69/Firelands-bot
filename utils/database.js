@@ -7,7 +7,7 @@ function ensureDb() {
   if (!fs.existsSync(DB_PATH)) {
     fs.writeFileSync(
       DB_PATH,
-      JSON.stringify({ events: {}, futureAvailability: {}, meta: { postEventCoachReminders: {} } }, null, 2)
+      JSON.stringify({ events: {}, futureAvailability: {}, absenceTickets: {}, meta: { postEventCoachReminders: {} } }, null, 2)
     );
   }
 }
@@ -21,13 +21,14 @@ function loadDb() {
 
     if (!parsed.events) parsed.events = {};
     if (!parsed.futureAvailability) parsed.futureAvailability = {};
+    if (!parsed.absenceTickets) parsed.absenceTickets = {};
     if (!parsed.meta) parsed.meta = {};
     if (!parsed.meta.postEventCoachReminders) parsed.meta.postEventCoachReminders = {};
 
     return parsed;
   } catch (error) {
     console.error('Failed to load database:', error);
-    return { events: {}, futureAvailability: {}, meta: { postEventCoachReminders: {} } };
+    return { events: {}, futureAvailability: {}, absenceTickets: {}, meta: { postEventCoachReminders: {} } };
   }
 }
 
@@ -91,6 +92,24 @@ function setFutureAvailability(userId, team, date, payload) {
   return db.futureAvailability[userId][team][date];
 }
 
+function setAbsenceTicket(channelId, payload) {
+  const db = loadDb();
+  db.absenceTickets[channelId] = {
+    ...(db.absenceTickets[channelId] || {}),
+    ...payload
+  };
+  saveDb(db);
+  return db.absenceTickets[channelId];
+}
+
+function deleteAbsenceTicket(channelId) {
+  const db = loadDb();
+  if (!db.absenceTickets[channelId]) return false;
+  delete db.absenceTickets[channelId];
+  saveDb(db);
+  return true;
+}
+
 module.exports = {
   loadDb,
   saveDb,
@@ -98,5 +117,7 @@ module.exports = {
   setEventMessageId,
   setResponse,
   markPostEventReminder,
-  setFutureAvailability
+  setFutureAvailability,
+  setAbsenceTicket,
+  deleteAbsenceTicket
 };
