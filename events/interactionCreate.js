@@ -12,21 +12,14 @@ const {
   ButtonStyle,
   EmbedBuilder
 } = require('discord.js');
-const { loadDb, setResponse } = require('../utils/database');
+const { loadDb, saveDb, setResponse } = require('../utils/database');
 const { updateConfig } = require('../utils/config');
 const { fetchCalendarEvents } = require('../utils/googleCalendar');
 const coachCommand = require('../commands/coach');
 
-const ADMIN_ROLE_ACTIONS = {
-  set_mens_player_role: { path: 'roles.mens.player', label: 'Mens Player Role' },
-  set_mens_coach_role: { path: 'roles.mens.coach', label: 'Mens Coach Role' },
-  set_womens_player_role: { path: 'roles.womens.player', label: 'Womens Player Role' },
-  set_womens_coach_role: { path: 'roles.womens.coach', label: 'Womens Coach Role' }
-};
-
-const ADMIN_CHANNEL_ACTIONS = {
-  set_mens_team_channel: { path: 'channels.teamChats.mens', label: 'Mens Team Chat Channel' },
-  set_womens_team_channel: { path: 'channels.teamChats.womens', label: 'Womens Team Chat Channel' }
+const TEAM_LABELS = {
+  mens: 'Mens Team',
+  womens: "Women's Team"
 };
 
 function createAdminQuickActionRow() {
@@ -35,18 +28,64 @@ function createAdminQuickActionRow() {
       .setCustomId('admin_quick_action')
       .setPlaceholder('Pick an action')
       .addOptions([
+        { label: 'Set Roles & Team Chats', value: 'set_team_ids', description: 'Choose a team, then set role/chat IDs and fixture team' },
         { label: 'Set Google Calendar ID', value: 'set_calendar_id', description: 'Update the calendar used by sync' },
-        { label: 'Set Mens Player Role', value: 'set_mens_player_role', description: 'Assign Mens team player role' },
-        { label: 'Set Mens Coach Role', value: 'set_mens_coach_role', description: 'Assign Mens team coach role' },
-        { label: 'Set Womens Player Role', value: 'set_womens_player_role', description: 'Assign Womens team player role' },
-        { label: 'Set Womens Coach Role', value: 'set_womens_coach_role', description: 'Assign Womens team coach role' },
-        { label: 'Set Mens Team Chat', value: 'set_mens_team_channel', description: 'Assign Mens team chat channel' },
-        { label: 'Set Womens Team Chat', value: 'set_womens_team_channel', description: 'Assign Womens team chat channel' },
         { label: 'View Google Calendar Events', value: 'view_google_events', description: 'Show upcoming events from Google Calendar' },
         { label: 'Club Report', value: 'club_report', description: 'View club attendance report' },
         { label: 'Config Help', value: 'config_help', description: 'Show config usage notes' }
       ])
   );
+}
+
+function createTeamPickerRow(customId, placeholder = 'Choose a team') {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(customId)
+      .setPlaceholder(placeholder)
+      .addOptions([
+        { label: TEAM_LABELS.mens, value: 'mens' },
+        { label: TEAM_LABELS.womens, value: 'womens' }
+      ])
+  );
+}
+
+function createTeamConfigActionRow(team) {
+  const label = TEAM_LABELS[team] || team;
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`admin_team_config_action:${team}`)
+      .setPlaceholder(`Configure ${label}`)
+      .addOptions([
+        { label: 'Set Player Role ID', value: 'player_role', description: `Set ${label} player role` },
+        { label: 'Set Coach Role ID', value: 'coach_role', description: `Set ${label} coach role` },
+        { label: 'Set Team Chat ID', value: 'team_chat', description: `Set ${label} team chat channel` },
+        { label: 'Set Fixture Team', value: 'fixture_team', description: `Assign a fixture to ${label}` }
+      ])
+  );
+}
+
+function buildMonthGroupedEventLines(events, db, guild, teamRolesMap, config) {
+  const sorted = [...events].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  if (!sorted.length) return ['No upcoming events found.'];
+
+  const lines = [];
+  let activeMonth = '';
+
+  for (const event of sorted) {
+    const date = new Date(event.date);
+    const monthLabel = date.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+    if (monthLabel !== activeMonth) {
+      activeMonth = monthLabel;
+      if (lines.length) lines.push('');
+      lines.push(`__**${monthLabel}**__`);
+    }
+
+    const attendance = summarizeAttendance(event, db, guild, teamRolesMap);
+    const shortTitle = event.title.length > 70 ? `${event.title.slice(0, 67)}...` : event.title;
+    lines.push(`• ${date.toLocaleString()} — ${formatTeamLabel(event, config)} — **${shortTitle}** — ${attendance}`);
+  }
+
+  return lines;
 }
 
 function parseCustomId(customId) {
@@ -212,40 +251,11 @@ module.exports = {
 
       if (interaction.customId === 'admin_quick_action') {
         const action = interaction.values[0];
-        const roleAction = ADMIN_ROLE_ACTIONS[action];
-
-        if (roleAction) {
-          const row = new ActionRowBuilder().addComponents(
-            new RoleSelectMenuBuilder()
-              .setCustomId(`admin_set_role:${roleAction.path}`)
-              .setPlaceholder(`Choose ${roleAction.label}`)
-              .setMinValues(1)
-              .setMaxValues(1)
-          );
-
+        if (action === 'set_team_ids') {
           await interaction.update({
-            content: `Select the role to assign for **${roleAction.label}**.`,
+            content: 'Choose a team to configure role IDs, team chat ID, and fixture team.',
             embeds: [],
-            components: [row]
-          });
-          return;
-        }
-
-        const channelAction = ADMIN_CHANNEL_ACTIONS[action];
-        if (channelAction) {
-          const row = new ActionRowBuilder().addComponents(
-            new ChannelSelectMenuBuilder()
-              .setCustomId(`admin_set_channel:${channelAction.path}`)
-              .setPlaceholder(`Choose ${channelAction.label}`)
-              .setChannelTypes(ChannelType.GuildText)
-              .setMinValues(1)
-              .setMaxValues(1)
-          );
-
-          await interaction.update({
-            content: `Select the channel to assign for **${channelAction.label}**.`,
-            embeds: [],
-            components: [row]
+            components: [createTeamPickerRow('admin_team_config_select')]
           });
           return;
         }
@@ -277,14 +287,7 @@ module.exports = {
               credentialsPath: config.bot.calendarCredentialsPath || ''
             });
 
-            const lines = events.length
-              ? events.map((event) => {
-                const date = new Date(event.date).toLocaleString();
-                const attendance = summarizeAttendance(event, db, interaction.guild, teamRolesMap);
-                const shortTitle = event.title.length > 70 ? `${event.title.slice(0, 67)}...` : event.title;
-                return `• ${date} — ${formatTeamLabel(event, config)} — **${shortTitle}** — ${attendance}`;
-              })
-              : ['No upcoming events found.'];
+            const lines = buildMonthGroupedEventLines(events, db, interaction.guild, teamRolesMap, config);
 
             const chunks = chunkLines(lines, 15);
             const embeds = chunks.map((chunk, index) => new EmbedBuilder()
@@ -331,30 +334,150 @@ module.exports = {
         });
         return;
       }
+
+      if (interaction.customId === 'admin_team_config_select') {
+        const team = interaction.values[0];
+        await interaction.update({
+          content: `Configuring **${TEAM_LABELS[team]}**. Pick what to update.`,
+          embeds: [],
+          components: [createTeamConfigActionRow(team)]
+        });
+        return;
+      }
+
+      if (interaction.customId.startsWith('admin_team_config_action:')) {
+        const team = interaction.customId.split(':')[1];
+        const selectedAction = interaction.values[0];
+        const teamLabel = TEAM_LABELS[team] || team;
+
+        if (selectedAction === 'player_role' || selectedAction === 'coach_role') {
+          const label = selectedAction === 'player_role' ? `${teamLabel} Player Role` : `${teamLabel} Coach Role`;
+          const path = selectedAction === 'player_role' ? `roles.${team}.player` : `roles.${team}.coach`;
+          const row = new ActionRowBuilder().addComponents(
+            new RoleSelectMenuBuilder()
+              .setCustomId(`admin_set_role:${path}:${team}`)
+              .setPlaceholder(`Choose ${label}`)
+              .setMinValues(1)
+              .setMaxValues(1)
+          );
+
+          await interaction.update({
+            content: `Select the role to assign for **${label}**.`,
+            embeds: [],
+            components: [row]
+          });
+          return;
+        }
+
+        if (selectedAction === 'team_chat') {
+          const row = new ActionRowBuilder().addComponents(
+            new ChannelSelectMenuBuilder()
+              .setCustomId(`admin_set_channel:channels.teamChats.${team}:${team}`)
+              .setPlaceholder(`Choose ${teamLabel} Team Chat`)
+              .setChannelTypes(ChannelType.GuildText)
+              .setMinValues(1)
+              .setMaxValues(1)
+          );
+
+          await interaction.update({
+            content: `Select the channel to assign for **${teamLabel} Team Chat**.`,
+            embeds: [],
+            components: [row]
+          });
+          return;
+        }
+
+        if (selectedAction === 'fixture_team') {
+          const db = loadDb();
+          const upcomingEvents = Object.entries(db.events)
+            .map(([id, event]) => ({ id, ...event }))
+            .filter((event) => new Date(event.date).getTime() >= Date.now())
+            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+            .slice(0, 25);
+
+          if (!upcomingEvents.length) {
+            await interaction.update({
+              content: 'No upcoming fixtures found in synced events yet.',
+              embeds: [],
+              components: [createTeamConfigActionRow(team)]
+            });
+            return;
+          }
+
+          const row = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId(`admin_set_fixture_team:${team}`)
+              .setPlaceholder(`Select fixture for ${teamLabel}`)
+              .addOptions(
+                upcomingEvents.map((event) => {
+                  const when = new Date(event.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                  return {
+                    label: `${when} — ${event.title}`.slice(0, 100),
+                    value: event.id,
+                    description: `Current: ${TEAM_LABELS[event.team] || 'Unassigned'}`.slice(0, 100)
+                  };
+                })
+              )
+          );
+
+          await interaction.update({
+            content: `Pick a fixture to assign to **${teamLabel}**.`,
+            embeds: [],
+            components: [row]
+          });
+          return;
+        }
+      }
+
+      if (interaction.customId.startsWith('admin_set_fixture_team:')) {
+        const team = interaction.customId.split(':')[1];
+        const eventId = interaction.values[0];
+        const db = loadDb();
+        const target = db.events[eventId];
+
+        if (!target) {
+          await interaction.update({
+            content: 'Fixture was not found in synced events.',
+            embeds: [],
+            components: [createTeamConfigActionRow(team)]
+          });
+          return;
+        }
+
+        target.team = team;
+        saveDb(db);
+
+        await interaction.update({
+          content: `✅ Assigned **${target.title}** to **${TEAM_LABELS[team]}**.`,
+          embeds: [],
+          components: [createTeamConfigActionRow(team)]
+        });
+        return;
+      }
     }
 
     if (interaction.isRoleSelectMenu() && interaction.customId.startsWith('admin_set_role:')) {
-      const configPath = interaction.customId.split(':')[1];
+      const [, configPath, team] = interaction.customId.split(':');
       const roleId = interaction.values[0];
       updateConfig(configPath, roleId);
 
       await interaction.update({
         content: `✅ Updated **${configPath}** to <@&${roleId}>.`,
         embeds: [],
-        components: [createAdminQuickActionRow()]
+        components: [createTeamConfigActionRow(team)]
       });
       return;
     }
 
     if (interaction.isChannelSelectMenu() && interaction.customId.startsWith('admin_set_channel:')) {
-      const configPath = interaction.customId.split(':')[1];
+      const [, configPath, team] = interaction.customId.split(':');
       const channelId = interaction.values[0];
       updateConfig(configPath, channelId);
 
       await interaction.update({
         content: `✅ Updated **${configPath}** to <#${channelId}>.`,
         embeds: [],
-        components: [createAdminQuickActionRow()]
+        components: [createTeamConfigActionRow(team)]
       });
       return;
     }

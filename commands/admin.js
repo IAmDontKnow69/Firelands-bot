@@ -123,6 +123,7 @@ module.exports = {
       .setTitle('Admin UI')
       .setDescription([
         'Use this UI command set:',
+        '• Set Roles & Team Chats opens a team picker first, then role/chat/fixture team options.',
         '• `/admin set-emoji` to set team labels with emoji.',
         '• `/admin club-report` to review attendance for every team.',
         '• `/admin-config` remains available for full low-level config fields.',
@@ -135,13 +136,8 @@ module.exports = {
         .setCustomId('admin_quick_action')
         .setPlaceholder('Pick an action')
         .addOptions([
+          { label: 'Set Roles & Team Chats', value: 'set_team_ids', description: 'Choose a team, then set role/chat IDs and fixture team' },
           { label: 'Set Google Calendar ID', value: 'set_calendar_id', description: 'Update the calendar used by sync' },
-          { label: 'Set Mens Player Role', value: 'set_mens_player_role', description: 'Assign Mens team player role' },
-          { label: 'Set Mens Coach Role', value: 'set_mens_coach_role', description: 'Assign Mens team coach role' },
-          { label: 'Set Womens Player Role', value: 'set_womens_player_role', description: 'Assign Womens team player role' },
-          { label: 'Set Womens Coach Role', value: 'set_womens_coach_role', description: 'Assign Womens team coach role' },
-          { label: 'Set Mens Team Chat', value: 'set_mens_team_channel', description: 'Assign Mens team chat channel' },
-          { label: 'Set Womens Team Chat', value: 'set_womens_team_channel', description: 'Assign Womens team chat channel' },
           { label: 'View Google Calendar Events', value: 'view_google_events', description: 'Show upcoming events from Google Calendar' },
           { label: 'Club Report', value: 'club_report', description: 'View club attendance report' },
           { label: 'Config Help', value: 'config_help', description: 'Show config usage notes' }

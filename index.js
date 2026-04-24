@@ -160,18 +160,31 @@ async function syncCalendarEvents() {
     const db = loadDb();
 
     for (const event of calendarEvents) {
-      if (db.events[event.id]) continue;
+      const existingEvent = db.events[event.id];
 
-      upsertEvent(event.id, {
-        title: event.title,
-        date: event.date,
-        team: event.team,
-        discordMessageId: '',
-        responses: {}
-      });
+      if (!existingEvent) {
+        upsertEvent(event.id, {
+          title: event.title,
+          date: event.date,
+          team: event.team,
+          discordMessageId: '',
+          responses: {}
+        });
+      } else {
+        upsertEvent(event.id, {
+          title: event.title,
+          date: event.date,
+          team: existingEvent.team || event.team
+        });
+      }
 
-      await postEventMessage(event);
-      console.log(`Posted new event: ${event.title} (${event.id})`);
+      const latestDb = loadDb();
+      const syncedEvent = latestDb.events[event.id];
+
+      if (!syncedEvent?.team || syncedEvent.discordMessageId) continue;
+
+      await postEventMessage({ ...syncedEvent, id: event.id });
+      console.log(`Posted new event: ${syncedEvent.title} (${event.id})`);
     }
   } catch (error) {
     console.error('Calendar sync failed:', error);

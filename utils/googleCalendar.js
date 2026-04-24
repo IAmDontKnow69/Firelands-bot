@@ -16,9 +16,7 @@ function getEventStartIso(event) {
 }
 
 async function fetchUpcomingEvents({ calendarId, daysAhead = 14, credentialsPath = '' }) {
-  const items = await fetchCalendarEvents({ calendarId, daysAhead, credentialsPath });
-
-  return items.filter((event) => !!event.team);
+  return fetchCalendarEvents({ calendarId, daysAhead, credentialsPath });
 }
 
 async function fetchCalendarEvents({ calendarId, daysAhead = 14, credentialsPath = '' }) {
