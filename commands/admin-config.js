@@ -21,6 +21,24 @@ function validateField(field, value) {
   return isSnowflake(value);
 }
 
+function findRoleByName(guild, name) {
+  if (!guild) return null;
+  const lower = name.toLowerCase();
+  const roles = guild.roles.cache
+    .filter((role) => role.name.toLowerCase().includes(lower))
+    .sort((a, b) => a.name.length - b.name.length);
+  return roles.first() || null;
+}
+
+function findChannelByName(guild, name) {
+  if (!guild) return null;
+  const lower = name.toLowerCase();
+  const channels = guild.channels.cache
+    .filter((channel) => channel.name && channel.name.toLowerCase().includes(lower))
+    .sort((a, b) => a.name.length - b.name.length);
+  return channels.first() || null;
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('admin-config')
@@ -54,8 +72,20 @@ module.exports = {
         .addStringOption((opt) =>
           opt
             .setName('value')
-            .setDescription('New value')
-            .setRequired(true)
+            .setDescription('New value (for token reference or manual ID/name entry)')
+            .setRequired(false)
+        )
+        .addRoleOption((opt) =>
+          opt
+            .setName('role')
+            .setDescription('Select a role (supports type-ahead by role name)')
+            .setRequired(false)
+        )
+        .addChannelOption((opt) =>
+          opt
+            .setName('channel')
+            .setDescription('Select a channel/category (supports type-ahead by name)')
+            .setRequired(false)
         )
     ),
 
@@ -89,16 +119,53 @@ module.exports = {
     }
 
     const field = interaction.options.getString('field', true);
-    const value = interaction.options.getString('value', true).trim();
+    const rawValue = interaction.options.getString('value');
+    const selectedRole = interaction.options.getRole('role');
+    const selectedChannel = interaction.options.getChannel('channel');
+    let value = rawValue ? rawValue.trim() : '';
 
-    if (!validateField(field, value)) {
-      await interaction.reply({
-        content: field === 'bot_token_reference'
-          ? 'Invalid token reference format.'
-          : 'Invalid ID format. Expected a Discord snowflake.',
-        ephemeral: true
-      });
-      return;
+    if (field === 'bot_token_reference') {
+      if (!value) {
+        await interaction.reply({
+          content: 'Please provide a token reference in the `value` option.',
+          ephemeral: true
+        });
+        return;
+      }
+      if (!validateField(field, value)) {
+        await interaction.reply({ content: 'Invalid token reference format.', ephemeral: true });
+        return;
+      }
+    } else if (field.endsWith('role_id')) {
+      if (selectedRole) {
+        value = selectedRole.id;
+      } else if (value) {
+        const matchedRole = isSnowflake(value) ? interaction.guild?.roles.cache.get(value) : findRoleByName(interaction.guild, value);
+        if (matchedRole) value = matchedRole.id;
+      }
+
+      if (!validateField(field, value)) {
+        await interaction.reply({
+          content: 'Please select a valid role using the `role` option or provide a valid role ID/name.',
+          ephemeral: true
+        });
+        return;
+      }
+    } else {
+      if (selectedChannel) {
+        value = selectedChannel.id;
+      } else if (value) {
+        const matchedChannel = isSnowflake(value) ? interaction.guild?.channels.cache.get(value) : findChannelByName(interaction.guild, value);
+        if (matchedChannel) value = matchedChannel.id;
+      }
+
+      if (!validateField(field, value)) {
+        await interaction.reply({
+          content: 'Please select a valid channel/category using the `channel` option or provide a valid channel ID/name.',
+          ephemeral: true
+        });
+        return;
+      }
     }
 
     const configPath = FIELD_MAP[field];
