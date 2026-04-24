@@ -23,5 +23,13 @@
       "mens": "",
       "womens": ""
     }
+  },
+  "teams": {
+    "mens": {
+      "emoji": "\ud83d\udd35"
+    },
+    "womens": {
+      "emoji": "\ud83d\udd34"
+    }
   }
 }

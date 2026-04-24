@@ -13,6 +13,9 @@ const cron = require('node-cron');
 
 const attendanceCommand = require('./commands/attendance');
 const adminConfigCommand = require('./commands/admin-config');
+const playerCommand = require('./commands/player');
+const coachCommand = require('./commands/coach');
+const adminCommand = require('./commands/admin');
 const interactionHandler = require('./events/interactionCreate');
 const { fetchUpcomingEvents } = require('./utils/googleCalendar');
 const { loadDb, upsertEvent, setEventMessageId } = require('./utils/database');
@@ -41,6 +44,9 @@ const client = new Client({
 client.commands = new Collection();
 client.commands.set(attendanceCommand.data.name, attendanceCommand);
 client.commands.set(adminConfigCommand.data.name, adminConfigCommand);
+client.commands.set(playerCommand.data.name, playerCommand);
+client.commands.set(coachCommand.data.name, coachCommand);
+client.commands.set(adminCommand.data.name, adminCommand);
 
 function getConfig() {
   return loadConfig();
@@ -76,7 +82,13 @@ async function registerSlashCommands() {
 
   try {
     await rest.put(Routes.applicationGuildCommands(clientId, guildId), {
-      body: [attendanceCommand.data.toJSON(), adminConfigCommand.data.toJSON()]
+      body: [
+        attendanceCommand.data.toJSON(),
+        adminConfigCommand.data.toJSON(),
+        playerCommand.data.toJSON(),
+        coachCommand.data.toJSON(),
+        adminCommand.data.toJSON()
+      ]
     });
     console.log('Slash commands registered.');
   } catch (error) {

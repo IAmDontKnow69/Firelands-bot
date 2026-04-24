@@ -116,6 +116,8 @@ module.exports = {
         `Womens Team Chat Channel: ${config.channels.teamChats?.womens || 'not set'}`,
         `Logs Channel: ${config.channels.logs || 'not set'}`,
         `Ticket Channel/Category: ${config.channels.ticket || 'not set'}`,
+        `Mens Label Emoji: ${config.teams?.mens?.emoji || 'not set'}`,
+        `Womens Label Emoji: ${config.teams?.womens?.emoji || 'not set'}`,
         '',
         '_Note: Bot token changes are stored for restart/reference and do not hot-swap runtime auth._'
       ].join('\n');

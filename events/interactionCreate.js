@@ -6,9 +6,11 @@ const {
   ChannelType,
   PermissionFlagsBits,
   ButtonBuilder,
-  ButtonStyle
+  ButtonStyle,
+  EmbedBuilder
 } = require('discord.js');
 const { loadDb, setResponse } = require('../utils/database');
+const coachCommand = require('../commands/coach');
 
 function parseCustomId(customId) {
   const [action, eventId, userId] = customId.split(':');
@@ -124,6 +126,41 @@ module.exports = {
           console.error('Failed to lock ticket channel:', error);
         }
 
+        return;
+      }
+    }
+
+
+    if (interaction.isStringSelectMenu()) {
+      if (interaction.customId === 'coach_team_select') {
+        const selectedTeam = interaction.values[0];
+        const report = coachCommand.buildReport(interaction.guild, selectedTeam, teamRolesMap);
+
+        const embed = new EmbedBuilder()
+          .setTitle(`Coach UI — ${selectedTeam}`)
+          .setDescription(report)
+          .setColor(0x3498db);
+
+        await interaction.update({ content: 'Coach report loaded.', embeds: [embed], components: [] });
+        return;
+      }
+
+      if (interaction.customId === 'admin_quick_action') {
+        const action = interaction.values[0];
+        if (action === 'club_report') {
+          await interaction.update({
+            content: 'Run `/admin club-report` to open the full club attendance report.',
+            embeds: [],
+            components: []
+          });
+          return;
+        }
+
+        await interaction.update({
+          content: 'Use `/admin-config view` or `/admin-config set` for detailed configuration updates.',
+          embeds: [],
+          components: []
+        });
         return;
       }
     }

@@ -29,6 +29,14 @@ function defaultConfig() {
         mens: process.env.MENS_TEAM_CHANNEL_ID || '',
         womens: process.env.WOMENS_TEAM_CHANNEL_ID || ''
       }
+    },
+    teams: {
+      mens: {
+        emoji: process.env.MENS_TEAM_EMOJI || '🔵'
+      },
+      womens: {
+        emoji: process.env.WOMENS_TEAM_EMOJI || '🔴'
+      }
     }
   };
 }
@@ -55,6 +63,10 @@ function ensureConfig() {
         ...defaultConfig().channels.teamChats,
         ...(current.channels?.teamChats || {})
       }
+    },
+    teams: {
+      mens: { ...defaultConfig().teams.mens, ...(current.teams?.mens || {}) },
+      womens: { ...defaultConfig().teams.womens, ...(current.teams?.womens || {}) }
     }
   };
 
