@@ -54,6 +54,10 @@ function findChannelByName(guild, name) {
   return channels.first() || null;
 }
 
+function formatConfigId(value) {
+  return !value || value === 'ROLE_ID' ? 'not set' : value;
+}
+
 module.exports = {
   FIELD_MAP,
   validateField,
@@ -64,10 +68,10 @@ module.exports = {
       '**Firelands United Bot Configuration**',
       '',
       `Bot Token Reference: ${config.bot.tokenReference ? '`set`' : '`not set`'}`,
-      `Mens Player Role: ${config.roles.mens.player || 'not set'}`,
-      `Womens Player Role: ${config.roles.womens.player || 'not set'}`,
-      `Mens Coach Role: ${config.roles.mens.coach || 'not set'}`,
-      `Womens Coach Role: ${config.roles.womens.coach || 'not set'}`,
+      `Mens Player Role: ${formatConfigId(config.roles.mens.player)}`,
+      `Womens Player Role: ${formatConfigId(config.roles.womens.player)}`,
+      `Mens Coach Role: ${formatConfigId(config.roles.mens.coach)}`,
+      `Womens Coach Role: ${formatConfigId(config.roles.womens.coach)}`,
       `Events Channel: ${config.channels.events || 'not set'}`,
       `Mens Team Chat Channel: ${config.channels.teamChats?.mens || 'not set'}`,
       `Womens Team Chat Channel: ${config.channels.teamChats?.womens || 'not set'}`,

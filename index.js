@@ -58,16 +58,13 @@ client.commands.set(confirmCommand.data.name, confirmCommand);
 const missingAttendanceConfigWarnings = new Set();
 
 function buildSetupSummary(config) {
-  const playerRole = config.bot?.playerCommandRoleId ? `<@&${config.bot.playerCommandRoleId}>` : 'not set';
-  const coachRole = config.bot?.coachCommandRoleId ? `<@&${config.bot.coachCommandRoleId}>` : 'not set';
   const adminRole = config.bot?.adminRoleId ? `<@&${config.bot.adminRoleId}>` : 'not set';
   const adminChannel = config.channels?.admin ? `<#${config.channels.admin}>` : 'not set';
   return [
     '⚙️ **Firelands Setup Wizard**',
-    'Choose command-access roles and admin logs channel below.',
+    'Choose /admin access role and admin logs channel below.',
+    'Player and coach command access is automatically derived from team player/coach roles.',
     '',
-    `• /player access role: ${playerRole}`,
-    `• /coach access role: ${coachRole}`,
     `• /admin access role: ${adminRole}`,
     `• Admin logs channel: ${adminChannel}`,
     '',
@@ -79,20 +76,6 @@ function buildSetupSummary(config) {
 
 function createSetupRows() {
   return [
-    new ActionRowBuilder().addComponents(
-      new RoleSelectMenuBuilder()
-        .setCustomId('setup_role_player')
-        .setPlaceholder('Select role for /player access')
-        .setMinValues(1)
-        .setMaxValues(1)
-    ),
-    new ActionRowBuilder().addComponents(
-      new RoleSelectMenuBuilder()
-        .setCustomId('setup_role_coach')
-        .setPlaceholder('Select role for /coach access')
-        .setMinValues(1)
-        .setMaxValues(1)
-    ),
     new ActionRowBuilder().addComponents(
       new RoleSelectMenuBuilder()
         .setCustomId('setup_role_admin')
@@ -253,8 +236,6 @@ async function handleSetupInteraction(interaction) {
   if (!interaction.isStringSelectMenu() && !interaction.isRoleSelectMenu() && !interaction.isChannelSelectMenu()) return false;
   if (!String(interaction.customId || '').startsWith('setup_')) return false;
 
-  if (interaction.customId === 'setup_role_player') updateConfig('bot.playerCommandRoleId', interaction.values[0]);
-  if (interaction.customId === 'setup_role_coach') updateConfig('bot.coachCommandRoleId', interaction.values[0]);
   if (interaction.customId === 'setup_role_admin') updateConfig('bot.adminRoleId', interaction.values[0]);
   if (interaction.customId === 'setup_channel_admin') updateConfig('channels.admin', interaction.values[0]);
 

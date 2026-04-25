@@ -21,12 +21,6 @@ module.exports = {
 
   async execute(interaction, context) {
     const config = context.getConfig();
-    const requiredRoleId = config.bot?.playerCommandRoleId || '';
-    if (requiredRoleId && !interaction.member.roles.cache.has(requiredRoleId)) {
-      await interaction.reply({ content: `You need <@&${requiredRoleId}> to use /player.`, flags: MessageFlags.Ephemeral });
-      return;
-    }
-
     const playerTeams = getPlayerTeams(interaction.member, config.roles);
 
     if (!playerTeams.length) {

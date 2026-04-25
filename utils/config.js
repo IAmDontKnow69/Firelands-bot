@@ -47,11 +47,15 @@ function defaultConfig() {
       mens: {
         emoji: process.env.MENS_TEAM_EMOJI || '🔵',
         label: process.env.MENS_TEAM_LABEL || 'Mens',
+        captainRoleId: process.env.MENS_CAPTAIN_ROLE_ID || '',
+        captainEmoji: process.env.MENS_CAPTAIN_EMOJI || '🅒',
         eventNamePhrases: ['Mens practice', 'FU Men']
       },
       womens: {
         emoji: process.env.WOMENS_TEAM_EMOJI || '🔴',
         label: process.env.WOMENS_TEAM_LABEL || 'Womens',
+        captainRoleId: process.env.WOMENS_CAPTAIN_ROLE_ID || '',
+        captainEmoji: process.env.WOMENS_CAPTAIN_EMOJI || '🅒',
         eventNamePhrases: ['FU Women', "Women's practice"]
       }
     },
@@ -101,6 +105,8 @@ function ensureConfig() {
         {
           emoji: base.teams?.[teamKey]?.emoji || '🔹',
           label: base.teams?.[teamKey]?.label || teamKey,
+          captainRoleId: base.teams?.[teamKey]?.captainRoleId || '',
+          captainEmoji: base.teams?.[teamKey]?.captainEmoji || '🅒',
           eventNamePhrases: base.teams?.[teamKey]?.eventNamePhrases || [],
           ...(currentTeams[teamKey] || {})
         }
