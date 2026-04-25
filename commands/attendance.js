@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, ChannelType, PermissionFlagsBits, MessageFlags } = require('discord.js');
+const { SlashCommandBuilder, ChannelType, PermissionFlagsBits, MessageFlags, ActionRowBuilder, StringSelectMenuBuilder } = require('discord.js');
 const { loadDb, setFutureAvailability } = require('../utils/database');
 
 function isCoach(member, teamRoles) {
@@ -158,7 +158,33 @@ module.exports = {
         return;
       }
 
-      await interaction.reply({ content: output, flags: MessageFlags.Ephemeral });
+      const playerOptions = Array.from(new Set(
+        coachTeams.flatMap((teamKey) => {
+          const roleId = teamRoles[teamKey]?.player;
+          const role = roleId ? interaction.guild.roles.cache.get(roleId) : null;
+          return role ? Array.from(role.members.keys()) : [];
+        })
+      )).slice(0, 25).map((userId) => {
+        const member = interaction.guild.members.cache.get(userId);
+        return {
+          label: (member?.displayName || member?.user?.username || userId).slice(0, 100),
+          value: userId,
+          description: `Open profile for ${member?.user?.tag || userId}`.slice(0, 100)
+        };
+      });
+
+      const components = playerOptions.length
+        ? [
+          new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId('attendance_report_profile_select')
+              .setPlaceholder('Open player profile from this report')
+              .addOptions(playerOptions)
+          )
+        ]
+        : [];
+
+      await interaction.reply({ content: output, components, flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -218,6 +244,10 @@ module.exports = {
           {
             id: interaction.guild.id,
             deny: [PermissionFlagsBits.ViewChannel]
+          },
+          {
+            id: interaction.client.user.id,
+            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels]
           },
           {
             id: interaction.user.id,

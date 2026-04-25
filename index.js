@@ -28,6 +28,7 @@ const { loadDb, upsertEvent, setEventMessageId } = require('./utils/database');
 const { startReminderJobs } = require('./utils/reminders');
 const { ensureConfig, loadConfig, updateConfig } = require('./utils/config');
 const { syncAllToSheet, syncConfigOnlyToSheet, appendCommandLogRow } = require('./utils/googleSheetsSync');
+const { getTeamSetupProgress, getIncompleteTeamsForMember, buildIncompleteTeamMessage } = require('./utils/teamSetup');
 
 ensureConfig();
 
@@ -68,7 +69,7 @@ function buildSetupSummary(config) {
     `• /admin access role: ${adminRole}`,
     `• Admin logs channel: ${adminChannel}`,
     '',
-    'Then choose Google Sheets mode:',
+    'Then choose Google Sheets mode (this final step will complete and remove this wizard message):',
     '• **Fresh Sheet** = clears/rebuilds managed ranges.',
     '• **Sync Config Only** = keeps existing sheet data and updates config/config IDs only.'
   ].join('\n');
@@ -259,19 +260,15 @@ async function handleSetupInteraction(interaction) {
       await interaction.editReply(`❌ Setup sheet action failed: ${error.message}`);
     }
 
-    if (interaction.message?.editable) {
-      await interaction.message.edit({
-        content: buildSetupSummary(getConfig()),
-        components: createSetupRows()
-      }).catch(() => null);
-    }
+    await interaction.message?.delete().catch(() => null);
     return true;
   }
 
-  await interaction.update({
+  await interaction.deferUpdate();
+  await interaction.message?.edit({
     content: buildSetupSummary(getConfig()),
     components: createSetupRows()
-  });
+  }).catch(() => null);
   return true;
 }
 
@@ -287,15 +284,9 @@ function getAttendanceChannelId(config, team) {
 }
 
 function getAttendanceConfigIssue(config, team) {
-  const channelId = getAttendanceChannelId(config, team);
-  if (!channelId) return 'Events channel ID is not configured.';
-
-  const teamRoleId = config.roles?.[team]?.player;
-  if (!teamRoleId || teamRoleId === 'ROLE_ID') {
-    return `Role ID not configured for team: ${team}`;
-  }
-
-  return '';
+  const progress = getTeamSetupProgress(config, team);
+  if (progress.isComplete) return '';
+  return `Team setup incomplete for ${team}. Missing: ${progress.missing.join(', ')}`;
 }
 
 async function warnMissingAttendanceConfig(team, issue) {
@@ -399,8 +390,7 @@ async function syncCalendarEvents() {
         continue;
       }
 
-      clearAttendanceWarning(syncedEvent.team, 'Events channel ID is not configured.');
-      clearAttendanceWarning(syncedEvent.team, `Role ID not configured for team: ${syncedEvent.team}`);
+      clearAttendanceWarning(syncedEvent.team, `Team setup incomplete for ${syncedEvent.team}. Missing: ${getTeamSetupProgress(config, syncedEvent.team).missing.join(', ')}`);
 
       await postEventMessage({ ...syncedEvent, id: event.id });
       console.log(`Posted new event: ${syncedEvent.title} (${event.id})`);
@@ -421,6 +411,32 @@ client.on('interactionCreate', async (interaction) => {
     if (await handleSetupInteraction(interaction)) return;
 
     if (interaction.isChatInputCommand()) {
+      if (['player', 'coach'].includes(interaction.commandName)) {
+        const botCommandsChannelId = getConfig().channels?.botCommands;
+        if (botCommandsChannelId && interaction.channelId !== botCommandsChannelId) {
+          await interaction.reply({
+            content: `Please use \`/${interaction.commandName}\` in <#${botCommandsChannelId}>.`,
+            flags: MessageFlags.Ephemeral
+          });
+          return;
+        }
+      }
+
+      if (['player', 'coach', 'attendance'].includes(interaction.commandName)) {
+        let mode = interaction.commandName === 'coach' ? 'coach' : 'player';
+        if (interaction.commandName === 'attendance') {
+          mode = interaction.options.getSubcommand(false) === 'report' ? 'coach' : 'player';
+        }
+        const incompleteTeams = getIncompleteTeamsForMember(interaction.member, getConfig(), mode);
+        if (incompleteTeams.length) {
+          await interaction.reply({
+            content: buildIncompleteTeamMessage(getConfig(), incompleteTeams),
+            flags: MessageFlags.Ephemeral
+          });
+          return;
+        }
+      }
+
       const command = client.commands.get(interaction.commandName);
       if (!command) return;
 

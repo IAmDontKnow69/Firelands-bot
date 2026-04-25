@@ -153,6 +153,13 @@ module.exports = {
       await interaction.reply({ content: adminAccessMessage(config), flags: MessageFlags.Ephemeral });
       return;
     }
+    if (config.channels?.admin && interaction.channelId !== config.channels.admin) {
+      await interaction.reply({
+        content: `Please use this command in the admin chat: <#${config.channels.admin}>.`,
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
 
     const teamLabels = Object.entries(config.teams || {}).map(([team, meta]) => `${meta.emoji || '🔹'} ${meta.label || team}`).join(' | ');
     const view = new EmbedBuilder()

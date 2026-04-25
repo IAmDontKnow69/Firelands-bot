@@ -27,12 +27,14 @@ const {
   getPlayerDisplayName
 } = require('../utils/database');
 const { loadConfig, updateConfig } = require('../utils/config');
+const { getTeamSetupProgress } = require('../utils/teamSetup');
 const { fetchCalendarEvents, titleMatchesPhrase } = require('../utils/googleCalendar');
 const { syncAllToSheet, appendCommandLogRow } = require('../utils/googleSheetsSync');
 const coachCommand = require('../commands/coach');
 const adminCommand = require('../commands/admin');
 const adminConfigCommand = require('../commands/admin-config');
 const { hasAdminAccess, adminAccessMessage } = require('../utils/adminAccess');
+const { determineEventType, eventTypeLabel, getEventTypeConfig } = require('../utils/eventType');
 
 function getTeamMeta(config = {}, team = '') {
   const teamConfig = config.teams?.[team] || {};
@@ -86,7 +88,24 @@ function createGoogleToolsRow() {
         { label: 'Open Google Sheet', value: 'open_google_sheet', description: 'Open configured Google Sheet' },
         { label: 'Set Google Calendar ID', value: 'set_calendar_id', description: 'Set calendar used for sync' },
         { label: 'Set Admin Chat', value: 'set_admin_chat', description: 'Choose where admin logs + errors are posted' },
+        { label: 'Set Bot Commands Chat', value: 'set_bot_commands_chat', description: 'Choose where /player and /coach can be used' },
+        { label: 'Event Type Rules', value: 'event_type_rules', description: 'Configure how events are classified' },
         { label: 'View Google Calendar Events', value: 'view_google_events', description: 'Preview synced calendar events' }
+      ])
+  );
+}
+
+function createEventTypeRulesRow() {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('admin_event_type_rules_action')
+      .setPlaceholder('Event type rule actions')
+      .addOptions([
+        { label: 'Toggle Auto Detect', value: 'toggle_auto_detect', description: 'Enable/disable keyword auto classification' },
+        { label: 'Set Practice Exact Names', value: 'set_practice_exact', description: 'Comma-separated exact names that mean practice' },
+        { label: 'Set Match Exact Names', value: 'set_match_exact', description: 'Comma-separated exact names that mean match' },
+        { label: 'Set Other Exact Names', value: 'set_other_exact', description: 'Comma-separated exact names that mean other' },
+        { label: 'Manually Set Event Type', value: 'manual_set_event_type', description: 'Pick a fixture and assign a type manually' }
       ])
   );
 }
@@ -153,8 +172,10 @@ function formatConfigRef(guild, type, id) {
 
 function getTeamConfigSummary(config, guild, team) {
   const meta = getTeamMeta(config, team);
+  const progress = getTeamSetupProgress(config, team);
   return [
     `Now configuring: ${meta.emoji} **${meta.label}** (\`${team}\`)`,
+    `Setup progress: **${progress.completed}/${progress.total} (${progress.percent}%)** ${progress.isComplete ? '✅ Ready' : '⚠️ Incomplete'}`,
     '',
     '**Current configuration**',
     `• Player Role: ${formatConfigRef(guild, 'role', config.roles?.[team]?.player)}`,
@@ -165,7 +186,11 @@ function getTeamConfigSummary(config, guild, team) {
     `• Team Emoji: ${meta.emoji}`,
     `• Captain Role: ${formatConfigRef(guild, 'role', config.teams?.[team]?.captainRoleId)}`,
     `• Captain Emoji: ${config.teams?.[team]?.captainEmoji || 'not set'}`,
-    `• Event Name Phrases (exact): ${(config.teams?.[team]?.eventNamePhrases || []).join(', ') || 'not set'}`
+    `• Event Name Phrases (exact): ${(config.teams?.[team]?.eventNamePhrases || []).join(', ') || 'not set'}`,
+    '',
+    !progress.isComplete
+      ? `⚠️ Missing required IDs: ${progress.missing.join(', ')}`
+      : '✅ All required IDs are configured for this team.'
   ].join('\n');
 }
 
@@ -318,7 +343,7 @@ function getCompactDateLabel(eventDate) {
 }
 
 function getPlayerNameForUi(user, member, profile) {
-  return profile?.customName || member?.displayName || user?.globalName || user?.username || 'Player';
+  return profile?.nickName || profile?.customName || member?.displayName || user?.globalName || user?.username || 'Player';
 }
 
 function getUserTeamFromMember(member, config, mode = 'player') {
@@ -351,34 +376,66 @@ function buildAbsenceTicketChannelName(config, event, profile, member, user) {
   return sanitizeChannelName(`${teamEmoji}${captainEmoji}-${displayName}-${eventDateLabel}-${event.title}`);
 }
 
-function createPlayerManagementRow() {
+function createPlayerManagementRow(mode = 'player') {
   return new ActionRowBuilder().addComponents(
     new UserSelectMenuBuilder()
-      .setCustomId('admin_player_select')
-      .setPlaceholder('Select a player to manage')
+      .setCustomId(mode === 'coach' ? 'admin_coach_select' : 'admin_player_select')
+      .setPlaceholder(mode === 'coach' ? 'Select a coach to manage' : 'Select a player to manage')
       .setMinValues(1)
       .setMaxValues(1)
   );
 }
 
-function createPlayerProfileActionRow(userId) {
+function createCoachManagementRow(config, guild) {
+  const coachIds = new Set();
+  for (const teamKey of Object.keys(config.teams || {})) {
+    const coachRoleId = config.roles?.[teamKey]?.coach;
+    const role = coachRoleId ? guild.roles.cache.get(coachRoleId) : null;
+    if (!role) continue;
+    for (const memberId of role.members.keys()) coachIds.add(memberId);
+  }
+
+  const options = Array.from(coachIds).slice(0, 25).map((userId) => {
+    const member = guild.members.cache.get(userId);
+    return {
+      label: (member?.displayName || member?.user?.username || userId).slice(0, 100),
+      value: userId,
+      description: `Manage coach ${member?.user?.tag || userId}`.slice(0, 100)
+    };
+  });
+
+  if (!options.length) {
+    options.push({ label: 'No coaches found', value: 'none', description: 'Assign coach roles first' });
+  }
+
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`admin_player_action:set_name:${userId}`).setLabel('Name').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`admin_player_action:set_face:${userId}`).setLabel('Photo URL').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`admin_player_action:set_shirt:${userId}`).setLabel('Shirt').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`admin_player_action:set_teams:${userId}`).setLabel('Teams').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_player_action:set_notes:${userId}`).setLabel('Notes').setStyle(ButtonStyle.Secondary)
+    new StringSelectMenuBuilder()
+      .setCustomId('admin_coach_pick')
+      .setPlaceholder('Select a coach to manage')
+      .addOptions(options)
   );
 }
 
-function createPlayerProfileActionRow2(userId) {
+function createPlayerProfileActionRow(userId, mode = 'player') {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`admin_player_action:assign_roles:${userId}`).setLabel('Assign Roles').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_player_action:set_joined:${userId}`).setLabel('Joined').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId(`admin_player_action:set_name:${userId}:${mode}`).setLabel('Name').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`admin_player_action:set_nickname:${userId}:${mode}`).setLabel('Nickname').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`admin_player_action:set_face:${userId}:${mode}`).setLabel('Photo URL').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`admin_player_action:set_shirt:${userId}:${mode}`).setLabel('Shirt').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`admin_player_action:set_notes:${userId}:${mode}`).setLabel('Notes').setStyle(ButtonStyle.Secondary)
   );
 }
 
-function createPlayerTeamSelectRow(config, userId) {
+function createPlayerProfileActionRow2(userId, mode = 'player') {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`admin_player_action:set_teams:${userId}:${mode}`).setLabel('Teams').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_player_action:assign_roles:${userId}:${mode}`).setLabel('Assign Roles').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_player_action:set_joined:${userId}:${mode}`).setLabel('Joined').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_player_view_attendance:${userId}:${mode}`).setLabel('Attendance').setStyle(ButtonStyle.Success)
+  );
+}
+
+function createPlayerTeamSelectRow(config, userId, mode = 'player') {
   const options = Object.entries(config.teams || {}).map(([team, meta]) => ({
     label: `${meta.emoji || '🔹'} ${meta.label || team}`.slice(0, 100),
     value: team
@@ -386,25 +443,34 @@ function createPlayerTeamSelectRow(config, userId) {
 
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
-      .setCustomId(`admin_player_set_teams:${userId}`)
-      .setPlaceholder('Select teams for this player')
+      .setCustomId(`admin_player_set_teams:${userId}:${mode}`)
+      .setPlaceholder(mode === 'coach' ? 'Select teams this coach manages' : 'Select teams for this player')
       .setMinValues(0)
       .setMaxValues(Math.min(options.length, 25))
       .addOptions(options.slice(0, 25))
   );
 }
 
-function createPlayerRoleAssignRow(userId) {
+function createPlayerRoleAssignRow(userId, mode = 'player') {
   return new ActionRowBuilder().addComponents(
     new RoleSelectMenuBuilder()
-      .setCustomId(`admin_player_assign_roles:${userId}`)
+      .setCustomId(`admin_player_assign_roles:${userId}:${mode}`)
       .setPlaceholder('Select roles to add')
       .setMinValues(1)
       .setMaxValues(10)
   );
 }
 
-async function handleAdminPlayerAction(interaction, selectedAction, userId) {
+function createAttendanceOnlyRow(userId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`admin_player_view_attendance:${userId}:player`)
+      .setLabel('Attendance')
+      .setStyle(ButtonStyle.Success)
+  );
+}
+
+async function handleAdminPlayerAction(interaction, selectedAction, userId, mode = 'player') {
   const targetMember = await interaction.guild.members.fetch(userId).catch(() => null);
   const targetUser = targetMember?.user || await interaction.client.users.fetch(userId).catch(() => null);
   const latestConfig = loadConfig();
@@ -429,9 +495,9 @@ async function handleAdminPlayerAction(interaction, selectedAction, userId) {
 
   if (selectedAction === 'set_teams') {
     await interaction.update({
-      content: 'Select profile teams for this player.',
+      content: mode === 'coach' ? 'Select managed teams for this coach.' : 'Select profile teams for this player.',
       embeds: [],
-      components: [createPlayerTeamSelectRow(loadConfig(), userId), createBackButtonRow('admin_back_player_management')]
+      components: [createPlayerTeamSelectRow(loadConfig(), userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')]
     });
     return true;
   }
@@ -440,20 +506,22 @@ async function handleAdminPlayerAction(interaction, selectedAction, userId) {
     await interaction.update({
       content: 'Select roles to add to this player.',
       embeds: [],
-      components: [createPlayerRoleAssignRow(userId), createBackButtonRow('admin_back_player_management')]
+      components: [createPlayerRoleAssignRow(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')]
     });
     return true;
   }
 
   const modalTitles = {
-    set_name: 'Set Player Display Name',
+    set_name: mode === 'coach' ? 'Set Coach Real Name' : 'Set Player Real Name',
+    set_nickname: mode === 'coach' ? 'Set Coach Nickname' : 'Set Player Nickname',
     set_face: 'Set Player Face URL (.png or .webp)',
     set_shirt: 'Set Player Shirt Number',
     set_joined: 'Set Joined Date (YYYY-MM-DD)',
     set_notes: 'Set Player Notes'
   };
   const fieldByAction = {
-    set_name: { id: 'custom_name', label: 'Custom display name', value: mergedProfile.customName || '' },
+    set_name: { id: 'custom_name', label: 'Real name', value: mergedProfile.customName || '' },
+    set_nickname: { id: 'nickname', label: 'Nickname', value: mergedProfile.nickName || '' },
     set_face: { id: 'face_image_url', label: 'Face image URL', value: mergedProfile.faceImageUrl || mergedProfile.facePngUrl || '' },
     set_shirt: { id: 'shirt_number', label: 'Shirt number', value: mergedProfile.shirtNumber || '' },
     set_joined: { id: 'joined_discord_at', label: 'Joined date', value: mergedProfile.joinedDiscordAt || (targetMember?.joinedAt ? targetMember.joinedAt.toISOString().slice(0, 10) : '') },
@@ -463,7 +531,7 @@ async function handleAdminPlayerAction(interaction, selectedAction, userId) {
   if (!field) return false;
 
   const modal = new ModalBuilder()
-    .setCustomId(`admin_player_profile_modal:${selectedAction}:${userId}`)
+    .setCustomId(`admin_player_profile_modal:${selectedAction}:${userId}:${mode}`)
     .setTitle(modalTitles[selectedAction] || 'Update Player Profile');
 
   modal.addComponents(
@@ -482,26 +550,64 @@ async function handleAdminPlayerAction(interaction, selectedAction, userId) {
   return true;
 }
 
-function buildPlayerProfileSummary(config, guild, user, member, profile = {}) {
+function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mode = 'player') {
   const discordName = user?.tag || user?.username || profile.userId || 'Unknown';
   const displayName = getPlayerNameForUi(user, member, profile);
   const teamLabels = (profile.teams || []).map((team) => getTeamMeta(config, team).label).join(', ') || 'not set';
+  const coachTeamLabels = (profile.coachTeams || []).map((team) => getTeamMeta(config, team).label).join(', ') || 'not set';
   const roles = (profile.roles || []).map((roleId) => formatConfigRef(guild, 'role', roleId)).join(', ') || 'not set';
   const joined = profile.joinedDiscordAt || (member?.joinedAt ? member.joinedAt.toISOString().slice(0, 10) : 'unknown');
   const shirtNumber = profile.shirtNumber || 'not set';
   const faceImageUrl = profile.faceImageUrl || profile.facePngUrl || 'not set';
   const notes = profile.notes || 'none';
 
+  const managerLabel = mode === 'coach' ? 'Managing manager (coach profile)' : 'Managing player';
+
   return [
-    `Managing player: <@${user?.id || profile.userId}>`,
+    `${managerLabel}: <@${user?.id || profile.userId}>`,
     `• Discord: ${discordName}`,
-    `• Custom Name: ${displayName}`,
+    `• Real Name: ${displayName}`,
+    `• Nickname: ${profile.nickName || 'not set'}`,
     `• Shirt Number: ${shirtNumber}`,
     `• Face Image: ${faceImageUrl}`,
     `• Teams: ${teamLabels}`,
+    `• Teams Coaching: ${coachTeamLabels}`,
     `• Roles: ${roles}`,
     `• Joined Discord: ${joined}`,
     `• Notes: ${notes}`
+  ].join('\n');
+}
+
+function buildAttendanceStatsForUser(userId, config) {
+  const db = loadDb();
+  const events = Object.values(db.events || {});
+  const stats = {
+    practice: { attended: 0, missed: 0 },
+    match: { attended: 0, missed: 0 },
+    other: { attended: 0, missed: 0 }
+  };
+
+  for (const event of events) {
+    const response = event.responses?.[userId];
+    if (!response) continue;
+    const eventType = determineEventType(event, config);
+    if (response.status === 'yes') {
+      stats[eventType].attended += 1;
+    } else if (['pending_no', 'confirmed_no'].includes(response.status)) {
+      stats[eventType].missed += 1;
+    }
+  }
+
+  return stats;
+}
+
+function buildAttendanceStatsMessage(userId, config) {
+  const stats = buildAttendanceStatsForUser(userId, config);
+  return [
+    `Attendance stats for <@${userId}>`,
+    `• ${eventTypeLabel('practice')}: ✅ ${stats.practice.attended} | 🔴 ${stats.practice.missed}`,
+    `• ${eventTypeLabel('match')}: ✅ ${stats.match.attended} | 🔴 ${stats.match.missed}`,
+    `• ${eventTypeLabel('other')}: ✅ ${stats.other.attended} | 🔴 ${stats.other.missed}`
   ].join('\n');
 }
 
@@ -640,7 +746,15 @@ module.exports = {
         await interaction.update({
           content: 'Player Management: select a player to edit profile details.',
           embeds: [],
-          components: [createPlayerManagementRow(), createAdminBackButtonRow()]
+          components: [createPlayerManagementRow('player'), createAdminBackButtonRow()]
+        });
+        return;
+      }
+      if (interaction.customId === 'admin_back_coach_management') {
+        await interaction.update({
+          content: 'Coach Management: select a coach to edit profile details.',
+          embeds: [],
+          components: [createCoachManagementRow(loadConfig(), interaction.guild), createAdminBackButtonRow()]
         });
         return;
       }
@@ -694,8 +808,16 @@ module.exports = {
           await denyAdminAccess();
           return;
         }
-        const [, selectedAction, userId] = interaction.customId.split(':');
-        await handleAdminPlayerAction(interaction, selectedAction, userId);
+        const [, selectedAction, userId, mode = 'player'] = interaction.customId.split(':');
+        await handleAdminPlayerAction(interaction, selectedAction, userId, mode);
+        return;
+      }
+      if (interaction.customId.startsWith('admin_player_view_attendance:')) {
+        const [, userId] = interaction.customId.split(':');
+        await interaction.reply({
+          content: buildAttendanceStatsMessage(userId, loadConfig()),
+          flags: MessageFlags.Ephemeral
+        });
         return;
       }
 
@@ -778,6 +900,11 @@ module.exports = {
       if (parsed.action === 'attend_yes') {
         if (!hasRole(interaction.member, teamRoles.player)) {
           await interaction.reply({ content: 'Only players for this team can respond.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const existing = db.events[parsed.eventId]?.responses?.[interaction.user.id];
+        if (existing?.status === 'yes') {
+          await interaction.reply({ content: 'You are already marked as attending for this event.', flags: MessageFlags.Ephemeral });
           return;
         }
 
@@ -878,6 +1005,45 @@ module.exports = {
         return;
       }
 
+      if (interaction.customId === 'attendance_report_profile_select') {
+        const userId = interaction.values[0];
+        const member = await interaction.guild.members.fetch(userId).catch(() => null);
+        const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
+        const profile = upsertPlayerProfile(userId, { userId });
+        await interaction.update({
+          content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, profile, 'player'),
+          embeds: [],
+          components: [createAttendanceOnlyRow(userId)]
+        });
+        return;
+      }
+
+      if (interaction.customId === 'admin_coach_pick') {
+        const userId = interaction.values[0];
+        if (userId === 'none') {
+          await interaction.reply({ content: 'No coaches found yet. Assign coach roles first.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const member = await interaction.guild.members.fetch(userId).catch(() => null);
+        const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
+        const existing = getPlayerProfile(userId) || {};
+        const inferredCoachTeams = Object.keys(loadConfig().roles || {}).filter((teamKey) => {
+          const roleId = loadConfig().roles?.[teamKey]?.coach;
+          return roleId && roleId !== 'ROLE_ID' && member?.roles?.cache?.has(roleId);
+        });
+        const seeded = upsertPlayerProfile(userId, {
+          ...existing,
+          userId,
+          coachTeams: Array.from(new Set([...(existing.coachTeams || []), ...inferredCoachTeams]))
+        });
+        await interaction.update({
+          content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, seeded, 'coach'),
+          embeds: [],
+          components: [createPlayerProfileActionRow(userId, 'coach'), createPlayerProfileActionRow2(userId, 'coach'), createBackButtonRow('admin_back_coach_management')]
+        });
+        return;
+      }
+
       if (interaction.customId === 'admin_quick_action') {
         const action = interaction.values[0];
         if (action === 'team_management') {
@@ -902,16 +1068,16 @@ module.exports = {
           await interaction.update({
             content: 'Player Management: select a player to edit profile details.',
             embeds: [],
-            components: [createPlayerManagementRow(), createAdminBackButtonRow()]
+            components: [createPlayerManagementRow('player'), createAdminBackButtonRow()]
           });
           return;
         }
 
         if (action === 'coach_management') {
           await interaction.update({
-            content: 'Coach Management: select a coach to edit profile details (same workflow as player profiles).',
+            content: 'Coach Management: only users with coach roles are shown here.',
             embeds: [],
-            components: [createPlayerManagementRow(), createAdminBackButtonRow()]
+            components: [createCoachManagementRow(loadConfig(), interaction.guild), createAdminBackButtonRow()]
           });
           return;
         }
@@ -1016,6 +1182,37 @@ module.exports = {
           });
           return;
         }
+        if (action === 'set_bot_commands_chat') {
+          const row = new ActionRowBuilder().addComponents(
+            new ChannelSelectMenuBuilder()
+              .setCustomId('admin_set_channel:channels.botCommands:global')
+              .setPlaceholder('Choose Bot Commands channel')
+              .setChannelTypes(ChannelType.GuildText)
+              .setMinValues(1)
+              .setMaxValues(1)
+          );
+          await interaction.update({
+            content: 'Select the channel where /player and /coach commands must be used.',
+            embeds: [],
+            components: [row, createBackButtonRow('admin_back_google_tools')]
+          });
+          return;
+        }
+        if (action === 'event_type_rules') {
+          const rules = getEventTypeConfig(loadConfig());
+          await interaction.update({
+            content: [
+              'Event type rules:',
+              `• Auto Detect: **${rules.autoDetect ? 'ON' : 'OFF'}**`,
+              `• Practice Exact Names: ${rules.practiceExactNames.join(', ') || 'none'}`,
+              `• Match Exact Names: ${rules.matchExactNames.join(', ') || 'none'}`,
+              `• Other Exact Names: ${rules.otherExactNames.join(', ') || 'none'}`
+            ].join('\n'),
+            embeds: [],
+            components: [createEventTypeRulesRow(), createBackButtonRow('admin_back_google_tools')]
+          });
+          return;
+        }
 
         if (action === 'sync_google') {
           await logAdminUiAction(interaction, 'admin-config', 'sync-google');
@@ -1051,6 +1248,124 @@ module.exports = {
           content: 'Unknown admin action.',
           embeds: [],
           components: [interaction.customId === 'admin_google_tools_action' ? createGoogleToolsRow() : createTeamManagementRow(), createAdminBackButtonRow()]
+        });
+        return;
+      }
+
+      if (interaction.customId === 'admin_event_type_rules_action') {
+        const selected = interaction.values[0];
+        const latestConfig = loadConfig();
+
+        if (selected === 'toggle_auto_detect') {
+          updateConfig('eventTypes.autoDetect', !latestConfig.eventTypes?.autoDetect);
+          const updated = getEventTypeConfig(loadConfig());
+          await interaction.update({
+            content: `✅ Auto detect is now **${updated.autoDetect ? 'ON' : 'OFF'}**.`,
+            embeds: [],
+            components: [createEventTypeRulesRow(), createBackButtonRow('admin_back_google_tools')]
+          });
+          return;
+        }
+
+        if (['set_practice_exact', 'set_match_exact', 'set_other_exact'].includes(selected)) {
+          const modal = new ModalBuilder()
+            .setCustomId(`admin_event_type_exact_modal:${selected}`)
+            .setTitle('Set Exact Event Names');
+          const current = selected === 'set_practice_exact'
+            ? latestConfig.eventTypes?.practiceExactNames
+            : selected === 'set_match_exact'
+              ? latestConfig.eventTypes?.matchExactNames
+              : latestConfig.eventTypes?.otherExactNames;
+          modal.addComponents(
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId('exact_names')
+                .setLabel('Comma-separated exact names')
+                .setStyle(TextInputStyle.Paragraph)
+                .setRequired(true)
+                .setValue((current || []).join(', '))
+            )
+          );
+          await interaction.showModal(modal);
+          return;
+        }
+
+        if (selected === 'manual_set_event_type') {
+          const db = loadDb();
+          const options = Object.entries(db.events || {})
+            .map(([eventId, event]) => ({ eventId, ...event }))
+            .filter((event) => new Date(event.date).getTime() >= Date.now())
+            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+            .slice(0, 25)
+            .map((event) => ({
+              label: `${new Date(event.date).toLocaleDateString()} — ${event.title}`.slice(0, 100),
+              value: event.eventId
+            }));
+
+          if (!options.length) {
+            await interaction.update({
+              content: 'No upcoming events are available for manual type assignment.',
+              embeds: [],
+              components: [createEventTypeRulesRow(), createBackButtonRow('admin_back_google_tools')]
+            });
+            return;
+          }
+
+          await interaction.update({
+            content: 'Select an event to assign type.',
+            embeds: [],
+            components: [
+              new ActionRowBuilder().addComponents(
+                new StringSelectMenuBuilder()
+                  .setCustomId('admin_event_type_pick_event')
+                  .setPlaceholder('Pick event')
+                  .addOptions(options)
+              ),
+              createBackButtonRow('admin_back_google_tools')
+            ]
+          });
+          return;
+        }
+      }
+
+      if (interaction.customId === 'admin_event_type_pick_event') {
+        const eventId = interaction.values[0];
+        await interaction.update({
+          content: 'Choose event type:',
+          embeds: [],
+          components: [
+            new ActionRowBuilder().addComponents(
+              new StringSelectMenuBuilder()
+                .setCustomId(`admin_event_type_set:${eventId}`)
+                .setPlaceholder('Set type')
+                .addOptions([
+                  { label: 'Practice', value: 'practice' },
+                  { label: 'Match', value: 'match' },
+                  { label: 'Other', value: 'other' }
+                ])
+            ),
+            createBackButtonRow('admin_back_google_tools')
+          ]
+        });
+        return;
+      }
+
+      if (interaction.customId.startsWith('admin_event_type_set:')) {
+        const eventId = interaction.customId.split(':')[1];
+        const eventType = interaction.values[0];
+        const db = loadDb();
+        if (!db.events[eventId]) {
+          await interaction.reply({ content: 'Event not found.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        db.events[eventId].type = eventType;
+        db.events[eventId].updatedAt = new Date().toISOString();
+        saveDb(db);
+        await triggerGoogleSync(context);
+        await interaction.update({
+          content: `✅ Event type set to **${eventTypeLabel(eventType)}** for **${db.events[eventId].title}**.`,
+          embeds: [],
+          components: [createEventTypeRulesRow(), createBackButtonRow('admin_back_google_tools')]
         });
         return;
       }
@@ -1415,8 +1730,8 @@ module.exports = {
 
       if (interaction.customId.startsWith('admin_player_action:')) {
         const selectedAction = interaction.values[0];
-        const userId = interaction.customId.split(':')[1];
-        await handleAdminPlayerAction(interaction, selectedAction, userId);
+        const [, userId, mode = 'player'] = interaction.customId.split(':');
+        await handleAdminPlayerAction(interaction, selectedAction, userId, mode);
         return;
       }
 
@@ -1450,13 +1765,16 @@ module.exports = {
 
       if (interaction.customId.startsWith('admin_player_set_teams:')) {
         const userId = interaction.customId.split(':')[1];
-      const profile = upsertPlayerProfile(userId, { teams: interaction.values });
+      const mode = interaction.customId.split(':')[2] || 'player';
+      const profile = upsertPlayerProfile(userId, mode === 'coach'
+        ? { coachTeams: interaction.values }
+        : { teams: interaction.values });
       const targetMember = await interaction.guild.members.fetch(userId).catch(() => null);
       const targetUser = targetMember?.user || await interaction.client.users.fetch(userId).catch(() => null);
       await interaction.update({
-        content: buildPlayerProfileSummary(loadConfig(), interaction.guild, targetUser, targetMember, profile),
+        content: buildPlayerProfileSummary(loadConfig(), interaction.guild, targetUser, targetMember, profile, mode),
         embeds: [],
-        components: [createPlayerProfileActionRow(userId), createPlayerProfileActionRow2(userId), createBackButtonRow('admin_back_player_management')]
+        components: [createPlayerProfileActionRow(userId, mode), createPlayerProfileActionRow2(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')]
       });
       await triggerGoogleSync(context);
       return;
@@ -1585,11 +1903,12 @@ module.exports = {
       return;
     }
 
-    if (interaction.isUserSelectMenu() && interaction.customId === 'admin_player_select') {
+    if (interaction.isUserSelectMenu() && ['admin_player_select', 'admin_coach_select'].includes(interaction.customId)) {
       if (!hasAdminAccess(interaction.member, config)) {
         await denyAdminAccess();
         return;
       }
+      const mode = interaction.customId === 'admin_coach_select' ? 'coach' : 'player';
       const userId = interaction.values[0];
       const member = await interaction.guild.members.fetch(userId).catch(() => null);
       const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
@@ -1616,9 +1935,9 @@ module.exports = {
       });
 
       await interaction.update({
-        content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, seeded),
+        content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, seeded, mode),
         embeds: [],
-        components: [createPlayerProfileActionRow(userId), createPlayerProfileActionRow2(userId), createBackButtonRow('admin_back_player_management')]
+        components: [createPlayerProfileActionRow(userId, mode), createPlayerProfileActionRow2(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')]
       });
       await triggerGoogleSync(context);
       return;
@@ -1630,15 +1949,16 @@ module.exports = {
         return;
       }
       const userId = interaction.customId.split(':')[1];
+      const mode = interaction.customId.split(':')[2] || 'player';
       const member = await interaction.guild.members.fetch(userId).catch(() => null);
       if (member) {
         await member.roles.add(interaction.values).catch(() => null);
       }
       const profile = upsertPlayerProfile(userId, { roles: interaction.values });
       await interaction.update({
-        content: buildPlayerProfileSummary(loadConfig(), interaction.guild, member?.user, member, profile),
+        content: buildPlayerProfileSummary(loadConfig(), interaction.guild, member?.user, member, profile, mode),
         embeds: [],
-        components: [createPlayerProfileActionRow(userId), createPlayerProfileActionRow2(userId), createBackButtonRow('admin_back_player_management')]
+        components: [createPlayerProfileActionRow(userId, mode), createPlayerProfileActionRow2(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')]
       });
       await triggerGoogleSync(context);
       return;
@@ -1732,6 +2052,10 @@ module.exports = {
               deny: [PermissionFlagsBits.ViewChannel]
             },
             {
+              id: interaction.client.user.id,
+              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels]
+            },
+            {
               id: interaction.user.id,
               allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages]
             },
@@ -1782,6 +2106,33 @@ module.exports = {
       return;
     }
 
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('admin_event_type_exact_modal:')) {
+      if (!hasAdminAccess(interaction.member, config)) {
+        await denyAdminAccess();
+        return;
+      }
+      const action = interaction.customId.split(':')[1];
+      const names = interaction.fields.getTextInputValue('exact_names')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean);
+      if (action === 'set_practice_exact') updateConfig('eventTypes.practiceExactNames', names);
+      if (action === 'set_match_exact') updateConfig('eventTypes.matchExactNames', names);
+      if (action === 'set_other_exact') updateConfig('eventTypes.otherExactNames', names);
+
+      const rules = getEventTypeConfig(loadConfig());
+      await interaction.reply({
+        content: [
+          '✅ Event type exact-name rules updated.',
+          `• Practice: ${rules.practiceExactNames.join(', ') || 'none'}`,
+          `• Match: ${rules.matchExactNames.join(', ') || 'none'}`,
+          `• Other: ${rules.otherExactNames.join(', ') || 'none'}`
+        ].join('\n'),
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
     if (interaction.isModalSubmit() && interaction.customId === 'admin_set_calendar_modal') {
       if (!hasAdminAccess(interaction.member, config)) {
         await denyAdminAccess();
@@ -1815,11 +2166,12 @@ module.exports = {
         await denyAdminAccess();
         return;
       }
-      const [, action, userId] = interaction.customId.split(':');
+      const [, action, userId, mode = 'player'] = interaction.customId.split(':');
       const updates = {};
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       if (action === 'set_name') updates.customName = interaction.fields.getTextInputValue('custom_name').trim();
+      if (action === 'set_nickname') updates.nickName = interaction.fields.getTextInputValue('nickname').trim();
       if (action === 'set_face') {
         const faceImageUrl = interaction.fields.getTextInputValue('face_image_url').trim();
         if (faceImageUrl && !/^https?:\/\/\S+\.(png|webp)(?:\?\S*)?$/i.test(faceImageUrl)) {
@@ -1839,8 +2191,8 @@ module.exports = {
       await triggerGoogleSync(context);
 
       await interaction.editReply({
-        content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, profile),
-        components: [createPlayerProfileActionRow(userId), createPlayerProfileActionRow2(userId), createBackButtonRow('admin_back_player_management')],
+        content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, profile, mode),
+        components: [createPlayerProfileActionRow(userId, mode), createPlayerProfileActionRow2(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')],
       });
       return;
     }

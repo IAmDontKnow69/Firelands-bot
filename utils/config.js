@@ -30,6 +30,7 @@ function defaultConfig() {
       logs: process.env.LOGS_CHANNEL_ID || '',
       ticket: process.env.TICKET_CHANNEL_ID || '',
       admin: process.env.ADMIN_LOGS_CHANNEL_ID || '',
+      botCommands: process.env.BOT_COMMANDS_CHANNEL_ID || '',
       teamChats: {
         mens: process.env.MENS_TEAM_CHANNEL_ID || '',
         womens: process.env.WOMENS_TEAM_CHANNEL_ID || ''
@@ -58,6 +59,14 @@ function defaultConfig() {
         captainEmoji: process.env.WOMENS_CAPTAIN_EMOJI || '🅒',
         eventNamePhrases: ['FU Women', "Women's practice"]
       }
+    },
+    eventTypes: {
+      autoDetect: true,
+      practiceExactNames: ['Practice'],
+      matchExactNames: [],
+      otherExactNames: [],
+      practiceKeywords: ['practice', 'training', 'session'],
+      matchKeywords: ['match', 'game', 'fixture']
     },
     googleSync: {
       enabled: (process.env.GOOGLE_SYNC_ENABLED || 'false').toLowerCase() === 'true',
@@ -135,6 +144,10 @@ function ensureConfig() {
       }
     },
     teams: mergedTeams,
+    eventTypes: {
+      ...(base.eventTypes || {}),
+      ...(current.eventTypes || {})
+    },
     googleSync: {
       ...base.googleSync,
       ...(current.googleSync || {})

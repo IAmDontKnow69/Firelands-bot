@@ -1,17 +1,11 @@
 const { SlashCommandBuilder, EmbedBuilder, MessageFlags } = require('discord.js');
 const { loadDb } = require('../utils/database');
+const { determineEventType, eventTypeLabel } = require('../utils/eventType');
 
 function getPlayerTeams(member, teamRoles) {
   return Object.entries(teamRoles)
     .filter(([, roles]) => member.roles.cache.has(roles.player))
     .map(([team]) => team);
-}
-
-function classifyEvent(title = '') {
-  const lower = title.toLowerCase();
-  if (lower.includes('match') || lower.includes('game') || lower.includes('fixture')) return 'Match';
-  if (lower.includes('train') || lower.includes('practice') || lower.includes('session')) return 'Training';
-  return 'Event';
 }
 
 module.exports = {
@@ -37,7 +31,7 @@ module.exports = {
       .slice(0, 12);
 
     const lines = events.length
-      ? events.map((event) => `• **${classifyEvent(event.title)}** — ${event.title} (${event.team})\n  ${new Date(event.date).toLocaleString()}`)
+      ? events.map((event) => `• **${eventTypeLabel(determineEventType(event, config))}** — ${event.title} (${event.team})\n  ${new Date(event.date).toLocaleString()}`)
       : ['No upcoming sessions found for your teams.'];
 
     const embed = new EmbedBuilder()
