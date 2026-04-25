@@ -53,6 +53,12 @@ module.exports = {
 
   async execute(interaction, context) {
     const config = context.getConfig();
+    const requiredRoleId = config.bot?.coachCommandRoleId || '';
+    if (requiredRoleId && !interaction.member.roles.cache.has(requiredRoleId)) {
+      await interaction.reply({ content: `You need <@&${requiredRoleId}> to use /coach.`, flags: MessageFlags.Ephemeral });
+      return;
+    }
+
     const coachTeams = getCoachTeams(interaction.member, config.roles);
 
     if (!coachTeams.length) {

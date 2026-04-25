@@ -10,6 +10,8 @@ function defaultConfig() {
       clientId: process.env.DISCORD_CLIENT_ID || '',
       guildId: process.env.DISCORD_GUILD_ID || '',
       adminRoleId: process.env.ADMIN_ROLE_ID || '',
+      playerCommandRoleId: process.env.PLAYER_COMMAND_ROLE_ID || '',
+      coachCommandRoleId: process.env.COACH_COMMAND_ROLE_ID || '',
       calendarId: process.env.CALENDAR_ID || 'hello@firelandsunited.com',
       calendarCredentialsPath: process.env.CALENDAR_CREDENTIALS_PATH || process.env.GOOGLE_APPLICATION_CREDENTIALS || 'credentials.json'
     },
@@ -62,7 +64,9 @@ function defaultConfig() {
       womensFixturesRange: process.env.GOOGLE_WOMENS_FIXTURES_RANGE || 'Womens Fixtures!A2:F',
       attendanceRange: process.env.GOOGLE_ATTENDANCE_RANGE || 'Attendance!A2:F',
       configRange: process.env.GOOGLE_CONFIG_RANGE || 'Config!A2:C',
-      playersRange: process.env.GOOGLE_PLAYERS_RANGE || 'Players!A2:H'
+      configIdsRange: process.env.GOOGLE_CONFIG_IDS_RANGE || 'Config IDs!A2:C',
+      playersRange: process.env.GOOGLE_PLAYERS_RANGE || 'Players!A2:I',
+      autoFullSync: (process.env.GOOGLE_AUTO_FULL_SYNC || 'false').toLowerCase() === 'true'
     }
   };
 }

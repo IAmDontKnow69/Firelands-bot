@@ -341,6 +341,7 @@ function createPlayerProfileActionRow(userId) {
       .setPlaceholder('Player profile actions')
       .addOptions([
         { label: 'Update Display Name', value: 'set_name', description: 'Set custom name used in bot UI/chats' },
+        { label: 'Update Face PNG URL', value: 'set_face', description: 'Set a PNG URL for player face image' },
         { label: 'Update Shirt Number', value: 'set_shirt', description: 'Set player shirt number' },
         { label: 'Update Teams', value: 'set_teams', description: 'Set teams assigned in player profile' },
         { label: 'Assign Discord Roles', value: 'assign_roles', description: 'Assign additional roles to this user' },
@@ -383,6 +384,7 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}) {
   const roles = (profile.roles || []).map((roleId) => formatConfigRef(guild, 'role', roleId)).join(', ') || 'not set';
   const joined = profile.joinedDiscordAt || (member?.joinedAt ? member.joinedAt.toISOString().slice(0, 10) : 'unknown');
   const shirtNumber = profile.shirtNumber || 'not set';
+  const facePngUrl = profile.facePngUrl || 'not set';
   const notes = profile.notes || 'none';
 
   return [
@@ -390,6 +392,7 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}) {
     `• Discord: ${discordName}`,
     `• Custom Name: ${displayName}`,
     `• Shirt Number: ${shirtNumber}`,
+    `• Face PNG: ${facePngUrl}`,
     `• Teams: ${teamLabels}`,
     `• Roles: ${roles}`,
     `• Joined Discord: ${joined}`,
@@ -1263,12 +1266,14 @@ module.exports = {
 
         const modalTitles = {
           set_name: 'Set Player Display Name',
+          set_face: 'Set Player Face PNG URL',
           set_shirt: 'Set Player Shirt Number',
           set_joined: 'Set Joined Date (YYYY-MM-DD)',
           set_notes: 'Set Player Notes'
         };
         const fieldByAction = {
           set_name: { id: 'custom_name', label: 'Custom display name', value: mergedProfile.customName || '' },
+          set_face: { id: 'face_png_url', label: 'Face PNG URL', value: mergedProfile.facePngUrl || '' },
           set_shirt: { id: 'shirt_number', label: 'Shirt number', value: mergedProfile.shirtNumber || '' },
           set_joined: { id: 'joined_discord_at', label: 'Joined date', value: mergedProfile.joinedDiscordAt || (targetMember?.joinedAt ? targetMember.joinedAt.toISOString().slice(0, 10) : '') },
           set_notes: { id: 'notes', label: 'Profile notes', value: mergedProfile.notes || '' }
@@ -1286,9 +1291,9 @@ module.exports = {
               .setCustomId(field.id)
               .setLabel(field.label)
               .setStyle(selectedAction === 'set_notes' ? TextInputStyle.Paragraph : TextInputStyle.Short)
-              .setRequired(selectedAction !== 'set_notes')
+              .setRequired(!['set_notes', 'set_face'].includes(selectedAction))
               .setValue(field.value)
-              .setMaxLength(selectedAction === 'set_notes' ? 300 : 80)
+              .setMaxLength(selectedAction === 'set_notes' ? 300 : 200)
           )
         );
 
@@ -1326,16 +1331,16 @@ module.exports = {
 
       if (interaction.customId.startsWith('admin_player_set_teams:')) {
         const userId = interaction.customId.split(':')[1];
-        const profile = upsertPlayerProfile(userId, { teams: interaction.values });
-        await triggerGoogleSync(context);
-        const targetMember = await interaction.guild.members.fetch(userId).catch(() => null);
-        const targetUser = targetMember?.user || await interaction.client.users.fetch(userId).catch(() => null);
-        await interaction.update({
-          content: buildPlayerProfileSummary(loadConfig(), interaction.guild, targetUser, targetMember, profile),
-          embeds: [],
-          components: [createPlayerProfileActionRow(userId), createBackButtonRow('admin_back_player_management')]
-        });
-        return;
+      const profile = upsertPlayerProfile(userId, { teams: interaction.values });
+      const targetMember = await interaction.guild.members.fetch(userId).catch(() => null);
+      const targetUser = targetMember?.user || await interaction.client.users.fetch(userId).catch(() => null);
+      await interaction.update({
+        content: buildPlayerProfileSummary(loadConfig(), interaction.guild, targetUser, targetMember, profile),
+        embeds: [],
+        components: [createPlayerProfileActionRow(userId), createBackButtonRow('admin_back_player_management')]
+      });
+      await triggerGoogleSync(context);
+      return;
       }
 
       if (interaction.customId.startsWith('admin_force_attendance_window:')) {
@@ -1477,15 +1482,16 @@ module.exports = {
         teams: existing.teams || [],
         roles: existing.roles || (member ? Array.from(member.roles.cache.keys()).filter((id) => id !== interaction.guild.id) : []),
         joinedDiscordAt: existing.joinedDiscordAt || (member?.joinedAt ? member.joinedAt.toISOString().slice(0, 10) : ''),
+        facePngUrl: existing.facePngUrl || '',
         notes: existing.notes || ''
       });
 
-      await triggerGoogleSync(context);
       await interaction.update({
         content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, seeded),
         embeds: [],
         components: [createPlayerProfileActionRow(userId), createBackButtonRow('admin_back_player_management')]
       });
+      await triggerGoogleSync(context);
       return;
     }
 
@@ -1500,12 +1506,12 @@ module.exports = {
         await member.roles.add(interaction.values).catch(() => null);
       }
       const profile = upsertPlayerProfile(userId, { roles: interaction.values });
-      await triggerGoogleSync(context);
       await interaction.update({
         content: buildPlayerProfileSummary(loadConfig(), interaction.guild, member?.user, member, profile),
         embeds: [],
         components: [createPlayerProfileActionRow(userId), createBackButtonRow('admin_back_player_management')]
       });
+      await triggerGoogleSync(context);
       return;
     }
 
@@ -1682,6 +1688,14 @@ module.exports = {
       const updates = {};
 
       if (action === 'set_name') updates.customName = interaction.fields.getTextInputValue('custom_name').trim();
+      if (action === 'set_face') {
+        const facePngUrl = interaction.fields.getTextInputValue('face_png_url').trim();
+        if (facePngUrl && !/^https?:\/\/\S+\.png(?:\?\S*)?$/i.test(facePngUrl)) {
+          await interaction.reply({ content: 'Face URL must be a direct PNG link (ending in .png).', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        updates.facePngUrl = facePngUrl;
+      }
       if (action === 'set_shirt') updates.shirtNumber = interaction.fields.getTextInputValue('shirt_number').trim();
       if (action === 'set_joined') updates.joinedDiscordAt = interaction.fields.getTextInputValue('joined_discord_at').trim();
       if (action === 'set_notes') updates.notes = interaction.fields.getTextInputValue('notes').trim();

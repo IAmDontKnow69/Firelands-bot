@@ -6,6 +6,10 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  StringSelectMenuBuilder,
+  RoleSelectMenuBuilder,
+  ChannelSelectMenuBuilder,
+  ChannelType,
   REST,
   Routes,
   MessageFlags
@@ -22,8 +26,8 @@ const interactionHandler = require('./events/interactionCreate');
 const { fetchUpcomingEvents } = require('./utils/googleCalendar');
 const { loadDb, upsertEvent, setEventMessageId } = require('./utils/database');
 const { startReminderJobs } = require('./utils/reminders');
-const { ensureConfig, loadConfig } = require('./utils/config');
-const { syncAllToSheet, appendCommandLogRow } = require('./utils/googleSheetsSync');
+const { ensureConfig, loadConfig, updateConfig } = require('./utils/config');
+const { syncAllToSheet, syncConfigOnlyToSheet, appendCommandLogRow } = require('./utils/googleSheetsSync');
 
 ensureConfig();
 
@@ -52,6 +56,69 @@ client.commands.set(coachCommand.data.name, coachCommand);
 client.commands.set(adminCommand.data.name, adminCommand);
 client.commands.set(confirmCommand.data.name, confirmCommand);
 const missingAttendanceConfigWarnings = new Set();
+
+function buildSetupSummary(config) {
+  const playerRole = config.bot?.playerCommandRoleId ? `<@&${config.bot.playerCommandRoleId}>` : 'not set';
+  const coachRole = config.bot?.coachCommandRoleId ? `<@&${config.bot.coachCommandRoleId}>` : 'not set';
+  const adminRole = config.bot?.adminRoleId ? `<@&${config.bot.adminRoleId}>` : 'not set';
+  const adminChannel = config.channels?.admin ? `<#${config.channels.admin}>` : 'not set';
+  return [
+    '⚙️ **Firelands Setup Wizard**',
+    'Choose command-access roles and admin logs channel below.',
+    '',
+    `• /player access role: ${playerRole}`,
+    `• /coach access role: ${coachRole}`,
+    `• /admin access role: ${adminRole}`,
+    `• Admin logs channel: ${adminChannel}`,
+    '',
+    'Then choose Google Sheets mode:',
+    '• **Fresh Sheet** = clears/rebuilds managed ranges.',
+    '• **Sync Config Only** = keeps existing sheet data and updates config/config IDs only.'
+  ].join('\n');
+}
+
+function createSetupRows() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new RoleSelectMenuBuilder()
+        .setCustomId('setup_role_player')
+        .setPlaceholder('Select role for /player access')
+        .setMinValues(1)
+        .setMaxValues(1)
+    ),
+    new ActionRowBuilder().addComponents(
+      new RoleSelectMenuBuilder()
+        .setCustomId('setup_role_coach')
+        .setPlaceholder('Select role for /coach access')
+        .setMinValues(1)
+        .setMaxValues(1)
+    ),
+    new ActionRowBuilder().addComponents(
+      new RoleSelectMenuBuilder()
+        .setCustomId('setup_role_admin')
+        .setPlaceholder('Select role for /admin access')
+        .setMinValues(1)
+        .setMaxValues(1)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ChannelSelectMenuBuilder()
+        .setCustomId('setup_channel_admin')
+        .setPlaceholder('Select admin logs channel')
+        .addChannelTypes(ChannelType.GuildText)
+        .setMinValues(1)
+        .setMaxValues(1)
+    ),
+    new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId('setup_sheet_mode')
+        .setPlaceholder('Choose Google Sheets action')
+        .addOptions([
+          { label: 'Fresh Sheet (wipe/rebuild)', value: 'fresh' },
+          { label: 'Sync Config Only (preserve data)', value: 'config_only' }
+        ])
+    )
+  ];
+}
 
 function getConfig() {
   return loadConfig();
@@ -171,6 +238,60 @@ function findGuildSetupChannel(guild) {
     .first();
 
   return candidate || null;
+}
+
+async function postSetupWizardToGuild(guild) {
+  const setupChannel = findGuildSetupChannel(guild);
+  if (!setupChannel) return;
+  await setupChannel.send({
+    content: buildSetupSummary(getConfig()),
+    components: createSetupRows()
+  }).catch(() => null);
+}
+
+async function handleSetupInteraction(interaction) {
+  if (!interaction.isStringSelectMenu() && !interaction.isRoleSelectMenu() && !interaction.isChannelSelectMenu()) return false;
+  if (!String(interaction.customId || '').startsWith('setup_')) return false;
+
+  if (interaction.customId === 'setup_role_player') updateConfig('bot.playerCommandRoleId', interaction.values[0]);
+  if (interaction.customId === 'setup_role_coach') updateConfig('bot.coachCommandRoleId', interaction.values[0]);
+  if (interaction.customId === 'setup_role_admin') updateConfig('bot.adminRoleId', interaction.values[0]);
+  if (interaction.customId === 'setup_channel_admin') updateConfig('channels.admin', interaction.values[0]);
+
+  if (interaction.customId === 'setup_sheet_mode') {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    updateConfig('googleSync.enabled', true);
+    const config = getConfig();
+    try {
+      if (interaction.values[0] === 'fresh') {
+        const result = await syncAllToSheet(config, loadDb());
+        await interaction.editReply(result.ok
+          ? `✅ Fresh sheet sync completed (\`${result.spreadsheetId}\`).`
+          : 'Could not sync because spreadsheet ID is not configured.');
+      } else {
+        const result = await syncConfigOnlyToSheet(config);
+        await interaction.editReply(result.ok
+          ? `✅ Config-only sync completed (\`${result.spreadsheetId}\`). Existing sheet data was preserved.`
+          : 'Could not sync because spreadsheet ID is not configured.');
+      }
+    } catch (error) {
+      await interaction.editReply(`❌ Setup sheet action failed: ${error.message}`);
+    }
+
+    if (interaction.message?.editable) {
+      await interaction.message.edit({
+        content: buildSetupSummary(getConfig()),
+        components: createSetupRows()
+      }).catch(() => null);
+    }
+    return true;
+  }
+
+  await interaction.update({
+    content: buildSetupSummary(getConfig()),
+    components: createSetupRows()
+  });
+  return true;
 }
 
 function isWithinDays(dateValue, days) {
@@ -304,7 +425,7 @@ async function syncCalendarEvents() {
       console.log(`Posted new event: ${syncedEvent.title} (${event.id})`);
     }
 
-    if (config.googleSync?.enabled) {
+    if (config.googleSync?.enabled && config.googleSync?.autoFullSync) {
       const latestDb = loadDb();
       await syncAllToSheet(config, latestDb);
     }
@@ -316,6 +437,8 @@ async function syncCalendarEvents() {
 
 client.on('interactionCreate', async (interaction) => {
   try {
+    if (await handleSetupInteraction(interaction)) return;
+
     if (interaction.isChatInputCommand()) {
       const command = client.commands.get(interaction.commandName);
       if (!command) return;
@@ -330,8 +453,13 @@ client.on('interactionCreate', async (interaction) => {
     console.error('Interaction handling failed:', error);
     await sendLog(`❌ Interaction failed: ${error.message}\n${summarizeInteractionContext(interaction)}`);
 
-    if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-      await interaction.reply({ content: `Something went wrong. Error logged to admin chat.\nReason: ${error.message}`, flags: MessageFlags.Ephemeral });
+    const isUnknownInteraction = error?.code === 10062;
+    if (!isUnknownInteraction && interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
+      try {
+        await interaction.reply({ content: `Something went wrong. Error logged to admin chat.\nReason: ${error.message}`, flags: MessageFlags.Ephemeral });
+      } catch (replyError) {
+        console.error('Failed to send interaction error reply:', replyError);
+      }
     }
   }
 });
@@ -341,6 +469,9 @@ client.once('clientReady', async () => {
 
   await registerSlashCommands();
   await syncCalendarEvents();
+  for (const guild of client.guilds.cache.values()) {
+    await postSetupWizardToGuild(guild);
+  }
 
   cron.schedule('*/5 * * * *', async () => {
     await syncCalendarEvents();
@@ -350,22 +481,7 @@ client.once('clientReady', async () => {
 });
 
 client.on('guildCreate', async (guild) => {
-  const setupChannel = findGuildSetupChannel(guild);
-  if (!setupChannel) return;
-
-  const setupMessage = [
-    '👋 Thanks for inviting Firelands Bot!',
-    '',
-    'To finish setup, please configure these two fields:',
-    '1) **Admin chat channel** (used for bot logs/admin notices)',
-    '2) **Admin role** (only this role can use `/admin` and `/admin-config` once set)',
-    '',
-    'Run:',
-    '`/admin-config set field:admin_channel_id channel:<your admin channel>`',
-    '`/admin-config set field:admin_role_id role:<your admin role>`'
-  ].join('\n');
-
-  await setupChannel.send(setupMessage).catch(() => null);
+  await postSetupWizardToGuild(guild);
 });
 
 client.login(TOKEN);
