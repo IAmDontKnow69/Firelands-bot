@@ -222,11 +222,18 @@ async function postEventMessage(event) {
 async function syncCalendarEvents() {
   try {
     const config = getConfig();
+    const teamMatchers = Object.fromEntries(
+      Object.entries(config.teams || {}).map(([teamKey, meta]) => [
+        teamKey,
+        Array.isArray(meta?.eventNamePhrases) ? meta.eventNamePhrases : []
+      ])
+    );
 
     const calendarEvents = await fetchUpcomingEvents({
       calendarId: config.bot.calendarId || 'hello@firelandsunited.com',
       daysAhead: null,
-      credentialsPath: config.bot.calendarCredentialsPath || ''
+      credentialsPath: config.bot.calendarCredentialsPath || '',
+      teamMatchers
     });
 
     const db = loadDb();

@@ -211,22 +211,13 @@ function flattenConfig(config = {}, prefix = '') {
 }
 
 function buildConfigIdRows(config = {}) {
-  const rows = [];
-  const pushObjectRows = (obj = {}, prefix = '') => {
-    for (const [key, value] of Object.entries(obj)) {
-      const path = prefix ? `${prefix}.${key}` : key;
-      if (value && typeof value === 'object' && !Array.isArray(value)) {
-        pushObjectRows(value, path);
-        continue;
-      }
-
-      rows.push([path, String(value ?? ''), toIso()]);
-    }
-  };
-
-  pushObjectRows(config.roles || {}, 'roles');
-  pushObjectRows(config.channels || {}, 'channels');
-  return rows;
+  return flattenConfig(config).filter(([key]) => {
+    if (key.startsWith('roles.') || key.startsWith('channels.')) return true;
+    if (key.startsWith('teams.')) return true;
+    if (key === 'bot.adminRoleId' || key === 'bot.calendarId') return true;
+    if (key.startsWith('googleSync.')) return true;
+    return false;
+  });
 }
 
 async function writeRange(sheets, spreadsheetId, range, values) {

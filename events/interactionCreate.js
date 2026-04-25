@@ -13,7 +13,7 @@ const {
   EmbedBuilder,
   MessageFlags
 } = require('discord.js');
-const { loadDb, saveDb, setResponse, setAbsenceTicket, deleteAbsenceTicket } = require('../utils/database');
+const { loadDb, saveDb, setResponse, setAbsenceTicket, deleteAbsenceTicket, setEventMessageId } = require('../utils/database');
 const { loadConfig, updateConfig } = require('../utils/config');
 const { fetchCalendarEvents } = require('../utils/googleCalendar');
 const { syncAllToSheet, appendCommandLogRow } = require('../utils/googleSheetsSync');
@@ -105,7 +105,11 @@ function createTeamConfigActionRow(config, team) {
         { label: 'Set Staff Room ID', value: 'staff_room', description: `Set ${label} staff room channel` },
         { label: 'Set Private Chat Category', value: 'private_category', description: `Set category for attendance chats` },
         { label: 'Set Team Emoji', value: 'team_emoji', description: `Set emoji for ${label}` },
-        { label: 'Set Fixture Team', value: 'fixture_team', description: `Assign a fixture to ${label}` }
+        { label: 'Set Team Name', value: 'team_name', description: `Rename ${label}` },
+        { label: 'Set Event Name Phrases', value: 'event_name_phrases', description: `Set phrase matching for ${label}` },
+        { label: 'Set Fixture Team', value: 'fixture_team', description: `Assign a fixture to ${label}` },
+        { label: 'Auto-Assign Fixtures by Name', value: 'auto_assign_fixtures', description: `Match fixtures to ${label} by phrase` },
+        { label: 'Force Send Attendance', value: 'force_send_attendance', description: `Post attendance prompts for ${label} fixtures` }
       ])
   );
 }
@@ -144,8 +148,57 @@ function getTeamConfigSummary(config, guild, team) {
     `• Team Chat: ${formatConfigRef(guild, 'channel', config.channels?.teamChats?.[team])}`,
     `• Staff Room: ${formatConfigRef(guild, 'channel', config.channels?.staffRooms?.[team])}`,
     `• Private Chat Category: ${formatConfigRef(guild, 'channel', config.channels?.privateChatCategories?.[team])}`,
-    `• Team Emoji: ${meta.emoji}`
+    `• Team Emoji: ${meta.emoji}`,
+    `• Event Name Phrases: ${(config.teams?.[team]?.eventNamePhrases || []).join(', ') || 'not set'}`
   ].join('\n');
+}
+
+function buildTeamMatchers(config = {}) {
+  return Object.fromEntries(
+    Object.entries(config.teams || {}).map(([teamKey, meta]) => [
+      teamKey,
+      Array.isArray(meta?.eventNamePhrases) ? meta.eventNamePhrases : []
+    ])
+  );
+}
+
+const pendingFixtureCorrections = new Map();
+
+function createForceAttendanceWindowRow(team) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`admin_force_attendance_window:${team}`)
+      .setPlaceholder('Choose force-send window')
+      .addOptions([
+        { label: 'Next event only', value: 'next_event', description: 'Send attendance for the next fixture only' },
+        { label: 'Next 14 days', value: 'next_14_days', description: 'Send all fixtures in the next 14 days' },
+        { label: 'Next 30 days', value: 'next_30_days', description: 'Send all fixtures in the next 30 days' }
+      ])
+  );
+}
+
+async function postAttendancePromptForEvent(interaction, event, config) {
+  const teamChatChannelId = config.channels.teamChats?.[event.team];
+  const eventsChannelId = teamChatChannelId || config.channels.events;
+  if (!eventsChannelId) throw new Error('Events channel ID is not configured.');
+
+  const channel = await interaction.client.channels.fetch(eventsChannelId);
+  if (!channel || !channel.isTextBased()) throw new Error('Events channel not found or not text based.');
+
+  const teamRoleId = config.roles?.[event.team]?.player;
+  if (!teamRoleId || teamRoleId === 'ROLE_ID') throw new Error(`Player role is not configured for ${event.team}.`);
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`attend_yes:${event.id}`).setLabel('🟢 Attending').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`attend_no:${event.id}`).setLabel('🔴 Not Attending').setStyle(ButtonStyle.Danger)
+  );
+
+  const message = await channel.send({
+    content: `<@&${teamRoleId}>\n📅 ${event.title}\n🕒 ${new Date(event.date).toLocaleString()}\nPlease mark your availability now.`,
+    components: [row]
+  });
+
+  setEventMessageId(event.id, message.id);
 }
 
 function buildMonthGroupedEventLines(events, db, guild, teamRolesMap, config) {
@@ -625,7 +678,8 @@ module.exports = {
             const events = await fetchCalendarEvents({
               calendarId: config.bot.calendarId,
               daysAhead: null,
-              credentialsPath: config.bot.calendarCredentialsPath || ''
+              credentialsPath: config.bot.calendarCredentialsPath || '',
+              teamMatchers: buildTeamMatchers(config)
             });
 
             const lines = buildMonthGroupedEventLines(events, db, interaction.guild, teamRolesMap, config);
@@ -774,6 +828,42 @@ module.exports = {
           return;
         }
 
+        if (selectedAction === 'team_name') {
+          const modal = new ModalBuilder()
+            .setCustomId(`admin_set_team_name_modal:${team}`)
+            .setTitle(`Set ${teamLabel} Name`);
+
+          const nameInput = new TextInputBuilder()
+            .setCustomId('team_name')
+            .setLabel('Team display name')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setValue(getTeamMeta(config, team).label || team)
+            .setMaxLength(80);
+
+          modal.addComponents(new ActionRowBuilder().addComponents(nameInput));
+          await interaction.showModal(modal);
+          return;
+        }
+
+        if (selectedAction === 'event_name_phrases') {
+          const modal = new ModalBuilder()
+            .setCustomId(`admin_set_event_phrases_modal:${team}`)
+            .setTitle(`Set ${teamLabel} Event Phrases`);
+
+          const phrasesInput = new TextInputBuilder()
+            .setCustomId('phrases')
+            .setLabel('Comma-separated phrases')
+            .setStyle(TextInputStyle.Paragraph)
+            .setRequired(true)
+            .setValue((config.teams?.[team]?.eventNamePhrases || []).join(', '))
+            .setMaxLength(500);
+
+          modal.addComponents(new ActionRowBuilder().addComponents(phrasesInput));
+          await interaction.showModal(modal);
+          return;
+        }
+
         if (selectedAction === 'fixture_team') {
           const db = loadDb();
           const upcomingEvents = Object.entries(db.events)
@@ -814,6 +904,76 @@ module.exports = {
           });
           return;
         }
+
+        if (selectedAction === 'auto_assign_fixtures') {
+          const db = loadDb();
+          const teamMatchers = buildTeamMatchers(config);
+          const assigned = [];
+
+          for (const [eventId, event] of Object.entries(db.events || {})) {
+            const normalizedTitle = String(event.title || '').toLowerCase();
+            const matched = Object.entries(teamMatchers).find(([, phrases]) =>
+              (phrases || []).some((phrase) => phrase && normalizedTitle.includes(String(phrase).toLowerCase()))
+            );
+            if (!matched) continue;
+
+            const [matchedTeam] = matched;
+            if (event.team !== matchedTeam) {
+              db.events[eventId].team = matchedTeam;
+              assigned.push({ eventId, title: event.title, date: event.date, team: matchedTeam });
+            }
+          }
+
+          saveDb(db);
+          await triggerGoogleSync(context);
+
+          const preview = assigned
+            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+            .slice(0, 25);
+
+          if (!preview.length) {
+            await interaction.update({
+              content: 'No fixtures changed from phrase matching. Update event phrases if needed.',
+              embeds: [],
+              components: [createTeamConfigActionRow(loadConfig(), team), createBackButtonRow('admin_back_team_management')]
+            });
+            return;
+          }
+
+          pendingFixtureCorrections.set(interaction.user.id, preview.map((item) => item.eventId));
+
+          const correctionRow = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId(`admin_fixture_correction_dates:${team}`)
+              .setPlaceholder('Select any wrong fixture dates (optional)')
+              .setMinValues(1)
+              .setMaxValues(preview.length)
+              .addOptions(preview.map((item) => ({
+                label: `${new Date(item.date).toLocaleDateString()} — ${item.title}`.slice(0, 100),
+                value: item.eventId,
+                description: `Assigned to ${getTeamMeta(config, item.team).label}`.slice(0, 100)
+              })))
+          );
+
+          await interaction.update({
+            content: [
+              `✅ Auto-assigned ${assigned.length} fixture(s) by event name phrase.`,
+              'Review the list below. If any dates are wrong, select them next.'
+            ].join('\n'),
+            embeds: [],
+            components: [correctionRow, createBackButtonRow(`admin_back_team_config:${team}`)]
+          });
+          return;
+        }
+
+        if (selectedAction === 'force_send_attendance') {
+          await interaction.update({
+            content: `Choose how far ahead to force-send attendance for **${teamLabel}**.`,
+            embeds: [],
+            components: [createForceAttendanceWindowRow(team), createBackButtonRow(`admin_back_team_config:${team}`)]
+          });
+          return;
+        }
       }
 
       if (interaction.customId.startsWith('admin_set_fixture_team:')) {
@@ -833,11 +993,80 @@ module.exports = {
 
         target.team = team;
         saveDb(db);
+        await triggerGoogleSync(context);
 
         await interaction.update({
           content: `✅ Assigned **${target.title}** to **${getTeamMeta(config, team).label}**.`,
           embeds: [],
           components: [createTeamConfigActionRow(config, team), createBackButtonRow('admin_back_team_management')]
+        });
+        return;
+      }
+
+      if (interaction.customId.startsWith('admin_force_attendance_window:')) {
+        const team = interaction.customId.split(':')[1];
+        const window = interaction.values[0];
+        const db = loadDb();
+        const now = Date.now();
+        const maxDays = window === 'next_event' ? 365 : (window === 'next_30_days' ? 30 : 14);
+        const candidates = Object.entries(db.events || {})
+          .map(([id, event]) => ({ id, ...event }))
+          .filter((event) => event.team === team && new Date(event.date).getTime() >= now && !event.discordMessageId)
+          .filter((event) => (new Date(event.date).getTime() - now) <= (maxDays * 24 * 60 * 60 * 1000))
+          .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+        const targets = window === 'next_event' ? candidates.slice(0, 1) : candidates;
+        let sent = 0;
+        const latestConfig = loadConfig();
+
+        for (const event of targets) {
+          try {
+            await postAttendancePromptForEvent(interaction, event, latestConfig);
+            sent += 1;
+          } catch (error) {
+            await context.sendLog(`⚠️ Failed force-send for ${event.title}: ${error.message}`);
+          }
+        }
+
+        await interaction.update({
+          content: `✅ Force-send complete for **${getTeamMeta(latestConfig, team).label}**. Sent ${sent}/${targets.length} attendance prompt(s).`,
+          embeds: [],
+          components: [createTeamConfigActionRow(latestConfig, team), createBackButtonRow('admin_back_team_management')]
+        });
+        return;
+      }
+
+      if (interaction.customId.startsWith('admin_fixture_correction_dates:')) {
+        const team = interaction.customId.split(':')[1];
+        const selectedEventIds = interaction.values;
+        pendingFixtureCorrections.set(interaction.user.id, selectedEventIds);
+
+        const row = createTeamPickerRow(loadConfig(), `admin_fixture_correction_team:${team}`, 'Pick the team for selected dates');
+        await interaction.update({
+          content: 'Select which team the chosen wrong dates should belong to.',
+          embeds: [],
+          components: [row, createBackButtonRow(`admin_back_team_config:${team}`)]
+        });
+        return;
+      }
+
+      if (interaction.customId.startsWith('admin_fixture_correction_team:')) {
+        const sourceTeam = interaction.customId.split(':')[1];
+        const destinationTeam = interaction.values[0];
+        const eventIds = pendingFixtureCorrections.get(interaction.user.id) || [];
+        const db = loadDb();
+
+        for (const eventId of eventIds) {
+          if (db.events[eventId]) db.events[eventId].team = destinationTeam;
+        }
+        saveDb(db);
+        pendingFixtureCorrections.delete(interaction.user.id);
+        await triggerGoogleSync(context);
+
+        await interaction.update({
+          content: `✅ Reassigned ${eventIds.length} selected fixture date(s) to **${getTeamMeta(loadConfig(), destinationTeam).label}**.`,
+          embeds: [],
+          components: [createTeamConfigActionRow(loadConfig(), sourceTeam), createBackButtonRow('admin_back_team_management')]
         });
         return;
       }
@@ -1049,6 +1278,69 @@ module.exports = {
       return;
     }
 
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('admin_set_team_name_modal:')) {
+      if (!hasAdminAccess(interaction.member, config)) {
+        await denyAdminAccess();
+        return;
+      }
+      const team = interaction.customId.split(':')[1];
+      const teamName = interaction.fields.getTextInputValue('team_name').trim();
+
+      if (!teamName) {
+        await interaction.reply({ content: 'Team name cannot be empty.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      updateConfig(`teams.${team}.label`, teamName);
+      await logAdminUiAction(interaction, 'admin', 'set-team-name', { team, teamName });
+
+      try {
+        await syncConfigSnapshotIfEnabled();
+      } catch (error) {
+        await interaction.reply({ content: `✅ Team name updated. ⚠️ Sync warning: ${error.message}`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const latestConfig = loadConfig();
+      await interaction.reply({
+        content: `✅ Team name updated to **${teamName}**.\n\n${getTeamConfigSummary(latestConfig, interaction.guild, team)}`,
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('admin_set_event_phrases_modal:')) {
+      if (!hasAdminAccess(interaction.member, config)) {
+        await denyAdminAccess();
+        return;
+      }
+      const team = interaction.customId.split(':')[1];
+      const raw = interaction.fields.getTextInputValue('phrases');
+      const phrases = [...new Set(raw.split(',').map((value) => value.trim()).filter(Boolean))];
+
+      if (!phrases.length) {
+        await interaction.reply({ content: 'Add at least one phrase.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      updateConfig(`teams.${team}.eventNamePhrases`, phrases);
+      await logAdminUiAction(interaction, 'admin', 'set-event-phrases', { team, phrases });
+
+      try {
+        await syncConfigSnapshotIfEnabled();
+      } catch (error) {
+        await interaction.reply({ content: `✅ Event phrases updated. ⚠️ Sync warning: ${error.message}`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const latestConfig = loadConfig();
+      await interaction.reply({
+        content: `✅ Event phrases updated for **${getTeamMeta(latestConfig, team).label}**: ${phrases.join(', ')}.`,
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
     if (interaction.isModalSubmit() && interaction.customId === 'admin_new_team_modal') {
       if (!hasAdminAccess(interaction.member, config)) {
         await denyAdminAccess();
@@ -1070,7 +1362,7 @@ module.exports = {
         return;
       }
 
-      updateConfig(`teams.${teamKey}`, { emoji: teamEmoji, label: teamLabel });
+      updateConfig(`teams.${teamKey}`, { emoji: teamEmoji, label: teamLabel, eventNamePhrases: [] });
       updateConfig(`roles.${teamKey}`, { player: 'ROLE_ID', coach: 'ROLE_ID' });
       updateConfig(`channels.teamChats.${teamKey}`, '');
       updateConfig(`channels.staffRooms.${teamKey}`, '');

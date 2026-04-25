@@ -2,12 +2,19 @@ const { google } = require('googleapis');
 const fs = require('fs');
 const path = require('path');
 
-function detectTeamFromTitle(title = '') {
-  const normalized = title.toLowerCase();
+function detectTeamFromTitle(title = '', teamMatchers = {}) {
+  const normalized = String(title).toLowerCase();
+  const matcherEntries = Object.entries(teamMatchers || {});
 
-  // womens must be checked before mens because "womens" includes "mens"
-  if (normalized.includes('womens')) return 'womens';
-  if (normalized.includes('mens')) return 'mens';
+  for (const [teamKey, phrases] of matcherEntries) {
+    const phraseList = Array.isArray(phrases) ? phrases : [];
+    if (phraseList.some((phrase) => phrase && normalized.includes(String(phrase).toLowerCase()))) {
+      return teamKey;
+    }
+  }
+
+  if (normalized.includes("women's") || normalized.includes('womens') || normalized.includes('fu women')) return 'womens';
+  if (normalized.includes('mens') || normalized.includes('fu men')) return 'mens';
   return null;
 }
 
@@ -15,11 +22,11 @@ function getEventStartIso(event) {
   return event?.start?.dateTime || event?.start?.date || null;
 }
 
-async function fetchUpcomingEvents({ calendarId, daysAhead = 14, credentialsPath = '' }) {
-  return fetchCalendarEvents({ calendarId, daysAhead, credentialsPath });
+async function fetchUpcomingEvents({ calendarId, daysAhead = 14, credentialsPath = '', teamMatchers = {} }) {
+  return fetchCalendarEvents({ calendarId, daysAhead, credentialsPath, teamMatchers });
 }
 
-async function fetchCalendarEvents({ calendarId, daysAhead = 14, credentialsPath = '' }) {
+async function fetchCalendarEvents({ calendarId, daysAhead = 14, credentialsPath = '', teamMatchers = {} }) {
   const now = new Date();
   const hasDaysAheadLimit = typeof daysAhead === 'number' && Number.isFinite(daysAhead) && daysAhead > 0;
   const max = hasDaysAheadLimit ? new Date(now.getTime() + daysAhead * 24 * 60 * 60 * 1000) : null;
@@ -57,7 +64,7 @@ async function fetchCalendarEvents({ calendarId, daysAhead = 14, credentialsPath
     .map((event) => {
       const startIso = getEventStartIso(event);
       const title = event.summary || 'Untitled Event';
-      const team = detectTeamFromTitle(title);
+      const team = detectTeamFromTitle(title, teamMatchers);
 
       if (!event.id || !startIso) return null;
 

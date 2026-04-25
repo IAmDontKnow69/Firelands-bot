@@ -43,10 +43,14 @@ function defaultConfig() {
     },
     teams: {
       mens: {
-        emoji: process.env.MENS_TEAM_EMOJI || '🔵'
+        emoji: process.env.MENS_TEAM_EMOJI || '🔵',
+        label: process.env.MENS_TEAM_LABEL || 'Mens',
+        eventNamePhrases: ['Mens practice', 'FU Men']
       },
       womens: {
-        emoji: process.env.WOMENS_TEAM_EMOJI || '🔴'
+        emoji: process.env.WOMENS_TEAM_EMOJI || '🔴',
+        label: process.env.WOMENS_TEAM_LABEL || 'Womens',
+        eventNamePhrases: ['FU Women', "Women's practice"]
       }
     },
     googleSync: {
@@ -70,36 +74,59 @@ function ensureConfig() {
   }
 
   const current = loadConfig();
+  const base = defaultConfig();
+  const currentRoles = current.roles || {};
+  const currentTeams = current.teams || {};
+
+  const mergedRoles = Object.fromEntries(
+    [...new Set([...Object.keys(base.roles), ...Object.keys(currentRoles)])]
+      .map((teamKey) => [
+        teamKey,
+        {
+          player: base.roles?.[teamKey]?.player || 'ROLE_ID',
+          coach: base.roles?.[teamKey]?.coach || 'ROLE_ID',
+          ...(currentRoles[teamKey] || {})
+        }
+      ])
+  );
+
+  const mergedTeams = Object.fromEntries(
+    [...new Set([...Object.keys(base.teams), ...Object.keys(currentTeams)])]
+      .map((teamKey) => [
+        teamKey,
+        {
+          emoji: base.teams?.[teamKey]?.emoji || '🔹',
+          label: base.teams?.[teamKey]?.label || teamKey,
+          eventNamePhrases: base.teams?.[teamKey]?.eventNamePhrases || [],
+          ...(currentTeams[teamKey] || {})
+        }
+      ])
+  );
+
   const merged = {
     ...defaultConfig(),
     ...current,
-    bot: { ...defaultConfig().bot, ...(current.bot || {}) },
-    roles: {
-      mens: { ...defaultConfig().roles.mens, ...(current.roles?.mens || {}) },
-      womens: { ...defaultConfig().roles.womens, ...(current.roles?.womens || {}) }
-    },
+    bot: { ...base.bot, ...(current.bot || {}) },
+    roles: mergedRoles,
     channels: {
-      ...defaultConfig().channels,
+      ...base.channels,
       ...(current.channels || {}),
       teamChats: {
-        ...defaultConfig().channels.teamChats,
+        ...base.channels.teamChats,
         ...(current.channels?.teamChats || {})
       },
       staffRooms: {
-        ...defaultConfig().channels.staffRooms,
+        ...base.channels.staffRooms,
         ...(current.channels?.staffRooms || {})
       },
       privateChatCategories: {
-        ...defaultConfig().channels.privateChatCategories,
+        ...base.channels.privateChatCategories,
         ...(current.channels?.privateChatCategories || {})
       }
     },
-    teams: {
-      mens: { ...defaultConfig().teams.mens, ...(current.teams?.mens || {}) },
-      womens: { ...defaultConfig().teams.womens, ...(current.teams?.womens || {}) }
-    },
+    teams: mergedTeams,
     googleSync: {
-      ...defaultConfig().googleSync,
+      ...base.googleSync,
       ...(current.googleSync || {})
     }
   };
