@@ -87,6 +87,43 @@ async function appendAttendanceRow(config = {}, attendance = {}, range = 'Attend
   return true;
 }
 
+async function appendCommandLogRow(config = {}, entry = {}) {
+  const spreadsheetId = getSpreadsheetId(config);
+  if (!spreadsheetId) return false;
+
+  const range = config.googleSync?.commandLogRange || 'Command Log!A2:I';
+  const sheets = await getSheetsClient(config);
+
+  await ensureSheetLayout(sheets, spreadsheetId, [
+    {
+      range,
+      headers: ['timestamp', 'source', 'command', 'subcommand', 'options', 'guildId', 'channelId', 'userId', 'username']
+    }
+  ]);
+
+  const row = [
+    entry.timestamp || toIso(),
+    entry.source || 'slash',
+    entry.command || '',
+    entry.subcommand || '',
+    entry.options || '',
+    entry.guildId || '',
+    entry.channelId || '',
+    entry.userId || '',
+    entry.username || ''
+  ];
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId,
+    range,
+    valueInputOption: 'RAW',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: [row] }
+  });
+
+  return true;
+}
+
 function normalizeAttendanceStatus(status = '') {
   if (status === 'yes') return 'attending';
   if (status === 'pending_no' || status === 'confirmed_no') return 'not_attending';
@@ -284,6 +321,7 @@ async function syncAllToSheet(config = {}, db = {}) {
 
   const sheets = await getSheetsClient(config);
   const fixturesRange = config.googleSync?.fixturesRange || 'Fixtures!A2:F';
+  const commandLogRange = config.googleSync?.commandLogRange || 'Command Log!A2:I';
   const mensFixturesRange = config.googleSync?.mensFixturesRange || 'Mens Fixtures!A2:F';
   const womensFixturesRange = config.googleSync?.womensFixturesRange || 'Womens Fixtures!A2:F';
   const attendanceRange = config.googleSync?.attendanceRange || 'Attendance!A2:F';
@@ -292,6 +330,7 @@ async function syncAllToSheet(config = {}, db = {}) {
 
   await ensureSheetLayout(sheets, spreadsheetId, [
     { range: fixturesRange, headers: ['eventId', 'title', 'date', 'team', 'discordMessageId', 'updatedAt'] },
+    { range: commandLogRange, headers: ['timestamp', 'source', 'command', 'subcommand', 'options', 'guildId', 'channelId', 'userId', 'username'] },
     { range: mensFixturesRange, headers: ['eventId', 'title', 'date', 'team', 'discordMessageId', 'updatedAt'] },
     { range: womensFixturesRange, headers: ['eventId', 'title', 'date', 'team', 'discordMessageId', 'updatedAt'] },
     { range: attendanceRange, headers: ['eventId', 'userId', 'username', 'team', 'status', 'updatedAt'] },
@@ -313,6 +352,7 @@ module.exports = {
   getSheetsClient,
   loadAttendanceFromSheet,
   appendAttendanceRow,
+  appendCommandLogRow,
   mapAttendanceRow,
   getSpreadsheetId,
   buildFixtureRows,

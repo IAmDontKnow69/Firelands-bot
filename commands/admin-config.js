@@ -53,6 +53,40 @@ function findChannelByName(guild, name) {
 }
 
 module.exports = {
+  FIELD_MAP,
+  validateField,
+
+  async handleView(interaction) {
+    const config = loadConfig();
+    const message = [
+      '**Firelands United Bot Configuration**',
+      '',
+      `Bot Token Reference: ${config.bot.tokenReference ? '`set`' : '`not set`'}`,
+      `Mens Player Role: ${config.roles.mens.player || 'not set'}`,
+      `Womens Player Role: ${config.roles.womens.player || 'not set'}`,
+      `Mens Coach Role: ${config.roles.mens.coach || 'not set'}`,
+      `Womens Coach Role: ${config.roles.womens.coach || 'not set'}`,
+      `Events Channel: ${config.channels.events || 'not set'}`,
+      `Mens Team Chat Channel: ${config.channels.teamChats?.mens || 'not set'}`,
+      `Womens Team Chat Channel: ${config.channels.teamChats?.womens || 'not set'}`,
+      `Mens Staff Room Channel: ${config.channels.staffRooms?.mens || 'not set'}`,
+      `Womens Staff Room Channel: ${config.channels.staffRooms?.womens || 'not set'}`,
+      `Mens Private Chat Category: ${config.channels.privateChatCategories?.mens || 'not set'}`,
+      `Womens Private Chat Category: ${config.channels.privateChatCategories?.womens || 'not set'}`,
+      `Logs Channel: ${config.channels.logs || 'not set'}`,
+      `Admin Channel: ${config.channels.admin || 'not set'}`,
+      `Ticket Channel/Category: ${config.channels.ticket || 'not set'}`,
+      `Mens Label Emoji: ${config.teams?.mens?.emoji || 'not set'}`,
+      `Womens Label Emoji: ${config.teams?.womens?.emoji || 'not set'}`,
+      `Google Sync Enabled: ${config.googleSync?.enabled ? 'true' : 'false'}`,
+      `Google Spreadsheet: ${config.googleSync?.spreadsheetId || 'not set'}`,
+      '',
+      '_Note: Bot token changes are stored for restart/reference and do not hot-swap runtime auth._'
+    ].join('\n');
+
+    await interaction.reply({ content: message, ephemeral: true });
+  },
+
   data: new SlashCommandBuilder()
     .setName('admin-config')
     .setDescription('View or update Firelands United bot configuration')
@@ -131,34 +165,7 @@ module.exports = {
     const subcommand = interaction.options.getSubcommand();
 
     if (subcommand === 'view') {
-      const config = loadConfig();
-      const message = [
-        '**Firelands United Bot Configuration**',
-        '',
-        `Bot Token Reference: ${config.bot.tokenReference ? '`set`' : '`not set`'}`,
-        `Mens Player Role: ${config.roles.mens.player || 'not set'}`,
-        `Womens Player Role: ${config.roles.womens.player || 'not set'}`,
-        `Mens Coach Role: ${config.roles.mens.coach || 'not set'}`,
-        `Womens Coach Role: ${config.roles.womens.coach || 'not set'}`,
-        `Events Channel: ${config.channels.events || 'not set'}`,
-        `Mens Team Chat Channel: ${config.channels.teamChats?.mens || 'not set'}`,
-        `Womens Team Chat Channel: ${config.channels.teamChats?.womens || 'not set'}`,
-        `Mens Staff Room Channel: ${config.channels.staffRooms?.mens || 'not set'}`,
-        `Womens Staff Room Channel: ${config.channels.staffRooms?.womens || 'not set'}`,
-        `Mens Private Chat Category: ${config.channels.privateChatCategories?.mens || 'not set'}`,
-        `Womens Private Chat Category: ${config.channels.privateChatCategories?.womens || 'not set'}`,
-        `Logs Channel: ${config.channels.logs || 'not set'}`,
-        `Admin Channel: ${config.channels.admin || 'not set'}`,
-        `Ticket Channel/Category: ${config.channels.ticket || 'not set'}`,
-        `Mens Label Emoji: ${config.teams?.mens?.emoji || 'not set'}`,
-        `Womens Label Emoji: ${config.teams?.womens?.emoji || 'not set'}`,
-        `Google Sync Enabled: ${config.googleSync?.enabled ? 'true' : 'false'}`,
-        `Google Spreadsheet: ${config.googleSync?.spreadsheetId || 'not set'}`,
-        '',
-        '_Note: Bot token changes are stored for restart/reference and do not hot-swap runtime auth._'
-      ].join('\n');
-
-      await interaction.reply({ content: message, ephemeral: true });
+      await module.exports.handleView(interaction);
       return;
     }
 
@@ -185,7 +192,7 @@ module.exports = {
         }
 
         await interaction.reply({
-          content: `✅ Synced fixtures, attendance, and config to Google Sheets (\`${result.spreadsheetId}\`).`,
+          content: `✅ Synced fixtures, attendance, command log, and config to Google Sheets (\`${result.spreadsheetId}\`).`,
           ephemeral: true
         });
       } catch (error) {
@@ -253,6 +260,19 @@ module.exports = {
       ? String(value).toLowerCase() === 'true'
       : value;
     updateConfig(configPath, normalizedValue);
+
+    const latestConfig = loadConfig();
+    if (latestConfig.googleSync?.enabled) {
+      try {
+        await syncAllToSheet(latestConfig, loadDb());
+      } catch (error) {
+        await interaction.reply({
+          content: `✅ Updated **${field}**. ⚠️ Google sync warning: ${error.message}`,
+          ephemeral: true
+        });
+        return;
+      }
+    }
 
     await interaction.reply({
       content: `✅ Updated **${field}**. ${field === 'bot_token_reference' ? 'Restart bot to use new token.' : ''}`,

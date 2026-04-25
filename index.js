@@ -22,7 +22,7 @@ const { fetchUpcomingEvents } = require('./utils/googleCalendar');
 const { loadDb, upsertEvent, setEventMessageId } = require('./utils/database');
 const { startReminderJobs } = require('./utils/reminders');
 const { ensureConfig, loadConfig } = require('./utils/config');
-const { syncAllToSheet } = require('./utils/googleSheetsSync');
+const { syncAllToSheet, appendCommandLogRow } = require('./utils/googleSheetsSync');
 
 ensureConfig();
 
@@ -53,6 +53,45 @@ client.commands.set(confirmCommand.data.name, confirmCommand);
 
 function getConfig() {
   return loadConfig();
+}
+
+function toOptionSummary(interaction) {
+  try {
+    const flat = (interaction.options?.data || []).map((option) => {
+      const nested = (option.options || []).map((sub) => ({ name: sub.name, value: sub.value ?? null }));
+      return { name: option.name, value: option.value ?? null, options: nested };
+    });
+    return JSON.stringify(flat);
+  } catch {
+    return '[]';
+  }
+}
+
+async function logCommandUsage(interaction) {
+  try {
+    const config = getConfig();
+    if (!config.googleSync?.enabled) return;
+
+    let subcommand = '';
+    try {
+      subcommand = interaction.options?.getSubcommand(false) || '';
+    } catch {
+      subcommand = '';
+    }
+
+    await appendCommandLogRow(config, {
+      source: 'slash',
+      command: interaction.commandName,
+      subcommand,
+      options: toOptionSummary(interaction),
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      userId: interaction.user.id,
+      username: interaction.user.tag
+    });
+  } catch (error) {
+    await sendLog(`⚠️ Command log write failed: ${error.message}`);
+  }
 }
 
 async function sendLog(message) {
@@ -208,6 +247,7 @@ client.on('interactionCreate', async (interaction) => {
       if (!command) return;
 
       await command.execute(interaction, { getConfig, sendLog });
+      await logCommandUsage(interaction);
       return;
     }
 

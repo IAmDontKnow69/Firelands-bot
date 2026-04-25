@@ -11,10 +11,12 @@ const {
   EmbedBuilder
 } = require('discord.js');
 const { loadDb, saveDb, setResponse, setAbsenceTicket, deleteAbsenceTicket } = require('../utils/database');
-const { updateConfig } = require('../utils/config');
+const { loadConfig, updateConfig } = require('../utils/config');
 const { fetchCalendarEvents } = require('../utils/googleCalendar');
-const { syncAllToSheet } = require('../utils/googleSheetsSync');
+const { syncAllToSheet, appendCommandLogRow } = require('../utils/googleSheetsSync');
 const coachCommand = require('../commands/coach');
+const adminCommand = require('../commands/admin');
+const adminConfigCommand = require('../commands/admin-config');
 
 const TEAM_LABELS = {
   mens: 'Mens Team',
@@ -22,18 +24,7 @@ const TEAM_LABELS = {
 };
 
 function createAdminQuickActionRow() {
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId('admin_quick_action')
-      .setPlaceholder('Pick an action')
-      .addOptions([
-        { label: 'Set Roles & Team Chats', value: 'set_team_ids', description: 'Choose a team, then set role/chat IDs and fixture team' },
-        { label: 'Set Google Calendar ID', value: 'set_calendar_id', description: 'Update the calendar used by sync' },
-        { label: 'View Google Calendar Events', value: 'view_google_events', description: 'Show upcoming events from Google Calendar' },
-        { label: 'Club Report', value: 'club_report', description: 'View club attendance report' },
-        { label: 'Config Help', value: 'config_help', description: 'Show config usage notes' }
-      ])
-  );
+  return adminCommand.createAdminPanelActionRow();
 }
 
 function createTeamPickerRow(customId, placeholder = 'Choose a team') {
@@ -149,6 +140,32 @@ async function triggerGoogleSync(context) {
   } catch (error) {
     await context.sendLog(`⚠️ Google Sheets sync failed after attendance update: ${error.message}`);
   }
+}
+
+async function logAdminUiAction(interaction, command, subcommand = '', options = {}) {
+  try {
+    const config = loadConfig();
+    if (!config.googleSync?.enabled) return;
+
+    await appendCommandLogRow(config, {
+      source: 'admin_ui',
+      command,
+      subcommand,
+      options: JSON.stringify(options || {}),
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      userId: interaction.user.id,
+      username: interaction.user.tag
+    });
+  } catch (error) {
+    await interaction.followUp({ content: `⚠️ Could not write command log row: ${error.message}`, ephemeral: true }).catch(() => null);
+  }
+}
+
+async function syncConfigSnapshotIfEnabled() {
+  const latestConfig = loadConfig();
+  if (!latestConfig.googleSync?.enabled) return;
+  await syncAllToSheet(latestConfig, loadDb());
 }
 
 module.exports = {
@@ -300,6 +317,88 @@ module.exports = {
           return;
         }
 
+        if (action === 'set_emoji') {
+          const modal = new ModalBuilder()
+            .setCustomId('admin_set_emoji_modal')
+            .setTitle('Set Team Emoji');
+
+          const teamInput = new TextInputBuilder()
+            .setCustomId('team')
+            .setLabel('Team (mens or womens)')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setValue('mens')
+            .setMaxLength(10);
+
+          const emojiInput = new TextInputBuilder()
+            .setCustomId('emoji')
+            .setLabel('Emoji, e.g. 🔵 or :blue_circle:')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setMaxLength(40);
+
+          modal.addComponents(
+            new ActionRowBuilder().addComponents(teamInput),
+            new ActionRowBuilder().addComponents(emojiInput)
+          );
+          await interaction.showModal(modal);
+          return;
+        }
+
+        if (action === 'config_view') {
+          await logAdminUiAction(interaction, 'admin-config', 'view');
+          await adminConfigCommand.handleView(interaction);
+          return;
+        }
+
+        if (action === 'config_set') {
+          const modal = new ModalBuilder()
+            .setCustomId('admin_config_set_modal')
+            .setTitle('Set Config Field');
+
+          const fieldInput = new TextInputBuilder()
+            .setCustomId('field')
+            .setLabel('Field key (e.g. mens_player_role_id)')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setMaxLength(80);
+
+          const valueInput = new TextInputBuilder()
+            .setCustomId('value')
+            .setLabel('Value (ID, true/false, or spreadsheet URL/ID)')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setMaxLength(200);
+
+          modal.addComponents(
+            new ActionRowBuilder().addComponents(fieldInput),
+            new ActionRowBuilder().addComponents(valueInput)
+          );
+          await interaction.showModal(modal);
+          return;
+        }
+
+        if (action === 'sync_google') {
+          await logAdminUiAction(interaction, 'admin-config', 'sync-google');
+          await adminCommand.handleSyncGoogle(interaction);
+          return;
+        }
+
+        if (action === 'open_google_sheet') {
+          const latestConfig = context.getConfig();
+          const sheetUrl = adminCommand.getSpreadsheetViewUrl(latestConfig);
+          await logAdminUiAction(interaction, 'admin', 'open-google-sheet');
+
+          await interaction.update({
+            content: sheetUrl
+              ? `Open Google Sheet: ${sheetUrl}`
+              : 'Google spreadsheet is not configured yet. Set it first via Config Set or /admin-config set.',
+            embeds: [],
+            components: [createAdminQuickActionRow()]
+          });
+          return;
+        }
+
         if (action === 'view_google_events') {
           try {
             const db = loadDb();
@@ -341,16 +440,13 @@ module.exports = {
         }
 
         if (action === 'club_report') {
-          await interaction.update({
-            content: 'Run `/admin club-report` to open the full club attendance report.',
-            embeds: [],
-            components: [createAdminQuickActionRow()]
-          });
+          await logAdminUiAction(interaction, 'admin', 'club-report');
+          await adminCommand.handleClubReport(interaction);
           return;
         }
 
         await interaction.update({
-          content: 'Use `/admin-config view` or `/admin-config set` for detailed configuration updates.',
+          content: 'Unknown admin action.',
           embeds: [],
           components: [createAdminQuickActionRow()]
         });
@@ -518,6 +614,18 @@ module.exports = {
       const [, configPath, team] = interaction.customId.split(':');
       const roleId = interaction.values[0];
       updateConfig(configPath, roleId);
+      await logAdminUiAction(interaction, 'admin-config', 'set', { field: configPath, value: roleId });
+
+      try {
+        await syncConfigSnapshotIfEnabled();
+      } catch (error) {
+        await interaction.update({
+          content: `✅ Updated **${configPath}** to <@&${roleId}>. ⚠️ Sync warning: ${error.message}`,
+          embeds: [],
+          components: [createTeamConfigActionRow(team)]
+        });
+        return;
+      }
 
       await interaction.update({
         content: `✅ Updated **${configPath}** to <@&${roleId}>.`,
@@ -531,6 +639,18 @@ module.exports = {
       const [, configPath, team] = interaction.customId.split(':');
       const channelId = interaction.values[0];
       updateConfig(configPath, channelId);
+      await logAdminUiAction(interaction, 'admin-config', 'set', { field: configPath, value: channelId });
+
+      try {
+        await syncConfigSnapshotIfEnabled();
+      } catch (error) {
+        await interaction.update({
+          content: `✅ Updated **${configPath}** to <#${channelId}>. ⚠️ Sync warning: ${error.message}`,
+          embeds: [],
+          components: [createTeamConfigActionRow(team)]
+        });
+        return;
+      }
 
       await interaction.update({
         content: `✅ Updated **${configPath}** to <#${channelId}>.`,
@@ -646,7 +766,64 @@ module.exports = {
       }
 
       updateConfig('bot.calendarId', calendarId);
+      await logAdminUiAction(interaction, 'admin', 'set-calendar-id', { calendarId });
+      try {
+        await syncConfigSnapshotIfEnabled();
+      } catch (error) {
+        await interaction.reply({ content: `✅ Updated **bot.calendarId** to \`${calendarId}\`. ⚠️ Sync warning: ${error.message}`, ephemeral: true });
+        return;
+      }
       await interaction.reply({ content: `✅ Updated **bot.calendarId** to \`${calendarId}\`.`, ephemeral: true });
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId === 'admin_set_emoji_modal') {
+      const team = interaction.fields.getTextInputValue('team').trim().toLowerCase();
+      const emoji = interaction.fields.getTextInputValue('emoji').trim();
+
+      if (!['mens', 'womens'].includes(team)) {
+        await interaction.reply({ content: 'Team must be `mens` or `womens`.', ephemeral: true });
+        return;
+      }
+
+      await logAdminUiAction(interaction, 'admin', 'set-emoji', { team, emoji });
+      updateConfig(`teams.${team}.emoji`, emoji.trim());
+      try {
+        await syncConfigSnapshotIfEnabled();
+      } catch (error) {
+        await interaction.reply({ content: `✅ Team label updated. ⚠️ Sync warning: ${error.message}`, ephemeral: true });
+        return;
+      }
+      await adminCommand.handleSetEmoji(interaction, team, emoji);
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId === 'admin_config_set_modal') {
+      const field = interaction.fields.getTextInputValue('field').trim();
+      const value = interaction.fields.getTextInputValue('value').trim();
+      const path = adminConfigCommand.FIELD_MAP[field];
+
+      if (!path) {
+        await interaction.reply({ content: `Unknown field: \`${field}\`. Use a valid /admin-config set field key.`, ephemeral: true });
+        return;
+      }
+
+      if (!adminConfigCommand.validateField(field, value)) {
+        await interaction.reply({ content: 'Invalid value for this field.', ephemeral: true });
+        return;
+      }
+
+      updateConfig(path, value);
+      await logAdminUiAction(interaction, 'admin-config', 'set', { field, value });
+
+      try {
+        await syncConfigSnapshotIfEnabled();
+      } catch (error) {
+        await interaction.reply({ content: `✅ Updated **${path}**. ⚠️ Sync warning: ${error.message}`, ephemeral: true });
+        return;
+      }
+
+      await interaction.reply({ content: `✅ Updated **${path}** to \`${value}\`.`, ephemeral: true });
     }
   }
 };
