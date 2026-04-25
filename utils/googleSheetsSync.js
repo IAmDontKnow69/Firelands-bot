@@ -1,14 +1,33 @@
 const { google } = require('googleapis');
+const fs = require('fs');
+const path = require('path');
 
 function toIso(date = new Date()) {
   return new Date(date).toISOString();
 }
 
 function resolveCredentialsPath(config = {}) {
-  return config.bot?.calendarCredentialsPath
+  const configuredPath = config.bot?.calendarCredentialsPath
     || process.env.CALENDAR_CREDENTIALS_PATH
     || process.env.GOOGLE_APPLICATION_CREDENTIALS
-    || 'credentials.json';
+    || '';
+  const projectRoot = path.join(__dirname, '..');
+
+  const candidates = [
+    configuredPath,
+    configuredPath ? path.resolve(process.cwd(), configuredPath) : '',
+    configuredPath ? path.resolve(projectRoot, configuredPath) : '',
+    path.join(process.cwd(), 'credentials.json'),
+    path.join(projectRoot, 'credentials.json')
+  ].filter(Boolean);
+  const uniqueCandidates = [...new Set(candidates)];
+
+  const existingPath = uniqueCandidates.find((candidate) => fs.existsSync(candidate));
+  if (existingPath) return existingPath;
+
+  throw new Error(
+    `Google credentials file not found for Sheets sync. Set CALENDAR_CREDENTIALS_PATH (or GOOGLE_APPLICATION_CREDENTIALS). Looked for: ${uniqueCandidates.join(', ')}`
+  );
 }
 
 function getSpreadsheetId(config = {}) {

@@ -7,7 +7,8 @@ const {
   ButtonBuilder,
   ButtonStyle,
   REST,
-  Routes
+  Routes,
+  MessageFlags
 } = require('discord.js');
 const cron = require('node-cron');
 
@@ -150,6 +151,17 @@ function formatEventDate(dateValue) {
   });
 }
 
+function findGuildSetupChannel(guild) {
+  if (guild.systemChannel?.isTextBased()) return guild.systemChannel;
+
+  const candidate = guild.channels.cache
+    .filter((channel) => channel.isTextBased() && channel.viewable)
+    .sort((a, b) => a.position - b.position)
+    .first();
+
+  return candidate || null;
+}
+
 async function postEventMessage(event) {
   const config = getConfig();
   const teamChatChannelId = config.channels.teamChats?.[event.team];
@@ -256,12 +268,12 @@ client.on('interactionCreate', async (interaction) => {
     console.error('Interaction handling failed:', error);
 
     if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-      await interaction.reply({ content: 'Something went wrong.', ephemeral: true });
+      await interaction.reply({ content: 'Something went wrong.', flags: MessageFlags.Ephemeral });
     }
   }
 });
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log(`Logged in as ${client.user.tag}`);
 
   await registerSlashCommands();
@@ -272,6 +284,25 @@ client.once('ready', async () => {
   });
 
   startReminderJobs(client, getConfig);
+});
+
+client.on('guildCreate', async (guild) => {
+  const setupChannel = findGuildSetupChannel(guild);
+  if (!setupChannel) return;
+
+  const setupMessage = [
+    '👋 Thanks for inviting Firelands Bot!',
+    '',
+    'To finish setup, please configure these two fields:',
+    '1) **Admin chat channel** (used for bot logs/admin notices)',
+    '2) **Admin role** (only this role can use `/admin` and `/admin-config` once set)',
+    '',
+    'Run:',
+    '`/admin-config set field:admin_channel_id channel:<your admin channel>`',
+    '`/admin-config set field:admin_role_id role:<your admin role>`'
+  ].join('\n');
+
+  await setupChannel.send(setupMessage).catch(() => null);
 });
 
 client.login(TOKEN);

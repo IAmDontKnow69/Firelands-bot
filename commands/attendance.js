@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, ChannelType, PermissionFlagsBits } = require('discord.js');
+const { SlashCommandBuilder, ChannelType, PermissionFlagsBits, MessageFlags } = require('discord.js');
 const { loadDb, setFutureAvailability } = require('../utils/database');
 
 function isCoach(member, teamRoles) {
@@ -90,7 +90,7 @@ module.exports = {
 
     if (subcommand === 'report') {
       if (!isCoach(interaction.member, teamRoles)) {
-        await interaction.reply({ content: 'Only coaches can run this command.', ephemeral: true });
+        await interaction.reply({ content: 'Only coaches can run this command.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -105,7 +105,7 @@ module.exports = {
         .sort((a, b) => new Date(a.date) - new Date(b.date));
 
       if (!relevantEvents.length) {
-        await interaction.reply({ content: 'No upcoming events were found for your team(s).', ephemeral: true });
+        await interaction.reply({ content: 'No upcoming events were found for your team(s).', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -154,11 +154,11 @@ module.exports = {
       const output = chunks.join('\n\n-------------------------\n\n');
 
       if (output.length > 1900) {
-        await interaction.reply({ content: 'Attendance report is too long. Please narrow scope in future version.', ephemeral: true });
+        await interaction.reply({ content: 'Attendance report is too long. Please narrow scope in future version.', flags: MessageFlags.Ephemeral });
         return;
       }
 
-      await interaction.reply({ content: output, ephemeral: true });
+      await interaction.reply({ content: output, flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -167,19 +167,19 @@ module.exports = {
     const parsedDate = new Date(`${dateInput}T00:00:00Z`);
 
     if (Number.isNaN(parsedDate.getTime()) || !/^\d{4}-\d{2}-\d{2}$/.test(dateInput)) {
-      await interaction.reply({ content: 'Please use a valid date in YYYY-MM-DD format.', ephemeral: true });
+      await interaction.reply({ content: 'Please use a valid date in YYYY-MM-DD format.', flags: MessageFlags.Ephemeral });
       return;
     }
 
     const now = new Date();
     const todayUtc = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
     if (parsedDate.getTime() < todayUtc) {
-      await interaction.reply({ content: 'Date must be today or in the future.', ephemeral: true });
+      await interaction.reply({ content: 'Date must be today or in the future.', flags: MessageFlags.Ephemeral });
       return;
     }
 
     if (!hasPlayerRoleForTeam(interaction.member, teamRoles, team)) {
-      await interaction.reply({ content: 'Only players from that team can update availability.', ephemeral: true });
+      await interaction.reply({ content: 'Only players from that team can update availability.', flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -192,7 +192,7 @@ module.exports = {
 
       await interaction.reply({
         content: `✅ You are marked as **available** for **${team}** on **${dateInput}**.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       await context.sendLog(`🟢 ${interaction.user.tag} marked available for ${team} on ${dateInput}.`);
       return;
@@ -253,7 +253,7 @@ module.exports = {
 
     await interaction.reply({
       content: `🔴 You are marked as **unavailable** for **${team}** on **${dateInput}**. Coaches will be notified in a private chat.`,
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 };

@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, ChannelType } = require('discord.js');
+const { SlashCommandBuilder, ChannelType, MessageFlags } = require('discord.js');
 const { loadDb, setResponse, deleteAbsenceTicket } = require('../utils/database');
 const { syncAllToSheet } = require('../utils/googleSheetsSync');
 
@@ -9,7 +9,7 @@ module.exports = {
 
   async execute(interaction, context) {
     if (!interaction.channel || interaction.channel.type !== ChannelType.GuildText) {
-      await interaction.reply({ content: 'Run this in the private absence text channel.', ephemeral: true });
+      await interaction.reply({ content: 'Run this in the private absence text channel.', flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -17,19 +17,19 @@ module.exports = {
     const ticket = db.absenceTickets?.[interaction.channelId];
 
     if (!ticket) {
-      await interaction.reply({ content: 'This channel is not linked to a pending attendance ticket.', ephemeral: true });
+      await interaction.reply({ content: 'This channel is not linked to a pending attendance ticket.', flags: MessageFlags.Ephemeral });
       return;
     }
 
     const event = db.events[ticket.eventId];
     if (!event) {
-      await interaction.reply({ content: 'The related event could not be found.', ephemeral: true });
+      await interaction.reply({ content: 'The related event could not be found.', flags: MessageFlags.Ephemeral });
       return;
     }
 
     const teamRoles = context.getConfig().roles?.[event.team];
     if (!teamRoles?.coach || !interaction.member.roles.cache.has(teamRoles.coach)) {
-      await interaction.reply({ content: 'Only coaches/staff for this team can confirm this absence.', ephemeral: true });
+      await interaction.reply({ content: 'Only coaches/staff for this team can confirm this absence.', flags: MessageFlags.Ephemeral });
       return;
     }
 

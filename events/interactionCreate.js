@@ -8,7 +8,8 @@ const {
   ChannelSelectMenuBuilder,
   ChannelType,
   PermissionFlagsBits,
-  EmbedBuilder
+  EmbedBuilder,
+  MessageFlags
 } = require('discord.js');
 const { loadDb, saveDb, setResponse, setAbsenceTicket, deleteAbsenceTicket } = require('../utils/database');
 const { loadConfig, updateConfig } = require('../utils/config');
@@ -17,30 +18,39 @@ const { syncAllToSheet, appendCommandLogRow } = require('../utils/googleSheetsSy
 const coachCommand = require('../commands/coach');
 const adminCommand = require('../commands/admin');
 const adminConfigCommand = require('../commands/admin-config');
+const { hasAdminAccess, adminAccessMessage } = require('../utils/adminAccess');
 
-const TEAM_LABELS = {
-  mens: 'Mens Team',
-  womens: "Women's Team"
-};
+function getTeamMeta(config = {}, team = '') {
+  const teamConfig = config.teams?.[team] || {};
+  return {
+    label: teamConfig.label || team,
+    emoji: teamConfig.emoji || '🔹'
+  };
+}
+
+function getTeamOptions(config = {}) {
+  return Object.keys(config.teams || {}).map((team) => {
+    const meta = getTeamMeta(config, team);
+    return { label: meta.label.slice(0, 100), value: team };
+  });
+}
 
 function createAdminQuickActionRow() {
   return adminCommand.createAdminPanelActionRow();
 }
 
-function createTeamPickerRow(customId, placeholder = 'Choose a team') {
+function createTeamPickerRow(config, customId, placeholder = 'Choose a team') {
+  const options = getTeamOptions(config);
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(customId)
       .setPlaceholder(placeholder)
-      .addOptions([
-        { label: TEAM_LABELS.mens, value: 'mens' },
-        { label: TEAM_LABELS.womens, value: 'womens' }
-      ])
+      .addOptions(options.slice(0, 25))
   );
 }
 
-function createTeamConfigActionRow(team) {
-  const label = TEAM_LABELS[team] || team;
+function createTeamConfigActionRow(config, team) {
+  const label = getTeamMeta(config, team).label;
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(`admin_team_config_action:${team}`)
@@ -126,8 +136,7 @@ function summarizeAttendance(event, db, guild, teamRolesMap) {
 
 function formatTeamLabel(event, config) {
   if (!event.team) return '❔ Unknown Team';
-  const emoji = config.teams?.[event.team]?.emoji || '🔹';
-  const label = event.team === 'mens' ? 'Mens Team' : "Women's Team";
+  const { emoji, label } = getTeamMeta(config, event.team);
   return `${emoji} ${label}`;
 }
 
@@ -158,7 +167,7 @@ async function logAdminUiAction(interaction, command, subcommand = '', options =
       username: interaction.user.tag
     });
   } catch (error) {
-    await interaction.followUp({ content: `⚠️ Could not write command log row: ${error.message}`, ephemeral: true }).catch(() => null);
+    await interaction.followUp({ content: `⚠️ Could not write command log row: ${error.message}`, flags: MessageFlags.Ephemeral }).catch(() => null);
   }
 }
 
@@ -175,25 +184,29 @@ module.exports = {
     const config = context.getConfig();
     const teamRolesMap = config.roles;
 
+    const denyAdminAccess = async () => {
+      await interaction.reply({ content: adminAccessMessage(config), flags: MessageFlags.Ephemeral });
+    };
+
     if (interaction.isButton()) {
       const parsed = parseCustomId(interaction.customId);
       const db = loadDb();
       const event = db.events[parsed.eventId];
 
       if (!event) {
-        await interaction.reply({ content: 'Event not found.', ephemeral: true });
+        await interaction.reply({ content: 'Event not found.', flags: MessageFlags.Ephemeral });
         return;
       }
 
       const teamRoles = teamRolesMap[event.team];
       if (!teamRoles) {
-        await interaction.reply({ content: 'Team roles are not configured for this event.', ephemeral: true });
+        await interaction.reply({ content: 'Team roles are not configured for this event.', flags: MessageFlags.Ephemeral });
         return;
       }
 
       if (parsed.action === 'attend_yes') {
         if (!hasRole(interaction.member, teamRoles.player)) {
-          await interaction.reply({ content: 'Only players for this team can respond.', ephemeral: true });
+          await interaction.reply({ content: 'Only players for this team can respond.', flags: MessageFlags.Ephemeral });
           return;
         }
 
@@ -206,14 +219,14 @@ module.exports = {
         });
 
         await triggerGoogleSync(context);
-        await interaction.reply({ content: '✅ You are marked as attending.', ephemeral: true });
+        await interaction.reply({ content: '✅ You are marked as attending.', flags: MessageFlags.Ephemeral });
         await context.sendLog(`🟢 ${interaction.user.tag} marked attending for **${event.title}** (${getEventDateLabel(event.date)}).`);
         return;
       }
 
       if (parsed.action === 'attend_no') {
         if (!hasRole(interaction.member, teamRoles.player)) {
-          await interaction.reply({ content: 'Only players for this team can respond.', ephemeral: true });
+          await interaction.reply({ content: 'Only players for this team can respond.', flags: MessageFlags.Ephemeral });
           return;
         }
 
@@ -237,19 +250,19 @@ module.exports = {
         const targetUserId = parsed.userId;
 
         if (!targetUserId) {
-          await interaction.reply({ content: 'Invalid confirmation button.', ephemeral: true });
+          await interaction.reply({ content: 'Invalid confirmation button.', flags: MessageFlags.Ephemeral });
           return;
         }
 
         if (!hasRole(interaction.member, teamRoles.coach)) {
-          await interaction.reply({ content: 'Only coaches can confirm absences.', ephemeral: true });
+          await interaction.reply({ content: 'Only coaches can confirm absences.', flags: MessageFlags.Ephemeral });
           return;
         }
 
         const existing = db.events[parsed.eventId]?.responses?.[targetUserId];
 
         if (!existing || existing.status !== 'pending_no') {
-          await interaction.reply({ content: 'This absence is no longer pending.', ephemeral: true });
+          await interaction.reply({ content: 'This absence is no longer pending.', flags: MessageFlags.Ephemeral });
           return;
         }
 
@@ -260,7 +273,7 @@ module.exports = {
         });
 
         await triggerGoogleSync(context);
-        await interaction.reply({ content: `✅ Absence confirmed for <@${targetUserId}>.`, ephemeral: false });
+        await interaction.reply({ content: `✅ Absence confirmed for <@${targetUserId}>.` });
         deleteAbsenceTicket(interaction.channelId);
         await context.sendLog(`✅ ${interaction.user.tag} confirmed absence for <@${targetUserId}> on **${event.title}**.`);
 
@@ -275,6 +288,11 @@ module.exports = {
     }
 
     if (interaction.isStringSelectMenu()) {
+      if (interaction.customId.startsWith('admin_') && !hasAdminAccess(interaction.member, config)) {
+        await denyAdminAccess();
+        return;
+      }
+
       if (interaction.customId === 'coach_team_select') {
         const selectedTeam = interaction.values[0];
         const report = coachCommand.buildReport(interaction.guild, selectedTeam, teamRolesMap);
@@ -294,7 +312,7 @@ module.exports = {
           await interaction.update({
             content: 'Choose a team to configure role IDs, team chat ID, and fixture team.',
             embeds: [],
-            components: [createTeamPickerRow('admin_team_config_select')]
+            components: [createTeamPickerRow(config, 'admin_team_config_select')]
           });
           return;
         }
@@ -324,7 +342,7 @@ module.exports = {
 
           const teamInput = new TextInputBuilder()
             .setCustomId('team')
-            .setLabel('Team (mens or womens)')
+            .setLabel('Team key (e.g. mens, womens, u18mens)')
             .setStyle(TextInputStyle.Short)
             .setRequired(true)
             .setValue('mens')
@@ -345,36 +363,44 @@ module.exports = {
           return;
         }
 
-        if (action === 'config_view') {
-          await logAdminUiAction(interaction, 'admin-config', 'view');
-          await adminConfigCommand.handleView(interaction);
-          return;
-        }
-
-        if (action === 'config_set') {
+        if (action === 'new_team') {
           const modal = new ModalBuilder()
-            .setCustomId('admin_config_set_modal')
-            .setTitle('Set Config Field');
+            .setCustomId('admin_new_team_modal')
+            .setTitle('Create New Team');
 
-          const fieldInput = new TextInputBuilder()
-            .setCustomId('field')
-            .setLabel('Field key (e.g. mens_player_role_id)')
+          const keyInput = new TextInputBuilder()
+            .setCustomId('team_key')
+            .setLabel('Team key (letters/numbers, e.g. u18mens)')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setMaxLength(30);
+
+          const labelInput = new TextInputBuilder()
+            .setCustomId('team_label')
+            .setLabel('Display name (e.g. U18 Mens)')
             .setStyle(TextInputStyle.Short)
             .setRequired(true)
             .setMaxLength(80);
 
-          const valueInput = new TextInputBuilder()
-            .setCustomId('value')
-            .setLabel('Value (ID, true/false, or spreadsheet URL/ID)')
+          const emojiInput = new TextInputBuilder()
+            .setCustomId('team_emoji')
+            .setLabel('Emoji (optional, default 🔹)')
             .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setMaxLength(200);
+            .setRequired(false)
+            .setMaxLength(20);
 
           modal.addComponents(
-            new ActionRowBuilder().addComponents(fieldInput),
-            new ActionRowBuilder().addComponents(valueInput)
+            new ActionRowBuilder().addComponents(keyInput),
+            new ActionRowBuilder().addComponents(labelInput),
+            new ActionRowBuilder().addComponents(emojiInput)
           );
           await interaction.showModal(modal);
+          return;
+        }
+
+        if (action === 'config_view') {
+          await logAdminUiAction(interaction, 'admin-config', 'view');
+          await adminConfigCommand.handleView(interaction);
           return;
         }
 
@@ -392,7 +418,7 @@ module.exports = {
           await interaction.update({
             content: sheetUrl
               ? `Open Google Sheet: ${sheetUrl}`
-              : 'Google spreadsheet is not configured yet. Set it first via Config Set or /admin-config set.',
+              : 'Google spreadsheet is not configured yet. Set it first via /admin-config set.',
             embeds: [],
             components: [createAdminQuickActionRow()]
           });
@@ -426,7 +452,7 @@ module.exports = {
             for (let i = 1; i < embeds.length; i += 1) {
               await interaction.followUp({
                 embeds: [embeds[i]],
-                ephemeral: true
+                flags: MessageFlags.Ephemeral
               });
             }
           } catch (error) {
@@ -455,10 +481,11 @@ module.exports = {
 
       if (interaction.customId === 'admin_team_config_select') {
         const team = interaction.values[0];
+        const teamLabel = getTeamMeta(config, team).label;
         await interaction.update({
-          content: `Configuring **${TEAM_LABELS[team]}**. Pick what to update.`,
+          content: `Configuring **${teamLabel}**. Pick what to update.`,
           embeds: [],
-          components: [createTeamConfigActionRow(team)]
+          components: [createTeamConfigActionRow(config, team)]
         });
         return;
       }
@@ -466,7 +493,7 @@ module.exports = {
       if (interaction.customId.startsWith('admin_team_config_action:')) {
         const team = interaction.customId.split(':')[1];
         const selectedAction = interaction.values[0];
-        const teamLabel = TEAM_LABELS[team] || team;
+        const teamLabel = getTeamMeta(config, team).label || team;
 
         if (selectedAction === 'player_role' || selectedAction === 'coach_role') {
           const label = selectedAction === 'player_role' ? `${teamLabel} Player Role` : `${teamLabel} Coach Role`;
@@ -553,7 +580,7 @@ module.exports = {
             await interaction.update({
               content: 'No upcoming fixtures found in synced events yet.',
               embeds: [],
-              components: [createTeamConfigActionRow(team)]
+              components: [createTeamConfigActionRow(config, team)]
             });
             return;
           }
@@ -568,7 +595,7 @@ module.exports = {
                   return {
                     label: `${when} — ${event.title}`.slice(0, 100),
                     value: event.id,
-                    description: `Current: ${TEAM_LABELS[event.team] || 'Unassigned'}`.slice(0, 100)
+                    description: `Current: ${getTeamMeta(config, event.team).label || 'Unassigned'}`.slice(0, 100)
                   };
                 })
               )
@@ -593,7 +620,7 @@ module.exports = {
           await interaction.update({
             content: 'Fixture was not found in synced events.',
             embeds: [],
-            components: [createTeamConfigActionRow(team)]
+            components: [createTeamConfigActionRow(config, team)]
           });
           return;
         }
@@ -602,15 +629,19 @@ module.exports = {
         saveDb(db);
 
         await interaction.update({
-          content: `✅ Assigned **${target.title}** to **${TEAM_LABELS[team]}**.`,
+          content: `✅ Assigned **${target.title}** to **${getTeamMeta(config, team).label}**.`,
           embeds: [],
-          components: [createTeamConfigActionRow(team)]
+          components: [createTeamConfigActionRow(config, team)]
         });
         return;
       }
     }
 
     if (interaction.isRoleSelectMenu() && interaction.customId.startsWith('admin_set_role:')) {
+      if (!hasAdminAccess(interaction.member, config)) {
+        await denyAdminAccess();
+        return;
+      }
       const [, configPath, team] = interaction.customId.split(':');
       const roleId = interaction.values[0];
       updateConfig(configPath, roleId);
@@ -622,7 +653,7 @@ module.exports = {
         await interaction.update({
           content: `✅ Updated **${configPath}** to <@&${roleId}>. ⚠️ Sync warning: ${error.message}`,
           embeds: [],
-          components: [createTeamConfigActionRow(team)]
+          components: [createTeamConfigActionRow(config, team)]
         });
         return;
       }
@@ -630,12 +661,16 @@ module.exports = {
       await interaction.update({
         content: `✅ Updated **${configPath}** to <@&${roleId}>.`,
         embeds: [],
-        components: [createTeamConfigActionRow(team)]
+        components: [createTeamConfigActionRow(config, team)]
       });
       return;
     }
 
     if (interaction.isChannelSelectMenu() && interaction.customId.startsWith('admin_set_channel:')) {
+      if (!hasAdminAccess(interaction.member, config)) {
+        await denyAdminAccess();
+        return;
+      }
       const [, configPath, team] = interaction.customId.split(':');
       const channelId = interaction.values[0];
       updateConfig(configPath, channelId);
@@ -647,7 +682,7 @@ module.exports = {
         await interaction.update({
           content: `✅ Updated **${configPath}** to <#${channelId}>. ⚠️ Sync warning: ${error.message}`,
           embeds: [],
-          components: [createTeamConfigActionRow(team)]
+          components: [createTeamConfigActionRow(config, team)]
         });
         return;
       }
@@ -655,7 +690,7 @@ module.exports = {
       await interaction.update({
         content: `✅ Updated **${configPath}** to <#${channelId}>.`,
         embeds: [],
-        components: [createTeamConfigActionRow(team)]
+        components: [createTeamConfigActionRow(config, team)]
       });
       return;
     }
@@ -666,13 +701,13 @@ module.exports = {
       const event = db.events[eventId];
 
       if (!event) {
-        await interaction.reply({ content: 'Event no longer exists.', ephemeral: true });
+        await interaction.reply({ content: 'Event no longer exists.', flags: MessageFlags.Ephemeral });
         return;
       }
 
       const teamRoles = teamRolesMap[event.team];
       if (!hasRole(interaction.member, teamRoles.player)) {
-        await interaction.reply({ content: 'Only players for this team can respond.', ephemeral: true });
+        await interaction.reply({ content: 'Only players for this team can respond.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -752,16 +787,20 @@ module.exports = {
 
       await interaction.reply({
         content: '🔴 Your absence was submitted and is pending coach confirmation.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
 
     if (interaction.isModalSubmit() && interaction.customId === 'admin_set_calendar_modal') {
+      if (!hasAdminAccess(interaction.member, config)) {
+        await denyAdminAccess();
+        return;
+      }
       const calendarId = interaction.fields.getTextInputValue('calendar_id').trim();
 
       if (!calendarId) {
-        await interaction.reply({ content: 'Calendar ID cannot be empty.', ephemeral: true });
+        await interaction.reply({ content: 'Calendar ID cannot be empty.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -770,19 +809,23 @@ module.exports = {
       try {
         await syncConfigSnapshotIfEnabled();
       } catch (error) {
-        await interaction.reply({ content: `✅ Updated **bot.calendarId** to \`${calendarId}\`. ⚠️ Sync warning: ${error.message}`, ephemeral: true });
+        await interaction.reply({ content: `✅ Updated **bot.calendarId** to \`${calendarId}\`. ⚠️ Sync warning: ${error.message}`, flags: MessageFlags.Ephemeral });
         return;
       }
-      await interaction.reply({ content: `✅ Updated **bot.calendarId** to \`${calendarId}\`.`, ephemeral: true });
+      await interaction.reply({ content: `✅ Updated **bot.calendarId** to \`${calendarId}\`.`, flags: MessageFlags.Ephemeral });
       return;
     }
 
     if (interaction.isModalSubmit() && interaction.customId === 'admin_set_emoji_modal') {
+      if (!hasAdminAccess(interaction.member, config)) {
+        await denyAdminAccess();
+        return;
+      }
       const team = interaction.fields.getTextInputValue('team').trim().toLowerCase();
       const emoji = interaction.fields.getTextInputValue('emoji').trim();
 
-      if (!['mens', 'womens'].includes(team)) {
-        await interaction.reply({ content: 'Team must be `mens` or `womens`.', ephemeral: true });
+      if (!config.teams?.[team]) {
+        await interaction.reply({ content: 'Team key was not found in configuration.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -791,39 +834,55 @@ module.exports = {
       try {
         await syncConfigSnapshotIfEnabled();
       } catch (error) {
-        await interaction.reply({ content: `✅ Team label updated. ⚠️ Sync warning: ${error.message}`, ephemeral: true });
+        await interaction.reply({ content: `✅ Team label updated. ⚠️ Sync warning: ${error.message}`, flags: MessageFlags.Ephemeral });
         return;
       }
       await adminCommand.handleSetEmoji(interaction, team, emoji);
       return;
     }
 
-    if (interaction.isModalSubmit() && interaction.customId === 'admin_config_set_modal') {
-      const field = interaction.fields.getTextInputValue('field').trim();
-      const value = interaction.fields.getTextInputValue('value').trim();
-      const path = adminConfigCommand.FIELD_MAP[field];
-
-      if (!path) {
-        await interaction.reply({ content: `Unknown field: \`${field}\`. Use a valid /admin-config set field key.`, ephemeral: true });
+    if (interaction.isModalSubmit() && interaction.customId === 'admin_new_team_modal') {
+      if (!hasAdminAccess(interaction.member, config)) {
+        await denyAdminAccess();
         return;
       }
 
-      if (!adminConfigCommand.validateField(field, value)) {
-        await interaction.reply({ content: 'Invalid value for this field.', ephemeral: true });
+      const rawTeamKey = interaction.fields.getTextInputValue('team_key').trim().toLowerCase();
+      const teamLabel = interaction.fields.getTextInputValue('team_label').trim();
+      const teamEmoji = interaction.fields.getTextInputValue('team_emoji').trim() || '🔹';
+      const teamKey = rawTeamKey.replace(/[^a-z0-9_-]/g, '');
+
+      if (!teamKey || teamKey.length < 2) {
+        await interaction.reply({ content: 'Team key must contain at least 2 valid characters (a-z, 0-9, _ or -).', flags: MessageFlags.Ephemeral });
         return;
       }
 
-      updateConfig(path, value);
-      await logAdminUiAction(interaction, 'admin-config', 'set', { field, value });
+      if (config.teams?.[teamKey]) {
+        await interaction.reply({ content: `Team \`${teamKey}\` already exists.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      updateConfig(`teams.${teamKey}`, { emoji: teamEmoji, label: teamLabel });
+      updateConfig(`roles.${teamKey}`, { player: 'ROLE_ID', coach: 'ROLE_ID' });
+      updateConfig(`channels.teamChats.${teamKey}`, '');
+      updateConfig(`channels.staffRooms.${teamKey}`, '');
+      updateConfig(`channels.privateChatCategories.${teamKey}`, '');
+      await logAdminUiAction(interaction, 'admin', 'new-team', { teamKey, teamLabel });
 
       try {
         await syncConfigSnapshotIfEnabled();
       } catch (error) {
-        await interaction.reply({ content: `✅ Updated **${path}**. ⚠️ Sync warning: ${error.message}`, ephemeral: true });
+        await interaction.reply({
+          content: `✅ Team created: **${teamLabel}** (\`${teamKey}\`). Configure roles/chats from Admin panel. ⚠️ Sync warning: ${error.message}`,
+          flags: MessageFlags.Ephemeral
+        });
         return;
       }
 
-      await interaction.reply({ content: `✅ Updated **${path}** to \`${value}\`.`, ephemeral: true });
+      await interaction.reply({
+        content: `✅ Team created: **${teamLabel}** (\`${teamKey}\`). It now appears in "Set Roles & Team Chats".`,
+        flags: MessageFlags.Ephemeral
+      });
     }
   }
 };

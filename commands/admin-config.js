@@ -1,7 +1,8 @@
-const { SlashCommandBuilder, PermissionFlagsBits } = require('discord.js');
+const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const { loadConfig, updateConfig } = require('../utils/config');
 const { loadDb } = require('../utils/database');
 const { syncAllToSheet } = require('../utils/googleSheetsSync');
+const { hasAdminAccess, adminAccessMessage } = require('../utils/adminAccess');
 
 const FIELD_MAP = {
   bot_token_reference: 'bot.tokenReference',
@@ -13,6 +14,7 @@ const FIELD_MAP = {
   logs_channel_id: 'channels.logs',
   ticket_channel_id: 'channels.ticket',
   admin_channel_id: 'channels.admin',
+  admin_role_id: 'bot.adminRoleId',
   mens_team_channel_id: 'channels.teamChats.mens',
   womens_team_channel_id: 'channels.teamChats.womens',
   mens_staff_room_id: 'channels.staffRooms.mens',
@@ -75,6 +77,7 @@ module.exports = {
       `Womens Private Chat Category: ${config.channels.privateChatCategories?.womens || 'not set'}`,
       `Logs Channel: ${config.channels.logs || 'not set'}`,
       `Admin Channel: ${config.channels.admin || 'not set'}`,
+      `Admin Role: ${config.bot.adminRoleId || 'not set'}`,
       `Ticket Channel/Category: ${config.channels.ticket || 'not set'}`,
       `Mens Label Emoji: ${config.teams?.mens?.emoji || 'not set'}`,
       `Womens Label Emoji: ${config.teams?.womens?.emoji || 'not set'}`,
@@ -84,13 +87,12 @@ module.exports = {
       '_Note: Bot token changes are stored for restart/reference and do not hot-swap runtime auth._'
     ].join('\n');
 
-    await interaction.reply({ content: message, ephemeral: true });
+    await interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
   },
 
   data: new SlashCommandBuilder()
     .setName('admin-config')
     .setDescription('View or update Firelands United bot configuration')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand((sub) =>
       sub
         .setName('view')
@@ -114,6 +116,7 @@ module.exports = {
               { name: 'Events channel ID', value: 'events_channel_id' },
               { name: 'Logs channel ID', value: 'logs_channel_id' },
               { name: 'Admin channel ID', value: 'admin_channel_id' },
+              { name: 'Admin role ID', value: 'admin_role_id' },
               { name: 'Ticket channel/category ID', value: 'ticket_channel_id' },
               { name: 'Mens team chat channel ID', value: 'mens_team_channel_id' },
               { name: 'Womens team chat channel ID', value: 'womens_team_channel_id' },
@@ -157,8 +160,9 @@ module.exports = {
     ),
 
   async execute(interaction) {
-    if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
-      await interaction.reply({ content: 'Administrator permission is required.', ephemeral: true });
+    const config = loadConfig();
+    if (!hasAdminAccess(interaction.member, config)) {
+      await interaction.reply({ content: adminAccessMessage(config), flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -186,19 +190,19 @@ module.exports = {
         if (!result.ok) {
           await interaction.reply({
             content: 'Could not sync because spreadsheet ID is not configured.',
-            ephemeral: true
+            flags: MessageFlags.Ephemeral
           });
           return;
         }
 
         await interaction.reply({
           content: `✅ Synced fixtures, attendance, command log, and config to Google Sheets (\`${result.spreadsheetId}\`).`,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       } catch (error) {
         await interaction.reply({
           content: `❌ Google sync failed: ${error.message}`,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -215,12 +219,12 @@ module.exports = {
       if (!value) {
         await interaction.reply({
           content: 'Please provide a token reference in the `value` option.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
       if (!validateField(field, value)) {
-        await interaction.reply({ content: 'Invalid token reference format.', ephemeral: true });
+        await interaction.reply({ content: 'Invalid token reference format.', flags: MessageFlags.Ephemeral });
         return;
       }
     } else if (field.endsWith('role_id')) {
@@ -234,7 +238,7 @@ module.exports = {
       if (!validateField(field, value)) {
         await interaction.reply({
           content: 'Please select a valid role using the `role` option or provide a valid role ID/name.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -249,7 +253,7 @@ module.exports = {
       if (!validateField(field, value)) {
         await interaction.reply({
           content: 'Please select a valid channel/category using the `channel` option or provide a valid channel ID/name.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -268,7 +272,7 @@ module.exports = {
       } catch (error) {
         await interaction.reply({
           content: `✅ Updated **${field}**. ⚠️ Google sync warning: ${error.message}`,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
         return;
       }
@@ -276,7 +280,7 @@ module.exports = {
 
     await interaction.reply({
       content: `✅ Updated **${field}**. ${field === 'bot_token_reference' ? 'Restart bot to use new token.' : ''}`,
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 };
