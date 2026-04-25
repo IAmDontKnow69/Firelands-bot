@@ -25,6 +25,7 @@ function createAdminPanelActionRow() {
       .addOptions([
         { label: 'Team Management', value: 'team_management', description: 'Select team, view settings, update roles/chats/emoji, create teams' },
         { label: 'Player Management', value: 'player_management', description: 'Manage player profiles, names, shirt numbers, and roles' },
+        { label: 'Coach Management', value: 'coach_management', description: 'Manage coach profiles, names, avatars, and teams' },
         { label: 'Google Tools', value: 'google_tools', description: 'Google Sheets + Calendar actions' },
         { label: 'Club Report', value: 'club_report', description: 'Run admin club attendance report' },
         { label: 'Config View', value: 'config_view', description: 'Run admin-config view from this panel' }

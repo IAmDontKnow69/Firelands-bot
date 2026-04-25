@@ -117,6 +117,8 @@ function createTeamConfigActionRow(config, team) {
         { label: 'Set Staff Room ID', value: 'staff_room', description: `Set ${label} staff room channel` },
         { label: 'Set Private Chat Category', value: 'private_category', description: `Set category for attendance chats` },
         { label: 'Set Team Emoji', value: 'team_emoji', description: `Set emoji for ${label}` },
+        { label: 'Set Captain Role ID', value: 'captain_role', description: `Set ${label} captain role` },
+        { label: 'Set Captain Emoji', value: 'captain_emoji', description: `Set captain emoji shown after team emoji` },
         { label: 'Set Team Name', value: 'team_name', description: `Rename ${label}` },
         { label: 'Set Event Name Phrases', value: 'event_name_phrases', description: `Set exact phrase matching for ${label}` },
         { label: 'Set Fixture Team', value: 'fixture_team', description: `Assign a fixture to ${label}` },
@@ -161,6 +163,8 @@ function getTeamConfigSummary(config, guild, team) {
     `• Staff Room: ${formatConfigRef(guild, 'channel', config.channels?.staffRooms?.[team])}`,
     `• Private Chat Category: ${formatConfigRef(guild, 'channel', config.channels?.privateChatCategories?.[team])}`,
     `• Team Emoji: ${meta.emoji}`,
+    `• Captain Role: ${formatConfigRef(guild, 'role', config.teams?.[team]?.captainRoleId)}`,
+    `• Captain Emoji: ${config.teams?.[team]?.captainEmoji || 'not set'}`,
     `• Event Name Phrases (exact): ${(config.teams?.[team]?.eventNamePhrases || []).join(', ') || 'not set'}`
   ].join('\n');
 }
@@ -317,11 +321,34 @@ function getPlayerNameForUi(user, member, profile) {
   return profile?.customName || member?.displayName || user?.globalName || user?.username || 'Player';
 }
 
+function getUserTeamFromMember(member, config, mode = 'player') {
+  return Object.keys(config.teams || {}).find((teamKey) => {
+    const roleId = mode === 'coach' ? config.roles?.[teamKey]?.coach : config.roles?.[teamKey]?.player;
+    return roleId && roleId !== 'ROLE_ID' && member?.roles?.cache?.has(roleId);
+  }) || '';
+}
+
+function getCaptainSuffix(config, team, member) {
+  const captainRoleId = config.teams?.[team]?.captainRoleId;
+  if (!captainRoleId || !member?.roles?.cache?.has(captainRoleId)) return '';
+  return config.teams?.[team]?.captainEmoji || '🅒';
+}
+
+function buildRichPlayerMention(config, user, member, profile, team) {
+  const resolvedTeam = team || getUserTeamFromMember(member, config, 'player');
+  const teamEmoji = config.teams?.[resolvedTeam]?.emoji || '🔹';
+  const captainEmoji = getCaptainSuffix(config, resolvedTeam, member);
+  const shirt = profile?.shirtNumber ? `#${profile.shirtNumber}` : '#--';
+  const baseName = getPlayerNameForUi(user, member, profile);
+  return `${teamEmoji}${captainEmoji ? ` ${captainEmoji}` : ''} ${shirt} ${baseName}`.trim();
+}
+
 function buildAbsenceTicketChannelName(config, event, profile, member, user) {
   const teamEmoji = config.teams?.[event.team]?.emoji || 'team';
+  const captainEmoji = getCaptainSuffix(config, event.team, member);
   const displayName = getPlayerNameForUi(user, member, profile);
   const eventDateLabel = getCompactDateLabel(event.date);
-  return sanitizeChannelName(`${teamEmoji}-${displayName}-${eventDateLabel}-${event.title}`);
+  return sanitizeChannelName(`${teamEmoji}${captainEmoji}-${displayName}-${eventDateLabel}-${event.title}`);
 }
 
 function createPlayerManagementRow() {
@@ -336,18 +363,18 @@ function createPlayerManagementRow() {
 
 function createPlayerProfileActionRow(userId) {
   return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId(`admin_player_action:${userId}`)
-      .setPlaceholder('Player profile actions')
-      .addOptions([
-        { label: 'Update Display Name', value: 'set_name', description: 'Set custom name used in bot UI/chats' },
-        { label: 'Update Face PNG URL', value: 'set_face', description: 'Set a PNG URL for player face image' },
-        { label: 'Update Shirt Number', value: 'set_shirt', description: 'Set player shirt number' },
-        { label: 'Update Teams', value: 'set_teams', description: 'Set teams assigned in player profile' },
-        { label: 'Assign Discord Roles', value: 'assign_roles', description: 'Assign additional roles to this user' },
-        { label: 'Update Joined Date', value: 'set_joined', description: 'Set custom joined date value for profile' },
-        { label: 'Update Notes', value: 'set_notes', description: 'Set profile notes/extra details' }
-      ])
+    new ButtonBuilder().setCustomId(`admin_player_action:set_name:${userId}`).setLabel('Name').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`admin_player_action:set_face:${userId}`).setLabel('Photo URL').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`admin_player_action:set_shirt:${userId}`).setLabel('Shirt').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`admin_player_action:set_teams:${userId}`).setLabel('Teams').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_player_action:set_notes:${userId}`).setLabel('Notes').setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function createPlayerProfileActionRow2(userId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`admin_player_action:assign_roles:${userId}`).setLabel('Assign Roles').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_player_action:set_joined:${userId}`).setLabel('Joined').setStyle(ButtonStyle.Secondary)
   );
 }
 
@@ -377,6 +404,84 @@ function createPlayerRoleAssignRow(userId) {
   );
 }
 
+async function handleAdminPlayerAction(interaction, selectedAction, userId) {
+  const targetMember = await interaction.guild.members.fetch(userId).catch(() => null);
+  const targetUser = targetMember?.user || await interaction.client.users.fetch(userId).catch(() => null);
+  const latestConfig = loadConfig();
+  const existingProfile = getPlayerProfile(userId) || {};
+  const inferredPlayerTeams = Object.keys(latestConfig.roles || {}).filter((teamKey) => {
+    const roleId = latestConfig.roles?.[teamKey]?.player;
+    return roleId && roleId !== 'ROLE_ID' && targetMember?.roles?.cache?.has(roleId);
+  });
+  const inferredCoachTeams = Object.keys(latestConfig.roles || {}).filter((teamKey) => {
+    const roleId = latestConfig.roles?.[teamKey]?.coach;
+    return roleId && roleId !== 'ROLE_ID' && targetMember?.roles?.cache?.has(roleId);
+  });
+
+  const mergedProfile = {
+    ...existingProfile,
+    userId,
+    teams: Array.from(new Set([...(existingProfile.teams || []), ...inferredPlayerTeams])),
+    coachTeams: Array.from(new Set([...(existingProfile.coachTeams || []), ...inferredCoachTeams])),
+    roles: existingProfile.roles || (targetMember ? Array.from(targetMember.roles.cache.keys()).filter((id) => id !== interaction.guild.id) : [])
+  };
+  upsertPlayerProfile(userId, mergedProfile);
+
+  if (selectedAction === 'set_teams') {
+    await interaction.update({
+      content: 'Select profile teams for this player.',
+      embeds: [],
+      components: [createPlayerTeamSelectRow(loadConfig(), userId), createBackButtonRow('admin_back_player_management')]
+    });
+    return true;
+  }
+
+  if (selectedAction === 'assign_roles') {
+    await interaction.update({
+      content: 'Select roles to add to this player.',
+      embeds: [],
+      components: [createPlayerRoleAssignRow(userId), createBackButtonRow('admin_back_player_management')]
+    });
+    return true;
+  }
+
+  const modalTitles = {
+    set_name: 'Set Player Display Name',
+    set_face: 'Set Player Face URL (.png or .webp)',
+    set_shirt: 'Set Player Shirt Number',
+    set_joined: 'Set Joined Date (YYYY-MM-DD)',
+    set_notes: 'Set Player Notes'
+  };
+  const fieldByAction = {
+    set_name: { id: 'custom_name', label: 'Custom display name', value: mergedProfile.customName || '' },
+    set_face: { id: 'face_image_url', label: 'Face image URL', value: mergedProfile.faceImageUrl || mergedProfile.facePngUrl || '' },
+    set_shirt: { id: 'shirt_number', label: 'Shirt number', value: mergedProfile.shirtNumber || '' },
+    set_joined: { id: 'joined_discord_at', label: 'Joined date', value: mergedProfile.joinedDiscordAt || (targetMember?.joinedAt ? targetMember.joinedAt.toISOString().slice(0, 10) : '') },
+    set_notes: { id: 'notes', label: 'Profile notes', value: mergedProfile.notes || '' }
+  };
+  const field = fieldByAction[selectedAction];
+  if (!field) return false;
+
+  const modal = new ModalBuilder()
+    .setCustomId(`admin_player_profile_modal:${selectedAction}:${userId}`)
+    .setTitle(modalTitles[selectedAction] || 'Update Player Profile');
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId(field.id)
+        .setLabel(field.label)
+        .setStyle(selectedAction === 'set_notes' ? TextInputStyle.Paragraph : TextInputStyle.Short)
+        .setRequired(!['set_notes', 'set_face'].includes(selectedAction))
+        .setValue(field.value)
+        .setMaxLength(selectedAction === 'set_notes' ? 300 : 200)
+    )
+  );
+
+  await interaction.showModal(modal);
+  return true;
+}
+
 function buildPlayerProfileSummary(config, guild, user, member, profile = {}) {
   const discordName = user?.tag || user?.username || profile.userId || 'Unknown';
   const displayName = getPlayerNameForUi(user, member, profile);
@@ -384,7 +489,7 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}) {
   const roles = (profile.roles || []).map((roleId) => formatConfigRef(guild, 'role', roleId)).join(', ') || 'not set';
   const joined = profile.joinedDiscordAt || (member?.joinedAt ? member.joinedAt.toISOString().slice(0, 10) : 'unknown');
   const shirtNumber = profile.shirtNumber || 'not set';
-  const facePngUrl = profile.facePngUrl || 'not set';
+  const faceImageUrl = profile.faceImageUrl || profile.facePngUrl || 'not set';
   const notes = profile.notes || 'none';
 
   return [
@@ -392,7 +497,7 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}) {
     `• Discord: ${discordName}`,
     `• Custom Name: ${displayName}`,
     `• Shirt Number: ${shirtNumber}`,
-    `• Face PNG: ${facePngUrl}`,
+    `• Face Image: ${faceImageUrl}`,
     `• Teams: ${teamLabels}`,
     `• Roles: ${roles}`,
     `• Joined Discord: ${joined}`,
@@ -409,7 +514,11 @@ function createAbsenceTicketDecisionRow(eventId, userId) {
     new ButtonBuilder()
       .setCustomId(`absence_ticket_decline:${eventId}:${userId}`)
       .setLabel('↩️ Decline (Ask to Attend)')
-      .setStyle(ButtonStyle.Secondary)
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`absence_ticket_player_attend:${eventId}:${userId}`)
+      .setLabel('🟢 I can attend')
+      .setStyle(ButtonStyle.Primary)
   );
 }
 
@@ -580,7 +689,17 @@ module.exports = {
         return;
       }
 
-      if (interaction.customId.startsWith('absence_ticket_confirm:') || interaction.customId.startsWith('absence_ticket_decline:')) {
+      if (interaction.customId.startsWith('admin_player_action:')) {
+        if (!hasAdminAccess(interaction.member, config)) {
+          await denyAdminAccess();
+          return;
+        }
+        const [, selectedAction, userId] = interaction.customId.split(':');
+        await handleAdminPlayerAction(interaction, selectedAction, userId);
+        return;
+      }
+
+      if (interaction.customId.startsWith('absence_ticket_confirm:') || interaction.customId.startsWith('absence_ticket_decline:') || interaction.customId.startsWith('absence_ticket_player_attend:')) {
         const [, eventId, playerId] = interaction.customId.split(':');
         const db = loadDb();
         const event = db.events[eventId];
@@ -590,6 +709,24 @@ module.exports = {
         }
 
         const teamRoles = teamRolesMap[event.team];
+
+        if (interaction.customId.startsWith('absence_ticket_player_attend:')) {
+          if (interaction.user.id !== playerId) {
+            await interaction.reply({ content: 'Only the player can use this button.', flags: MessageFlags.Ephemeral });
+            return;
+          }
+          setResponse(eventId, playerId, {
+            status: 'yes',
+            reason: '',
+            confirmed: false,
+            updatedAt: new Date().toISOString()
+          });
+          await triggerGoogleSync(context);
+          await interaction.reply({ content: '🟢 Marked as attending. This absence ticket can be closed.' });
+          await context.sendLog(`🟢 <@${playerId}> switched to attending for **${event.title}** from the ticket channel.`);
+          return;
+        }
+
         if (!teamRoles?.coach || !hasRole(interaction.member, teamRoles.coach)) {
           await interaction.reply({ content: 'Only team coaches/staff can use this decision button.', flags: MessageFlags.Ephemeral });
           return;
@@ -764,6 +901,15 @@ module.exports = {
         if (action === 'player_management') {
           await interaction.update({
             content: 'Player Management: select a player to edit profile details.',
+            embeds: [],
+            components: [createPlayerManagementRow(), createAdminBackButtonRow()]
+          });
+          return;
+        }
+
+        if (action === 'coach_management') {
+          await interaction.update({
+            content: 'Coach Management: select a coach to edit profile details (same workflow as player profiles).',
             embeds: [],
             components: [createPlayerManagementRow(), createAdminBackButtonRow()]
           });
@@ -1012,6 +1158,22 @@ module.exports = {
           return;
         }
 
+        if (selectedAction === 'captain_role') {
+          const row = new ActionRowBuilder().addComponents(
+            new RoleSelectMenuBuilder()
+              .setCustomId(`admin_set_role:teams.${team}.captainRoleId:${team}`)
+              .setPlaceholder(`Choose ${teamLabel} Captain Role`)
+              .setMinValues(1)
+              .setMaxValues(1)
+          );
+          await interaction.update({
+            content: `Select the role to assign for **${teamLabel} Captain Role**.`,
+            embeds: [],
+            components: [row, createBackButtonRow(`admin_back_team_config:${team}`)]
+          });
+          return;
+        }
+
         if (selectedAction === 'team_chat') {
           const row = new ActionRowBuilder().addComponents(
             new ChannelSelectMenuBuilder()
@@ -1077,6 +1239,24 @@ module.exports = {
             .setStyle(TextInputStyle.Short)
             .setRequired(true)
             .setValue(getTeamMeta(config, team).emoji)
+            .setMaxLength(40);
+
+          modal.addComponents(new ActionRowBuilder().addComponents(emojiInput));
+          await interaction.showModal(modal);
+          return;
+        }
+
+        if (selectedAction === 'captain_emoji') {
+          const modal = new ModalBuilder()
+            .setCustomId(`admin_set_captain_emoji_modal:${team}`)
+            .setTitle(`Set ${teamLabel} Captain Emoji`);
+
+          const emojiInput = new TextInputBuilder()
+            .setCustomId('captain_emoji')
+            .setLabel('Emoji to show for captains')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setValue(config.teams?.[team]?.captainEmoji || '🅒')
             .setMaxLength(40);
 
           modal.addComponents(new ActionRowBuilder().addComponents(emojiInput));
@@ -1234,70 +1414,9 @@ module.exports = {
       }
 
       if (interaction.customId.startsWith('admin_player_action:')) {
-        const userId = interaction.customId.split(':')[1];
         const selectedAction = interaction.values[0];
-        const targetMember = await interaction.guild.members.fetch(userId).catch(() => null);
-        const targetUser = targetMember?.user || await interaction.client.users.fetch(userId).catch(() => null);
-        const existingProfile = getPlayerProfile(userId) || {};
-        const mergedProfile = {
-          ...existingProfile,
-          userId,
-          roles: existingProfile.roles || (targetMember ? Array.from(targetMember.roles.cache.keys()).filter((id) => id !== interaction.guild.id) : [])
-        };
-        upsertPlayerProfile(userId, mergedProfile);
-
-        if (selectedAction === 'set_teams') {
-          await interaction.update({
-            content: 'Select profile teams for this player.',
-            embeds: [],
-            components: [createPlayerTeamSelectRow(loadConfig(), userId), createBackButtonRow('admin_back_player_management')]
-          });
-          return;
-        }
-
-        if (selectedAction === 'assign_roles') {
-          await interaction.update({
-            content: 'Select roles to add to this player.',
-            embeds: [],
-            components: [createPlayerRoleAssignRow(userId), createBackButtonRow('admin_back_player_management')]
-          });
-          return;
-        }
-
-        const modalTitles = {
-          set_name: 'Set Player Display Name',
-          set_face: 'Set Player Face PNG URL',
-          set_shirt: 'Set Player Shirt Number',
-          set_joined: 'Set Joined Date (YYYY-MM-DD)',
-          set_notes: 'Set Player Notes'
-        };
-        const fieldByAction = {
-          set_name: { id: 'custom_name', label: 'Custom display name', value: mergedProfile.customName || '' },
-          set_face: { id: 'face_png_url', label: 'Face PNG URL', value: mergedProfile.facePngUrl || '' },
-          set_shirt: { id: 'shirt_number', label: 'Shirt number', value: mergedProfile.shirtNumber || '' },
-          set_joined: { id: 'joined_discord_at', label: 'Joined date', value: mergedProfile.joinedDiscordAt || (targetMember?.joinedAt ? targetMember.joinedAt.toISOString().slice(0, 10) : '') },
-          set_notes: { id: 'notes', label: 'Profile notes', value: mergedProfile.notes || '' }
-        };
-        const field = fieldByAction[selectedAction];
-        if (!field) return;
-
-        const modal = new ModalBuilder()
-          .setCustomId(`admin_player_profile_modal:${selectedAction}:${userId}`)
-          .setTitle(modalTitles[selectedAction] || 'Update Player Profile');
-
-        modal.addComponents(
-          new ActionRowBuilder().addComponents(
-            new TextInputBuilder()
-              .setCustomId(field.id)
-              .setLabel(field.label)
-              .setStyle(selectedAction === 'set_notes' ? TextInputStyle.Paragraph : TextInputStyle.Short)
-              .setRequired(!['set_notes', 'set_face'].includes(selectedAction))
-              .setValue(field.value)
-              .setMaxLength(selectedAction === 'set_notes' ? 300 : 200)
-          )
-        );
-
-        await interaction.showModal(modal);
+        const userId = interaction.customId.split(':')[1];
+        await handleAdminPlayerAction(interaction, selectedAction, userId);
         return;
       }
 
@@ -1337,7 +1456,7 @@ module.exports = {
       await interaction.update({
         content: buildPlayerProfileSummary(loadConfig(), interaction.guild, targetUser, targetMember, profile),
         embeds: [],
-        components: [createPlayerProfileActionRow(userId), createBackButtonRow('admin_back_player_management')]
+        components: [createPlayerProfileActionRow(userId), createPlayerProfileActionRow2(userId), createBackButtonRow('admin_back_player_management')]
       });
       await triggerGoogleSync(context);
       return;
@@ -1459,7 +1578,7 @@ module.exports = {
       }
 
       await interaction.editReply({
-        content: `${renderProgressMessage(100, `Updated **${configPath}** to <@&${roleId}>.`)}`,
+        content: `${renderProgressMessage(100, `Updated ${configPath} to <@&${roleId}>.`)}\n\n${getTeamConfigSummary(loadConfig(), interaction.guild, team)}`,
         embeds: [],
         components: [createTeamConfigActionRow(loadConfig(), team), createBackButtonRow('admin_back_team_management')]
       });
@@ -1475,21 +1594,31 @@ module.exports = {
       const member = await interaction.guild.members.fetch(userId).catch(() => null);
       const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
       const existing = getPlayerProfile(userId) || {};
+      const inferredPlayerTeams = Object.keys(loadConfig().roles || {}).filter((teamKey) => {
+        const roleId = loadConfig().roles?.[teamKey]?.player;
+        return roleId && roleId !== 'ROLE_ID' && member?.roles?.cache?.has(roleId);
+      });
+      const inferredCoachTeams = Object.keys(loadConfig().roles || {}).filter((teamKey) => {
+        const roleId = loadConfig().roles?.[teamKey]?.coach;
+        return roleId && roleId !== 'ROLE_ID' && member?.roles?.cache?.has(roleId);
+      });
       const seeded = upsertPlayerProfile(userId, {
         userId,
         customName: existing.customName || '',
         shirtNumber: existing.shirtNumber || '',
-        teams: existing.teams || [],
+        teams: Array.from(new Set([...(existing.teams || []), ...inferredPlayerTeams])),
+        coachTeams: Array.from(new Set([...(existing.coachTeams || []), ...inferredCoachTeams])),
         roles: existing.roles || (member ? Array.from(member.roles.cache.keys()).filter((id) => id !== interaction.guild.id) : []),
         joinedDiscordAt: existing.joinedDiscordAt || (member?.joinedAt ? member.joinedAt.toISOString().slice(0, 10) : ''),
-        facePngUrl: existing.facePngUrl || '',
+        faceImageUrl: existing.faceImageUrl || existing.facePngUrl || '',
+        facePngUrl: existing.faceImageUrl || existing.facePngUrl || '',
         notes: existing.notes || ''
       });
 
       await interaction.update({
         content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, seeded),
         embeds: [],
-        components: [createPlayerProfileActionRow(userId), createBackButtonRow('admin_back_player_management')]
+        components: [createPlayerProfileActionRow(userId), createPlayerProfileActionRow2(userId), createBackButtonRow('admin_back_player_management')]
       });
       await triggerGoogleSync(context);
       return;
@@ -1509,7 +1638,7 @@ module.exports = {
       await interaction.update({
         content: buildPlayerProfileSummary(loadConfig(), interaction.guild, member?.user, member, profile),
         embeds: [],
-        components: [createPlayerProfileActionRow(userId), createBackButtonRow('admin_back_player_management')]
+        components: [createPlayerProfileActionRow(userId), createPlayerProfileActionRow2(userId), createBackButtonRow('admin_back_player_management')]
       });
       await triggerGoogleSync(context);
       return;
@@ -1541,7 +1670,7 @@ module.exports = {
       }
 
       await interaction.editReply({
-        content: `${renderProgressMessage(100, `Updated **${configPath}** to <#${channelId}>.`)}`,
+        content: `${renderProgressMessage(100, `Updated ${configPath} to <#${channelId}>.`)}${team === 'global' ? '' : `\n\n${getTeamConfigSummary(loadConfig(), interaction.guild, team)}`}`,
         embeds: [],
         components: [team === 'global' ? createGoogleToolsRow() : createTeamConfigActionRow(loadConfig(), team), createBackButtonRow(team === 'global' ? 'admin_back_google_tools' : 'admin_back_team_management')]
       });
@@ -1566,7 +1695,7 @@ module.exports = {
 
       const reason = interaction.fields.getTextInputValue('reason').trim();
       const profile = getPlayerProfile(interaction.user.id);
-      const playerDisplayName = getPlayerNameForUi(interaction.user, interaction.member, profile);
+      const playerDisplayName = buildRichPlayerMention(config, interaction.user, interaction.member, profile, event.team);
 
       setResponse(eventId, interaction.user.id, {
         status: 'pending_no',
@@ -1577,10 +1706,12 @@ module.exports = {
       });
       await interaction.reply({
         content: [
-          `🔴 Thank you ${playerDisplayName}, your absence for:`,
+          `${playerDisplayName}, your absence for:`,
           `📅 ${event.title}`,
           `🕒 ${new Date(event.date).toLocaleString()}`,
-          'was submitted and is pending coach confirmation.'
+          ':exclamation: The reason why:',
+          reason,
+          'is pending coach confirmation.'
         ].join('\n'),
         flags: MessageFlags.Ephemeral
       });
@@ -1625,7 +1756,7 @@ module.exports = {
 
         await ticketChannel.send({
           content: [
-            `Player's name: ${playerDisplayName} (<@${interaction.user.id}>)`,
+            `Team/Player: ${playerDisplayName} (<@${interaction.user.id}>)`,
             `Date of event: ${eventDateLabel}`,
             `Name of event: ${event.title}`,
             `Reason for not attending: ${reason}`,
@@ -1686,29 +1817,30 @@ module.exports = {
       }
       const [, action, userId] = interaction.customId.split(':');
       const updates = {};
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       if (action === 'set_name') updates.customName = interaction.fields.getTextInputValue('custom_name').trim();
       if (action === 'set_face') {
-        const facePngUrl = interaction.fields.getTextInputValue('face_png_url').trim();
-        if (facePngUrl && !/^https?:\/\/\S+\.png(?:\?\S*)?$/i.test(facePngUrl)) {
-          await interaction.reply({ content: 'Face URL must be a direct PNG link (ending in .png).', flags: MessageFlags.Ephemeral });
+        const faceImageUrl = interaction.fields.getTextInputValue('face_image_url').trim();
+        if (faceImageUrl && !/^https?:\/\/\S+\.(png|webp)(?:\?\S*)?$/i.test(faceImageUrl)) {
+          await interaction.editReply({ content: 'Face URL must be a direct image link ending in .png or .webp.' });
           return;
         }
-        updates.facePngUrl = facePngUrl;
+        updates.faceImageUrl = faceImageUrl;
+        updates.facePngUrl = faceImageUrl;
       }
       if (action === 'set_shirt') updates.shirtNumber = interaction.fields.getTextInputValue('shirt_number').trim();
       if (action === 'set_joined') updates.joinedDiscordAt = interaction.fields.getTextInputValue('joined_discord_at').trim();
       if (action === 'set_notes') updates.notes = interaction.fields.getTextInputValue('notes').trim();
 
       const profile = upsertPlayerProfile(userId, updates);
-      await triggerGoogleSync(context);
       const member = await interaction.guild.members.fetch(userId).catch(() => null);
       const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
+      await triggerGoogleSync(context);
 
-      await interaction.reply({
+      await interaction.editReply({
         content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, profile),
-        components: [createPlayerProfileActionRow(userId), createBackButtonRow('admin_back_player_management')],
-        flags: MessageFlags.Ephemeral
+        components: [createPlayerProfileActionRow(userId), createPlayerProfileActionRow2(userId), createBackButtonRow('admin_back_player_management')],
       });
       return;
     }
@@ -1772,6 +1904,21 @@ module.exports = {
       const latestConfig = loadConfig();
       await interaction.editReply({
         content: `${renderProgressMessage(100, `Team name updated to **${teamName}**.`)}\n\n${getTeamConfigSummary(latestConfig, interaction.guild, team)}`
+      });
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('admin_set_captain_emoji_modal:')) {
+      if (!hasAdminAccess(interaction.member, config)) {
+        await denyAdminAccess();
+        return;
+      }
+      const team = interaction.customId.split(':')[1];
+      const captainEmoji = interaction.fields.getTextInputValue('captain_emoji').trim() || '🅒';
+      updateConfig(`teams.${team}.captainEmoji`, captainEmoji);
+      await interaction.reply({
+        content: `${renderProgressMessage(100, `Updated teams.${team}.captainEmoji to ${captainEmoji}.`)}\n\n${getTeamConfigSummary(loadConfig(), interaction.guild, team)}`,
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
