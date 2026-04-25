@@ -23,7 +23,7 @@ function requiredHeaders() {
     'Womens Fixtures': ['eventId', 'title', 'date', 'team', 'discordMessageId', 'updatedAt'],
     Attendance: ['eventId', 'userId', 'username', 'team', 'status', 'updatedAt'],
     Config: ['key', 'value', 'updatedAt'],
-    'Config IDs': ['key', 'value', 'updatedAt']
+    Players: ['userId', 'customName', 'shirtNumber', 'teams', 'roles', 'joinedDiscordAt', 'notes', 'updatedAt']
   };
 }
 

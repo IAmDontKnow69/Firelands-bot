@@ -6,6 +6,7 @@ const {
   ButtonBuilder,
   ButtonStyle,
   StringSelectMenuBuilder,
+  UserSelectMenuBuilder,
   RoleSelectMenuBuilder,
   ChannelSelectMenuBuilder,
   ChannelType,
@@ -13,9 +14,20 @@ const {
   EmbedBuilder,
   MessageFlags
 } = require('discord.js');
-const { loadDb, saveDb, setResponse, setAbsenceTicket, deleteAbsenceTicket, setEventMessageId } = require('../utils/database');
+const {
+  loadDb,
+  saveDb,
+  setResponse,
+  clearResponse,
+  setAbsenceTicket,
+  deleteAbsenceTicket,
+  setEventMessageId,
+  upsertPlayerProfile,
+  getPlayerProfile,
+  getPlayerDisplayName
+} = require('../utils/database');
 const { loadConfig, updateConfig } = require('../utils/config');
-const { fetchCalendarEvents } = require('../utils/googleCalendar');
+const { fetchCalendarEvents, titleMatchesPhrase } = require('../utils/googleCalendar');
 const { syncAllToSheet, appendCommandLogRow } = require('../utils/googleSheetsSync');
 const coachCommand = require('../commands/coach');
 const adminCommand = require('../commands/admin');
@@ -106,9 +118,9 @@ function createTeamConfigActionRow(config, team) {
         { label: 'Set Private Chat Category', value: 'private_category', description: `Set category for attendance chats` },
         { label: 'Set Team Emoji', value: 'team_emoji', description: `Set emoji for ${label}` },
         { label: 'Set Team Name', value: 'team_name', description: `Rename ${label}` },
-        { label: 'Set Event Name Phrases', value: 'event_name_phrases', description: `Set phrase matching for ${label}` },
+        { label: 'Set Event Name Phrases', value: 'event_name_phrases', description: `Set exact phrase matching for ${label}` },
         { label: 'Set Fixture Team', value: 'fixture_team', description: `Assign a fixture to ${label}` },
-        { label: 'Auto-Assign Fixtures by Name', value: 'auto_assign_fixtures', description: `Match fixtures to ${label} by phrase` },
+        { label: 'Auto-Assign Fixtures by Name', value: 'auto_assign_fixtures', description: `Match fixtures to ${label} by exact phrase` },
         { label: 'Force Send Attendance', value: 'force_send_attendance', description: `Post attendance prompts for ${label} fixtures` }
       ])
   );
@@ -149,7 +161,7 @@ function getTeamConfigSummary(config, guild, team) {
     `• Staff Room: ${formatConfigRef(guild, 'channel', config.channels?.staffRooms?.[team])}`,
     `• Private Chat Category: ${formatConfigRef(guild, 'channel', config.channels?.privateChatCategories?.[team])}`,
     `• Team Emoji: ${meta.emoji}`,
-    `• Event Name Phrases: ${(config.teams?.[team]?.eventNamePhrases || []).join(', ') || 'not set'}`
+    `• Event Name Phrases (exact): ${(config.teams?.[team]?.eventNamePhrases || []).join(', ') || 'not set'}`
   ].join('\n');
 }
 
@@ -293,6 +305,111 @@ function getEventDateLabel(eventDate) {
   return new Date(eventDate).toISOString().slice(0, 10);
 }
 
+function getCompactDateLabel(eventDate) {
+  const date = new Date(eventDate);
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(date.getUTCDate()).padStart(2, '0');
+  const yy = String(date.getUTCFullYear()).slice(-2);
+  return `${mm}/${dd}/${yy}`;
+}
+
+function getPlayerNameForUi(user, member, profile) {
+  return profile?.customName || member?.displayName || user?.globalName || user?.username || 'Player';
+}
+
+function buildAbsenceTicketChannelName(config, event, profile, member, user) {
+  const teamEmoji = config.teams?.[event.team]?.emoji || 'team';
+  const displayName = getPlayerNameForUi(user, member, profile);
+  const eventDateLabel = getCompactDateLabel(event.date);
+  return sanitizeChannelName(`${teamEmoji}-${displayName}-${eventDateLabel}-${event.title}`);
+}
+
+function createPlayerManagementRow() {
+  return new ActionRowBuilder().addComponents(
+    new UserSelectMenuBuilder()
+      .setCustomId('admin_player_select')
+      .setPlaceholder('Select a player to manage')
+      .setMinValues(1)
+      .setMaxValues(1)
+  );
+}
+
+function createPlayerProfileActionRow(userId) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`admin_player_action:${userId}`)
+      .setPlaceholder('Player profile actions')
+      .addOptions([
+        { label: 'Update Display Name', value: 'set_name', description: 'Set custom name used in bot UI/chats' },
+        { label: 'Update Shirt Number', value: 'set_shirt', description: 'Set player shirt number' },
+        { label: 'Update Teams', value: 'set_teams', description: 'Set teams assigned in player profile' },
+        { label: 'Assign Discord Roles', value: 'assign_roles', description: 'Assign additional roles to this user' },
+        { label: 'Update Joined Date', value: 'set_joined', description: 'Set custom joined date value for profile' },
+        { label: 'Update Notes', value: 'set_notes', description: 'Set profile notes/extra details' }
+      ])
+  );
+}
+
+function createPlayerTeamSelectRow(config, userId) {
+  const options = Object.entries(config.teams || {}).map(([team, meta]) => ({
+    label: `${meta.emoji || '🔹'} ${meta.label || team}`.slice(0, 100),
+    value: team
+  }));
+
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`admin_player_set_teams:${userId}`)
+      .setPlaceholder('Select teams for this player')
+      .setMinValues(0)
+      .setMaxValues(Math.min(options.length, 25))
+      .addOptions(options.slice(0, 25))
+  );
+}
+
+function createPlayerRoleAssignRow(userId) {
+  return new ActionRowBuilder().addComponents(
+    new RoleSelectMenuBuilder()
+      .setCustomId(`admin_player_assign_roles:${userId}`)
+      .setPlaceholder('Select roles to add')
+      .setMinValues(1)
+      .setMaxValues(10)
+  );
+}
+
+function buildPlayerProfileSummary(config, guild, user, member, profile = {}) {
+  const discordName = user?.tag || user?.username || profile.userId || 'Unknown';
+  const displayName = getPlayerNameForUi(user, member, profile);
+  const teamLabels = (profile.teams || []).map((team) => getTeamMeta(config, team).label).join(', ') || 'not set';
+  const roles = (profile.roles || []).map((roleId) => formatConfigRef(guild, 'role', roleId)).join(', ') || 'not set';
+  const joined = profile.joinedDiscordAt || (member?.joinedAt ? member.joinedAt.toISOString().slice(0, 10) : 'unknown');
+  const shirtNumber = profile.shirtNumber || 'not set';
+  const notes = profile.notes || 'none';
+
+  return [
+    `Managing player: <@${user?.id || profile.userId}>`,
+    `• Discord: ${discordName}`,
+    `• Custom Name: ${displayName}`,
+    `• Shirt Number: ${shirtNumber}`,
+    `• Teams: ${teamLabels}`,
+    `• Roles: ${roles}`,
+    `• Joined Discord: ${joined}`,
+    `• Notes: ${notes}`
+  ].join('\n');
+}
+
+function createAbsenceTicketDecisionRow(eventId, userId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`absence_ticket_confirm:${eventId}:${userId}`)
+      .setLabel('✅ Confirm Not Attending')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`absence_ticket_decline:${eventId}:${userId}`)
+      .setLabel('↩️ Decline (Ask to Attend)')
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
+
 function summarizeAttendance(event, db, guild, teamRolesMap) {
   if (!event.team || !teamRolesMap[event.team]?.player) return 'Attendance: n/a';
 
@@ -407,6 +524,14 @@ module.exports = {
         });
         return;
       }
+      if (interaction.customId === 'admin_back_player_management') {
+        await interaction.update({
+          content: 'Player Management: select a player to edit profile details.',
+          embeds: [],
+          components: [createPlayerManagementRow(), createAdminBackButtonRow()]
+        });
+        return;
+      }
       if (interaction.customId.startsWith('admin_back_team_config:')) {
         const team = interaction.customId.split(':')[1];
         const latestConfig = context.getConfig();
@@ -452,6 +577,49 @@ module.exports = {
         return;
       }
 
+      if (interaction.customId.startsWith('absence_ticket_confirm:') || interaction.customId.startsWith('absence_ticket_decline:')) {
+        const [, eventId, playerId] = interaction.customId.split(':');
+        const db = loadDb();
+        const event = db.events[eventId];
+        if (!event) {
+          await interaction.reply({ content: 'Event no longer exists for this ticket.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+
+        const teamRoles = teamRolesMap[event.team];
+        if (!teamRoles?.coach || !hasRole(interaction.member, teamRoles.coach)) {
+          await interaction.reply({ content: 'Only team coaches/staff can use this decision button.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+
+        if (interaction.customId.startsWith('absence_ticket_confirm:')) {
+          setResponse(eventId, playerId, {
+            status: 'confirmed_no',
+            confirmed: true,
+            confirmedBy: interaction.user.id,
+            confirmedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          });
+          await triggerGoogleSync(context);
+          await interaction.reply({ content: `✅ Absence confirmed for <@${playerId}>.` });
+          await context.sendLog(`✅ ${interaction.user.tag} confirmed not attending for <@${playerId}> on **${event.title}**.`);
+          return;
+        }
+
+        clearResponse(eventId, playerId);
+        await triggerGoogleSync(context);
+        const member = await interaction.guild.members.fetch(playerId).catch(() => null);
+        await member?.send(`Your absence request for **${event.title}** was declined. Please use the attendance button to confirm you can attend.`).catch(() => null);
+        await interaction.reply({
+          content: [
+            `↩️ Absence request declined for <@${playerId}>.`,
+            'Player should now confirm attendance from the original event message.'
+          ].join('\n')
+        });
+        await context.sendLog(`↩️ ${interaction.user.tag} declined not-attending request for <@${playerId}> on **${event.title}**.`);
+        return;
+      }
+
       const parsed = parseCustomId(interaction.customId);
       const db = loadDb();
       const event = db.events[parsed.eventId];
@@ -477,13 +645,14 @@ module.exports = {
           status: 'yes',
           reason: '',
           confirmed: false,
-          username: interaction.user.tag,
+          username: getPlayerDisplayName(interaction.user.id, interaction.user.tag),
           updatedAt: new Date().toISOString()
         });
 
+        const attendanceName = getPlayerDisplayName(interaction.user.id, interaction.user.tag);
         await interaction.reply({ content: '✅ You are marked as attending.', flags: MessageFlags.Ephemeral });
         await triggerGoogleSync(context);
-        await context.sendLog(`🟢 ${interaction.user.tag} marked attending for **${event.title}** (${getEventDateLabel(event.date)}).`);
+        await context.sendLog(`🟢 ${attendanceName} marked attending for **${event.title}** (${getEventDateLabel(event.date)}).`);
         return;
       }
 
@@ -585,6 +754,15 @@ module.exports = {
             content: 'Google Tools:',
             embeds: [],
             components: [createGoogleToolsRow(), createAdminBackButtonRow()]
+          });
+          return;
+        }
+
+        if (action === 'player_management') {
+          await interaction.update({
+            content: 'Player Management: select a player to edit profile details.',
+            embeds: [],
+            components: [createPlayerManagementRow(), createAdminBackButtonRow()]
           });
           return;
         }
@@ -928,7 +1106,7 @@ module.exports = {
 
           const phrasesInput = new TextInputBuilder()
             .setCustomId('phrases')
-            .setLabel('Comma-separated phrases')
+            .setLabel('Comma-separated EXACT phrases')
             .setStyle(TextInputStyle.Paragraph)
             .setRequired(true)
             .setValue((config.teams?.[team]?.eventNamePhrases || []).join(', '))
@@ -989,7 +1167,7 @@ module.exports = {
           for (const [eventId, event] of Object.entries(db.events || {})) {
             const normalizedTitle = String(event.title || '').toLowerCase();
             const matched = Object.entries(teamMatchers).find(([, phrases]) =>
-              (phrases || []).some((phrase) => phrase && normalizedTitle.includes(String(phrase).toLowerCase()))
+              (phrases || []).some((phrase) => phrase && titleMatchesPhrase(normalizedTitle, phrase))
             );
             if (!matched) continue;
 
@@ -1009,7 +1187,7 @@ module.exports = {
 
           if (!preview.length) {
             await interaction.editReply({
-              content: 'No fixtures changed from phrase matching. Update event phrases if needed.',
+              content: 'No fixtures changed from exact phrase matching. Update event phrases if needed.',
               embeds: [],
               components: [createTeamConfigActionRow(loadConfig(), team), createBackButtonRow('admin_back_team_management')]
             });
@@ -1033,7 +1211,7 @@ module.exports = {
 
           await interaction.editReply({
             content: [
-              `✅ Auto-assigned ${assigned.length} fixture(s) by event name phrase.`,
+              `✅ Auto-assigned ${assigned.length} fixture(s) by exact event-name phrase.`,
               'Review the list below. If any dates are wrong, select them next.'
             ].join('\n'),
             embeds: [],
@@ -1050,6 +1228,72 @@ module.exports = {
           });
           return;
         }
+      }
+
+      if (interaction.customId.startsWith('admin_player_action:')) {
+        const userId = interaction.customId.split(':')[1];
+        const selectedAction = interaction.values[0];
+        const targetMember = await interaction.guild.members.fetch(userId).catch(() => null);
+        const targetUser = targetMember?.user || await interaction.client.users.fetch(userId).catch(() => null);
+        const existingProfile = getPlayerProfile(userId) || {};
+        const mergedProfile = {
+          ...existingProfile,
+          userId,
+          roles: existingProfile.roles || (targetMember ? Array.from(targetMember.roles.cache.keys()).filter((id) => id !== interaction.guild.id) : [])
+        };
+        upsertPlayerProfile(userId, mergedProfile);
+
+        if (selectedAction === 'set_teams') {
+          await interaction.update({
+            content: 'Select profile teams for this player.',
+            embeds: [],
+            components: [createPlayerTeamSelectRow(loadConfig(), userId), createBackButtonRow('admin_back_player_management')]
+          });
+          return;
+        }
+
+        if (selectedAction === 'assign_roles') {
+          await interaction.update({
+            content: 'Select roles to add to this player.',
+            embeds: [],
+            components: [createPlayerRoleAssignRow(userId), createBackButtonRow('admin_back_player_management')]
+          });
+          return;
+        }
+
+        const modalTitles = {
+          set_name: 'Set Player Display Name',
+          set_shirt: 'Set Player Shirt Number',
+          set_joined: 'Set Joined Date (YYYY-MM-DD)',
+          set_notes: 'Set Player Notes'
+        };
+        const fieldByAction = {
+          set_name: { id: 'custom_name', label: 'Custom display name', value: mergedProfile.customName || '' },
+          set_shirt: { id: 'shirt_number', label: 'Shirt number', value: mergedProfile.shirtNumber || '' },
+          set_joined: { id: 'joined_discord_at', label: 'Joined date', value: mergedProfile.joinedDiscordAt || (targetMember?.joinedAt ? targetMember.joinedAt.toISOString().slice(0, 10) : '') },
+          set_notes: { id: 'notes', label: 'Profile notes', value: mergedProfile.notes || '' }
+        };
+        const field = fieldByAction[selectedAction];
+        if (!field) return;
+
+        const modal = new ModalBuilder()
+          .setCustomId(`admin_player_profile_modal:${selectedAction}:${userId}`)
+          .setTitle(modalTitles[selectedAction] || 'Update Player Profile');
+
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId(field.id)
+              .setLabel(field.label)
+              .setStyle(selectedAction === 'set_notes' ? TextInputStyle.Paragraph : TextInputStyle.Short)
+              .setRequired(selectedAction !== 'set_notes')
+              .setValue(field.value)
+              .setMaxLength(selectedAction === 'set_notes' ? 300 : 80)
+          )
+        );
+
+        await interaction.showModal(modal);
+        return;
       }
 
       if (interaction.customId.startsWith('admin_set_fixture_team:')) {
@@ -1080,10 +1324,46 @@ module.exports = {
         return;
       }
 
+      if (interaction.customId.startsWith('admin_player_set_teams:')) {
+        const userId = interaction.customId.split(':')[1];
+        const profile = upsertPlayerProfile(userId, { teams: interaction.values });
+        await triggerGoogleSync(context);
+        const targetMember = await interaction.guild.members.fetch(userId).catch(() => null);
+        const targetUser = targetMember?.user || await interaction.client.users.fetch(userId).catch(() => null);
+        await interaction.update({
+          content: buildPlayerProfileSummary(loadConfig(), interaction.guild, targetUser, targetMember, profile),
+          embeds: [],
+          components: [createPlayerProfileActionRow(userId), createBackButtonRow('admin_back_player_management')]
+        });
+        return;
+      }
+
       if (interaction.customId.startsWith('admin_force_attendance_window:')) {
         const team = interaction.customId.split(':')[1];
         const window = interaction.values[0];
+        const latestConfig = loadConfig();
         const db = loadDb();
+        const remoteEvents = await fetchCalendarEvents({
+          calendarId: latestConfig.bot.calendarId,
+          daysAhead: null,
+          credentialsPath: latestConfig.bot.calendarCredentialsPath || '',
+          teamMatchers: buildTeamMatchers(latestConfig)
+        });
+
+        for (const event of remoteEvents) {
+          const existing = db.events[event.id] || {};
+          db.events[event.id] = {
+            ...existing,
+            title: event.title,
+            date: event.date,
+            team: event.team || existing.team || team,
+            discordMessageId: existing.discordMessageId || '',
+            responses: existing.responses || {},
+            updatedAt: new Date().toISOString()
+          };
+        }
+        saveDb(db);
+
         const now = Date.now();
         const maxDays = window === 'next_event' ? 365 : (window === 'next_30_days' ? 30 : 14);
         const candidates = Object.entries(db.events || {})
@@ -1094,7 +1374,6 @@ module.exports = {
 
         const targets = window === 'next_event' ? candidates.slice(0, 1) : candidates;
         let sent = 0;
-        const latestConfig = loadConfig();
 
         for (const event of targets) {
           try {
@@ -1182,6 +1461,54 @@ module.exports = {
       return;
     }
 
+    if (interaction.isUserSelectMenu() && interaction.customId === 'admin_player_select') {
+      if (!hasAdminAccess(interaction.member, config)) {
+        await denyAdminAccess();
+        return;
+      }
+      const userId = interaction.values[0];
+      const member = await interaction.guild.members.fetch(userId).catch(() => null);
+      const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
+      const existing = getPlayerProfile(userId) || {};
+      const seeded = upsertPlayerProfile(userId, {
+        userId,
+        customName: existing.customName || '',
+        shirtNumber: existing.shirtNumber || '',
+        teams: existing.teams || [],
+        roles: existing.roles || (member ? Array.from(member.roles.cache.keys()).filter((id) => id !== interaction.guild.id) : []),
+        joinedDiscordAt: existing.joinedDiscordAt || (member?.joinedAt ? member.joinedAt.toISOString().slice(0, 10) : ''),
+        notes: existing.notes || ''
+      });
+
+      await triggerGoogleSync(context);
+      await interaction.update({
+        content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, seeded),
+        embeds: [],
+        components: [createPlayerProfileActionRow(userId), createBackButtonRow('admin_back_player_management')]
+      });
+      return;
+    }
+
+    if (interaction.isRoleSelectMenu() && interaction.customId.startsWith('admin_player_assign_roles:')) {
+      if (!hasAdminAccess(interaction.member, config)) {
+        await denyAdminAccess();
+        return;
+      }
+      const userId = interaction.customId.split(':')[1];
+      const member = await interaction.guild.members.fetch(userId).catch(() => null);
+      if (member) {
+        await member.roles.add(interaction.values).catch(() => null);
+      }
+      const profile = upsertPlayerProfile(userId, { roles: interaction.values });
+      await triggerGoogleSync(context);
+      await interaction.update({
+        content: buildPlayerProfileSummary(loadConfig(), interaction.guild, member?.user, member, profile),
+        embeds: [],
+        components: [createPlayerProfileActionRow(userId), createBackButtonRow('admin_back_player_management')]
+      });
+      return;
+    }
+
     if (interaction.isChannelSelectMenu() && interaction.customId.startsWith('admin_set_channel:')) {
       if (!hasAdminAccess(interaction.member, config)) {
         await denyAdminAccess();
@@ -1232,24 +1559,29 @@ module.exports = {
       }
 
       const reason = interaction.fields.getTextInputValue('reason').trim();
+      const profile = getPlayerProfile(interaction.user.id);
+      const playerDisplayName = getPlayerNameForUi(interaction.user, interaction.member, profile);
 
       setResponse(eventId, interaction.user.id, {
         status: 'pending_no',
         reason,
         confirmed: false,
-        username: interaction.user.tag,
+        username: playerDisplayName,
         updatedAt: new Date().toISOString()
       });
       await interaction.reply({
-        content: '🔴 Your absence was submitted and is pending coach confirmation.',
+        content: [
+          `🔴 Thank you ${playerDisplayName}, your absence for:`,
+          `📅 ${event.title}`,
+          `🕒 ${new Date(event.date).toLocaleString()}`,
+          'was submitted and is pending coach confirmation.'
+        ].join('\n'),
         flags: MessageFlags.Ephemeral
       });
       await triggerGoogleSync(context);
 
-      const shortEventId = eventId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12);
-      const eventDateLabel = getEventDateLabel(event.date);
-      const displayName = interaction.member?.displayName || interaction.user.username;
-      const channelName = sanitizeChannelName(`${displayName}-${eventDateLabel}-${shortEventId}`);
+      const eventDateLabel = getCompactDateLabel(event.date);
+      const channelName = buildAbsenceTicketChannelName(config, event, profile, interaction.member, interaction.user);
 
       let ticketChannel;
       try {
@@ -1287,13 +1619,14 @@ module.exports = {
 
         await ticketChannel.send({
           content: [
-            `Player's name: ${interaction.user}`,
+            `Player's name: ${playerDisplayName} (<@${interaction.user.id}>)`,
             `Date of event: ${eventDateLabel}`,
             `Name of event: ${event.title}`,
             `Reason for not attending: ${reason}`,
             '',
-            'Staff/coaches: use `/confirm` once this conversation is complete.'
-          ].join('\n')
+            'Staff/coaches: confirm or decline this absence request below.'
+          ].join('\n'),
+          components: [createAbsenceTicketDecisionRow(eventId, interaction.user.id)]
         });
 
         const staffRoomId = config.channels.staffRooms?.[event.team];
@@ -1305,7 +1638,7 @@ module.exports = {
         }
 
         await context.sendLog(
-          `🔴 ${interaction.user.tag} submitted not-attending for **${event.title}** (${eventDateLabel}). Ticket: <#${ticketChannel.id}>`
+          `🔴 ${playerDisplayName} submitted not-attending for **${event.title}** (${eventDateLabel}). Ticket: <#${ticketChannel.id}>`
         );
       }
 
@@ -1337,6 +1670,32 @@ module.exports = {
         return;
       }
       await interaction.editReply({ content: renderProgressMessage(100, `Updated **bot.calendarId** to \`${calendarId}\`.`) });
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('admin_player_profile_modal:')) {
+      if (!hasAdminAccess(interaction.member, config)) {
+        await denyAdminAccess();
+        return;
+      }
+      const [, action, userId] = interaction.customId.split(':');
+      const updates = {};
+
+      if (action === 'set_name') updates.customName = interaction.fields.getTextInputValue('custom_name').trim();
+      if (action === 'set_shirt') updates.shirtNumber = interaction.fields.getTextInputValue('shirt_number').trim();
+      if (action === 'set_joined') updates.joinedDiscordAt = interaction.fields.getTextInputValue('joined_discord_at').trim();
+      if (action === 'set_notes') updates.notes = interaction.fields.getTextInputValue('notes').trim();
+
+      const profile = upsertPlayerProfile(userId, updates);
+      await triggerGoogleSync(context);
+      const member = await interaction.guild.members.fetch(userId).catch(() => null);
+      const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
+
+      await interaction.reply({
+        content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, profile),
+        components: [createPlayerProfileActionRow(userId), createBackButtonRow('admin_back_player_management')],
+        flags: MessageFlags.Ephemeral
+      });
       return;
     }
 
@@ -1418,9 +1777,9 @@ module.exports = {
       }
 
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      await interaction.editReply({ content: renderProgressMessage(0, 'Updating event name phrases...') });
+      await interaction.editReply({ content: renderProgressMessage(0, 'Updating exact event name phrases...') });
       updateConfig(`teams.${team}.eventNamePhrases`, phrases);
-      await interaction.editReply({ content: renderProgressMessage(40, 'Saving phrase matching...') });
+      await interaction.editReply({ content: renderProgressMessage(40, 'Saving exact phrase matching...') });
       await logAdminUiAction(interaction, 'admin', 'set-event-phrases', { team, phrases });
 
       try {
