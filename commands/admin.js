@@ -23,15 +23,10 @@ function createAdminPanelActionRow() {
       .setCustomId('admin_quick_action')
       .setPlaceholder('Pick an action')
       .addOptions([
-        { label: 'Set Roles & Team Chats', value: 'set_team_ids', description: 'Choose a team, then set role/chat IDs and fixture team' },
+        { label: 'Team Management', value: 'team_management', description: 'Roles, team chats, team emoji, and create new teams' },
+        { label: 'Google Tools', value: 'google_tools', description: 'Google Sheets + Calendar actions' },
         { label: 'Club Report', value: 'club_report', description: 'Run admin club attendance report' },
-        { label: 'Create New Team', value: 'new_team', description: 'Add a new team for role/chat setup' },
-        { label: 'Set Team Emoji', value: 'set_emoji', description: 'Run admin set-emoji from this panel' },
-        { label: 'Config View', value: 'config_view', description: 'Run admin-config view from this panel' },
-        { label: 'Sync Google Sheets', value: 'sync_google', description: 'Run admin-config sync-google from this panel' },
-        { label: 'Open Google Sheet', value: 'open_google_sheet', description: 'Get link to open configured sheet' },
-        { label: 'Set Google Calendar ID', value: 'set_calendar_id', description: 'Update the calendar used by sync' },
-        { label: 'View Google Calendar Events', value: 'view_google_events', description: 'Show upcoming events from Google Calendar' }
+        { label: 'Config View', value: 'config_view', description: 'Run admin-config view from this panel' }
       ])
   );
 }
@@ -162,7 +157,7 @@ module.exports = {
       .setTitle('Admin UI')
       .setDescription([
         'Use this panel to run admin actions directly (no copy/paste commands needed).',
-        'Actions include team setup, creating teams, club report, config view, google sync, and opening the sheet.',
+        'Team and Google actions are grouped into dedicated menus.',
         '',
         `Current labels: ${teamLabels || 'No teams configured'}`
       ].join('\n'));

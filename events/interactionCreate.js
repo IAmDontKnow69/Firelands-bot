@@ -3,6 +3,8 @@ const {
   TextInputBuilder,
   TextInputStyle,
   ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   StringSelectMenuBuilder,
   RoleSelectMenuBuilder,
   ChannelSelectMenuBuilder,
@@ -37,6 +39,42 @@ function getTeamOptions(config = {}) {
 
 function createAdminQuickActionRow() {
   return adminCommand.createAdminPanelActionRow();
+}
+
+function createAdminBackButtonRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('admin_back_to_panel')
+      .setLabel('⬅️ Back')
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function createTeamManagementRow() {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('admin_team_management_action')
+      .setPlaceholder('Team Management actions')
+      .addOptions([
+        { label: 'Set Roles & Team Chats', value: 'set_team_ids', description: 'Choose team role/chat IDs and fixture team' },
+        { label: 'Set Team Emoji', value: 'set_emoji', description: 'Set a team display emoji' },
+        { label: 'Create New Team', value: 'new_team', description: 'Create a new team for setup' }
+      ])
+  );
+}
+
+function createGoogleToolsRow() {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('admin_google_tools_action')
+      .setPlaceholder('Google actions')
+      .addOptions([
+        { label: 'Sync Google Sheets', value: 'sync_google', description: 'Force-sync fixtures and attendance to Sheets' },
+        { label: 'Open Google Sheet', value: 'open_google_sheet', description: 'Open configured Google Sheet' },
+        { label: 'Set Google Calendar ID', value: 'set_calendar_id', description: 'Set calendar used for sync' },
+        { label: 'View Google Calendar Events', value: 'view_google_events', description: 'Preview synced calendar events' }
+      ])
+  );
 }
 
 function createTeamPickerRow(config, customId, placeholder = 'Choose a team') {
@@ -177,6 +215,25 @@ async function syncConfigSnapshotIfEnabled() {
   await syncAllToSheet(latestConfig, loadDb());
 }
 
+async function handlePanelGoogleSync(interaction) {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const latestConfig = loadConfig();
+  updateConfig('googleSync.enabled', true);
+  const db = loadDb();
+
+  try {
+    const result = await syncAllToSheet({ ...latestConfig, googleSync: { ...latestConfig.googleSync, enabled: true } }, db);
+    if (!result.ok) {
+      await interaction.editReply('Could not sync because spreadsheet ID is not configured.');
+      return;
+    }
+
+    await interaction.editReply(`✅ Synced fixtures, attendance, command log, and config to Google Sheets (\`${result.spreadsheetId}\`).`);
+  } catch (error) {
+    await interaction.editReply(`❌ Google sync failed: ${error.message}`);
+  }
+}
+
 module.exports = {
   name: 'interactionCreate',
 
@@ -189,6 +246,15 @@ module.exports = {
     };
 
     if (interaction.isButton()) {
+      if (interaction.customId === 'admin_back_to_panel') {
+        await interaction.update({
+          content: 'Admin panel:',
+          embeds: [],
+          components: [createAdminQuickActionRow()]
+        });
+        return;
+      }
+
       const parsed = parseCustomId(interaction.customId);
       const db = loadDb();
       const event = db.events[parsed.eventId];
@@ -308,11 +374,52 @@ module.exports = {
 
       if (interaction.customId === 'admin_quick_action') {
         const action = interaction.values[0];
+        if (action === 'team_management') {
+          await interaction.update({
+            content: 'Team Management:',
+            embeds: [],
+            components: [createTeamManagementRow(), createAdminBackButtonRow()]
+          });
+          return;
+        }
+
+        if (action === 'google_tools') {
+          await interaction.update({
+            content: 'Google Tools:',
+            embeds: [],
+            components: [createGoogleToolsRow(), createAdminBackButtonRow()]
+          });
+          return;
+        }
+
+        if (action === 'config_view') {
+          await logAdminUiAction(interaction, 'admin-config', 'view');
+          await adminConfigCommand.handleView(interaction);
+          return;
+        }
+
+        if (action === 'club_report') {
+          await logAdminUiAction(interaction, 'admin', 'club-report');
+          await adminCommand.handleClubReport(interaction);
+          return;
+        }
+
+        await interaction.update({
+          content: 'Unknown admin action.',
+          embeds: [],
+          components: [createAdminQuickActionRow()]
+        });
+        return;
+      }
+
+      if (interaction.customId === 'admin_team_management_action' || interaction.customId === 'admin_google_tools_action') {
+        const action = interaction.values[0];
+
         if (action === 'set_team_ids') {
           await interaction.update({
             content: 'Choose a team to configure role IDs, team chat ID, and fixture team.',
             embeds: [],
-            components: [createTeamPickerRow(config, 'admin_team_config_select')]
+            components: [createTeamPickerRow(config, 'admin_team_config_select'), createAdminBackButtonRow()]
           });
           return;
         }
@@ -398,15 +505,9 @@ module.exports = {
           return;
         }
 
-        if (action === 'config_view') {
-          await logAdminUiAction(interaction, 'admin-config', 'view');
-          await adminConfigCommand.handleView(interaction);
-          return;
-        }
-
         if (action === 'sync_google') {
           await logAdminUiAction(interaction, 'admin-config', 'sync-google');
-          await adminCommand.handleSyncGoogle(interaction);
+          await handlePanelGoogleSync(interaction);
           return;
         }
 
@@ -420,13 +521,14 @@ module.exports = {
               ? `Open Google Sheet: ${sheetUrl}`
               : 'Google spreadsheet is not configured yet. Set it first via /admin-config set.',
             embeds: [],
-            components: [createAdminQuickActionRow()]
+            components: [createGoogleToolsRow(), createAdminBackButtonRow()]
           });
           return;
         }
 
         if (action === 'view_google_events') {
           try {
+            await interaction.deferUpdate();
             const db = loadDb();
             const events = await fetchCalendarEvents({
               calendarId: config.bot.calendarId,
@@ -443,10 +545,10 @@ module.exports = {
               .setColor(0x2ecc71)
               .setFooter({ text: `Page ${index + 1} of ${chunks.length}` }));
 
-            await interaction.update({
+            await interaction.editReply({
               content: 'Loaded Google Calendar fixtures with attendance.',
               embeds: [embeds[0]],
-              components: [createAdminQuickActionRow()]
+              components: [createGoogleToolsRow(), createAdminBackButtonRow()]
             });
 
             for (let i = 1; i < embeds.length; i += 1) {
@@ -456,25 +558,19 @@ module.exports = {
               });
             }
           } catch (error) {
-            await interaction.update({
+            await interaction.editReply({
               content: `Could not load calendar events: ${error.message}`,
               embeds: [],
-              components: [createAdminQuickActionRow()]
+              components: [createGoogleToolsRow(), createAdminBackButtonRow()]
             });
           }
-          return;
-        }
-
-        if (action === 'club_report') {
-          await logAdminUiAction(interaction, 'admin', 'club-report');
-          await adminCommand.handleClubReport(interaction);
           return;
         }
 
         await interaction.update({
           content: 'Unknown admin action.',
           embeds: [],
-          components: [createAdminQuickActionRow()]
+          components: [interaction.customId === 'admin_google_tools_action' ? createGoogleToolsRow() : createTeamManagementRow(), createAdminBackButtonRow()]
         });
         return;
       }
@@ -485,7 +581,7 @@ module.exports = {
         await interaction.update({
           content: `Configuring **${teamLabel}**. Pick what to update.`,
           embeds: [],
-          components: [createTeamConfigActionRow(config, team)]
+          components: [createTeamConfigActionRow(config, team), createAdminBackButtonRow()]
         });
         return;
       }
@@ -580,7 +676,7 @@ module.exports = {
             await interaction.update({
               content: 'No upcoming fixtures found in synced events yet.',
               embeds: [],
-              components: [createTeamConfigActionRow(config, team)]
+              components: [createTeamConfigActionRow(config, team), createAdminBackButtonRow()]
             });
             return;
           }
@@ -604,7 +700,7 @@ module.exports = {
           await interaction.update({
             content: `Pick a fixture to assign to **${teamLabel}**.`,
             embeds: [],
-            components: [row]
+            components: [row, createAdminBackButtonRow()]
           });
           return;
         }
@@ -620,7 +716,7 @@ module.exports = {
           await interaction.update({
             content: 'Fixture was not found in synced events.',
             embeds: [],
-            components: [createTeamConfigActionRow(config, team)]
+            components: [createTeamConfigActionRow(config, team), createAdminBackButtonRow()]
           });
           return;
         }
@@ -631,7 +727,7 @@ module.exports = {
         await interaction.update({
           content: `✅ Assigned **${target.title}** to **${getTeamMeta(config, team).label}**.`,
           embeds: [],
-          components: [createTeamConfigActionRow(config, team)]
+          components: [createTeamConfigActionRow(config, team), createAdminBackButtonRow()]
         });
         return;
       }
@@ -642,6 +738,7 @@ module.exports = {
         await denyAdminAccess();
         return;
       }
+      await interaction.deferUpdate();
       const [, configPath, team] = interaction.customId.split(':');
       const roleId = interaction.values[0];
       updateConfig(configPath, roleId);
@@ -650,18 +747,18 @@ module.exports = {
       try {
         await syncConfigSnapshotIfEnabled();
       } catch (error) {
-        await interaction.update({
+        await interaction.editReply({
           content: `✅ Updated **${configPath}** to <@&${roleId}>. ⚠️ Sync warning: ${error.message}`,
           embeds: [],
-          components: [createTeamConfigActionRow(config, team)]
+          components: [createTeamConfigActionRow(config, team), createAdminBackButtonRow()]
         });
         return;
       }
 
-      await interaction.update({
+      await interaction.editReply({
         content: `✅ Updated **${configPath}** to <@&${roleId}>.`,
         embeds: [],
-        components: [createTeamConfigActionRow(config, team)]
+        components: [createTeamConfigActionRow(config, team), createAdminBackButtonRow()]
       });
       return;
     }
@@ -671,6 +768,7 @@ module.exports = {
         await denyAdminAccess();
         return;
       }
+      await interaction.deferUpdate();
       const [, configPath, team] = interaction.customId.split(':');
       const channelId = interaction.values[0];
       updateConfig(configPath, channelId);
@@ -679,18 +777,18 @@ module.exports = {
       try {
         await syncConfigSnapshotIfEnabled();
       } catch (error) {
-        await interaction.update({
+        await interaction.editReply({
           content: `✅ Updated **${configPath}** to <#${channelId}>. ⚠️ Sync warning: ${error.message}`,
           embeds: [],
-          components: [createTeamConfigActionRow(config, team)]
+          components: [createTeamConfigActionRow(config, team), createAdminBackButtonRow()]
         });
         return;
       }
 
-      await interaction.update({
+      await interaction.editReply({
         content: `✅ Updated **${configPath}** to <#${channelId}>.`,
         embeds: [],
-        components: [createTeamConfigActionRow(config, team)]
+        components: [createTeamConfigActionRow(config, team), createAdminBackButtonRow()]
       });
       return;
     }

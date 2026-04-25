@@ -162,6 +162,13 @@ function findGuildSetupChannel(guild) {
   return candidate || null;
 }
 
+function isWithinDays(dateValue, days) {
+  const eventTime = new Date(dateValue).getTime();
+  if (Number.isNaN(eventTime)) return false;
+  const diff = eventTime - Date.now();
+  return diff >= 0 && diff <= days * 24 * 60 * 60 * 1000;
+}
+
 async function postEventMessage(event) {
   const config = getConfig();
   const teamChatChannelId = config.channels.teamChats?.[event.team];
@@ -194,7 +201,7 @@ async function postEventMessage(event) {
   const row = new ActionRowBuilder().addComponents(attendingButton, notAttendingButton);
 
   const message = await channel.send({
-    content: `<@&${teamRoleId}>\n📅 ${event.title}\n🕒 ${formatEventDate(event.date)}\nPlease mark your availability now (events are posted up to 14 days in advance).`,
+    content: `<@&${teamRoleId}>\n📅 ${event.title}\n🕒 ${formatEventDate(event.date)}\nPlease mark your availability now.`,
     components: [row]
   });
 
@@ -208,7 +215,7 @@ async function syncCalendarEvents() {
 
     const calendarEvents = await fetchUpcomingEvents({
       calendarId: config.bot.calendarId || 'hello@firelandsunited.com',
-      daysAhead: 14,
+      daysAhead: null,
       credentialsPath: config.bot.calendarCredentialsPath || ''
     });
 
@@ -237,6 +244,7 @@ async function syncCalendarEvents() {
       const syncedEvent = latestDb.events[event.id];
 
       if (!syncedEvent?.team || syncedEvent.discordMessageId) continue;
+      if (!isWithinDays(syncedEvent.date, 14)) continue;
 
       await postEventMessage({ ...syncedEvent, id: event.id });
       console.log(`Posted new event: ${syncedEvent.title} (${event.id})`);
