@@ -115,7 +115,12 @@ function setAbsenceTicket(channelId, payload) {
 function deleteAbsenceTicket(channelId) {
   const db = loadDb();
   if (!db.absenceTickets[channelId]) return false;
-  delete db.absenceTickets[channelId];
+  db.absenceTickets[channelId] = {
+    ...db.absenceTickets[channelId],
+    status: 'closed',
+    deleted: true,
+    closedAt: db.absenceTickets[channelId].closedAt || new Date().toISOString()
+  };
   saveDb(db);
   return true;
 }

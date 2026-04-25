@@ -246,7 +246,7 @@ async function handleSetupInteraction(interaction) {
     const config = getConfig();
     try {
       if (interaction.values[0] === 'fresh') {
-        const result = await syncAllToSheet(config, loadDb());
+        const result = await syncAllToSheet(config, loadDb(), { wipe: true });
         await interaction.editReply(result.ok
           ? `✅ Fresh sheet sync completed (\`${result.spreadsheetId}\`).`
           : 'Could not sync because spreadsheet ID is not configured.');
@@ -332,7 +332,13 @@ async function postEventMessage(event) {
   const row = new ActionRowBuilder().addComponents(attendingButton, notAttendingButton);
 
   const message = await channel.send({
-    content: `<@&${teamRoleId}>\n📅 ${event.title}\n🕒 ${formatEventDate(event.date)}\nPlease mark your availability now.`,
+    content: [
+      `<@&${teamRoleId}>`,
+      `📅 ${event.title}`,
+      `🕒 ${formatEventDate(event.date)}`,
+      event.location ? `📍 ${event.location}` : null,
+      'Please mark your availability now.'
+    ].filter(Boolean).join('\n'),
     components: [row]
   });
 
@@ -366,6 +372,7 @@ async function syncCalendarEvents() {
         upsertEvent(event.id, {
           title: event.title,
           date: event.date,
+          location: event.location || '',
           team: event.team,
           discordMessageId: '',
           responses: {}
@@ -374,6 +381,7 @@ async function syncCalendarEvents() {
         upsertEvent(event.id, {
           title: event.title,
           date: event.date,
+          location: event.location || existingEvent.location || '',
           team: existingEvent.team || event.team
         });
       }

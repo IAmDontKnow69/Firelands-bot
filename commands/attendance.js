@@ -112,42 +112,70 @@ module.exports = {
       const chunks = [];
 
       for (const event of relevantEvents) {
-        const guildRole = interaction.guild.roles.cache.get(teamRoles[event.team].player);
-        const playerIds = guildRole ? Array.from(guildRole.members.keys()) : [];
+        const playerRole = interaction.guild.roles.cache.get(teamRoles[event.team].player);
+        const coachRole = interaction.guild.roles.cache.get(teamRoles[event.team].coach);
+        const playerIds = playerRole ? Array.from(playerRole.members.keys()) : [];
+        const coachIds = coachRole ? Array.from(coachRole.members.keys()) : [];
         const responses = event.responses || {};
 
-        const attending = [];
-        const confirmedNo = [];
-        const pendingNo = [];
+        const attendingPlayers = [];
+        const attendingCoaches = [];
+        const confirmedNoPlayers = [];
+        const confirmedNoCoaches = [];
+        const pendingNoPlayers = [];
+        const pendingNoCoaches = [];
 
         for (const [userId, response] of Object.entries(responses)) {
-          if (response.status === 'yes') attending.push(`<@${userId}>`);
+          const isCoachForTeam = coachIds.includes(userId);
+          const isPlayerForTeam = playerIds.includes(userId);
+          if (!isCoachForTeam && !isPlayerForTeam) continue;
+
+          if (response.status === 'yes') {
+            if (isCoachForTeam) attendingCoaches.push(`<@${userId}>`);
+            if (isPlayerForTeam) attendingPlayers.push(`<@${userId}>`);
+          }
           if (response.status === 'confirmed_no') {
-            confirmedNo.push(`<@${userId}>${response.reason ? ` — ${response.reason}` : ''}`);
+            if (isCoachForTeam) confirmedNoCoaches.push(`<@${userId}>${response.reason ? ` — ${response.reason}` : ''}`);
+            if (isPlayerForTeam) confirmedNoPlayers.push(`<@${userId}>${response.reason ? ` — ${response.reason}` : ''}`);
           }
           if (response.status === 'pending_no') {
-            pendingNo.push(`<@${userId}>${response.reason ? ` — ${response.reason}` : ''}`);
+            if (isCoachForTeam) pendingNoCoaches.push(`<@${userId}>${response.reason ? ` — ${response.reason}` : ''}`);
+            if (isPlayerForTeam) pendingNoPlayers.push(`<@${userId}>${response.reason ? ` — ${response.reason}` : ''}`);
           }
         }
 
-        const respondedIds = new Set(Object.keys(responses));
-        const noResponse = playerIds.filter((id) => !respondedIds.has(id)).map((id) => `<@${id}>`);
+        const respondedPlayerIds = new Set(Object.keys(responses).filter((id) => playerIds.includes(id)));
+        const respondedCoachIds = new Set(Object.keys(responses).filter((id) => coachIds.includes(id)));
+        const noResponse = playerIds.filter((id) => !respondedPlayerIds.has(id)).map((id) => `<@${id}>`);
+        const coachesNoResponse = coachIds.filter((id) => !respondedCoachIds.has(id)).map((id) => `<@${id}>`);
 
         chunks.push([
           `📅 **${event.title}**`,
           `🕒 ${new Date(event.date).toLocaleString()}`,
           '',
-          '🟢 **Attending:**',
-          attending.length ? attending.join('\n') : '*None*',
+          '🟢 **Attending (Players):**',
+          attendingPlayers.length ? attendingPlayers.join('\n') : '*None*',
           '',
-          '🔴 **Not Attending (Confirmed):**',
-          confirmedNo.length ? confirmedNo.join('\n') : '*None*',
+          '🟢 **Attending (Coaches):**',
+          attendingCoaches.length ? attendingCoaches.join('\n') : '*None*',
           '',
-          '⚪ **Pending:**',
-          pendingNo.length ? pendingNo.join('\n') : '*None*',
+          '🔴 **Not Attending (Confirmed Players):**',
+          confirmedNoPlayers.length ? confirmedNoPlayers.join('\n') : '*None*',
           '',
-          '❓ **No Response:**',
-          noResponse.length ? noResponse.join('\n') : '*None*'
+          '🔴 **Not Attending (Confirmed Coaches):**',
+          confirmedNoCoaches.length ? confirmedNoCoaches.join('\n') : '*None*',
+          '',
+          '⚪ **Pending (Players):**',
+          pendingNoPlayers.length ? pendingNoPlayers.join('\n') : '*None*',
+          '',
+          '⚪ **Pending (Coaches):**',
+          pendingNoCoaches.length ? pendingNoCoaches.join('\n') : '*None*',
+          '',
+          '❓ **No Response (Players):**',
+          noResponse.length ? noResponse.join('\n') : '*None*',
+          '',
+          '❓ **No Response (Coaches):**',
+          coachesNoResponse.length ? coachesNoResponse.join('\n') : '*None*'
         ].join('\n'));
       }
 

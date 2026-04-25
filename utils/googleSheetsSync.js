@@ -155,6 +155,7 @@ function buildFixtureRows(db = {}) {
       eventId,
       title: event.title || '',
       date: event.date || '',
+      location: event.location || '',
       team: event.team || '',
       discordMessageId: event.discordMessageId || '',
       updatedAt: event.updatedAt || toIso()
@@ -164,6 +165,7 @@ function buildFixtureRows(db = {}) {
       event.eventId,
       event.title,
       event.date,
+      event.location,
       event.team,
       event.discordMessageId,
       event.updatedAt
@@ -171,7 +173,7 @@ function buildFixtureRows(db = {}) {
 }
 
 function buildFixtureRowsForTeam(db = {}, team = '') {
-  return buildFixtureRows(db).filter((row) => row[3] === team);
+  return buildFixtureRows(db).filter((row) => row[4] === team);
 }
 
 function buildAttendanceRows(db = {}) {
@@ -237,8 +239,63 @@ function buildPlayerRows(db = {}) {
     .sort((a, b) => String(a[1] || a[0]).localeCompare(String(b[1] || b[0])));
 }
 
-async function writeRange(sheets, spreadsheetId, range, values) {
-  await sheets.spreadsheets.values.clear({ spreadsheetId, range });
+function buildAbsenceRows(db = {}) {
+  const rows = [];
+  const tickets = db.absenceTickets || {};
+
+  for (const [channelId, ticket] of Object.entries(tickets)) {
+    const event = db.events?.[ticket.eventId] || {};
+    const response = event.responses?.[ticket.playerId] || {};
+    rows.push([
+      ticket.ticketId || channelId,
+      channelId,
+      ticket.eventId || '',
+      event.title || '',
+      event.date || '',
+      event.location || '',
+      ticket.team || event.team || '',
+      ticket.playerId || '',
+      ticket.playerName || response.username || '',
+      response.status || ticket.status || '',
+      response.reason || ticket.reason || '',
+      ticket.coachDecision || '',
+      ticket.coachId || '',
+      ticket.coachName || '',
+      ticket.closedAt || '',
+      ticket.createdAt || '',
+      ticket.closedReason || ''
+    ]);
+  }
+
+  return rows.sort((a, b) => new Date(a[15] || 0).getTime() - new Date(b[15] || 0).getTime());
+}
+
+function isPlaceholderConfigValue(key = '', value = '') {
+  const normalized = String(value ?? '').trim();
+  if (!normalized || normalized.toLowerCase() === 'not set') return true;
+  if (normalized === 'ROLE_ID') return true;
+  if ((key.startsWith('roles.') || key.startsWith('channels.')) && !/^\d{8,25}$/.test(normalized)) return true;
+  return false;
+}
+
+async function buildMergedConfigIdRows(sheets, spreadsheetId, config = {}, range = 'Config IDs!A2:C') {
+  const incomingRows = buildConfigIdRows(config);
+  const existingResponse = await sheets.spreadsheets.values.get({ spreadsheetId, range }).catch(() => ({ data: { values: [] } }));
+  const existingRows = existingResponse.data.values || [];
+  const existingMap = new Map(existingRows.map((row) => [row[0], row[1] || '']));
+
+  return incomingRows.map(([key, value, updatedAt]) => {
+    if (isPlaceholderConfigValue(key, value) && existingMap.has(key)) {
+      return [key, existingMap.get(key), updatedAt];
+    }
+    return [key, value, updatedAt];
+  });
+}
+
+async function writeRange(sheets, spreadsheetId, range, values, options = {}) {
+  if (options.wipe) {
+    await sheets.spreadsheets.values.clear({ spreadsheetId, range });
+  }
   if (!values.length) return;
 
   await sheets.spreadsheets.values.update({
@@ -342,38 +399,41 @@ async function ensureSheetLayout(sheets, spreadsheetId, sections = []) {
   }
 }
 
-async function syncAllToSheet(config = {}, db = {}) {
+async function syncAllToSheet(config = {}, db = {}, options = {}) {
   const spreadsheetId = getSpreadsheetId(config);
   if (!spreadsheetId) return { ok: false, reason: 'missing_spreadsheet_id' };
 
   const sheets = await getSheetsClient(config);
-  const fixturesRange = config.googleSync?.fixturesRange || 'Fixtures!A2:F';
+  const fixturesRange = config.googleSync?.fixturesRange || 'Fixtures!A2:G';
   const commandLogRange = config.googleSync?.commandLogRange || 'Command Log!A2:I';
-  const mensFixturesRange = config.googleSync?.mensFixturesRange || 'Mens Fixtures!A2:F';
-  const womensFixturesRange = config.googleSync?.womensFixturesRange || 'Womens Fixtures!A2:F';
+  const mensFixturesRange = config.googleSync?.mensFixturesRange || 'Mens Fixtures!A2:G';
+  const womensFixturesRange = config.googleSync?.womensFixturesRange || 'Womens Fixtures!A2:G';
   const attendanceRange = config.googleSync?.attendanceRange || 'Attendance!A2:F';
   const configRange = config.googleSync?.configRange || 'Config!A2:C';
   const configIdsRange = config.googleSync?.configIdsRange || 'Config IDs!A2:C';
   const playersRange = config.googleSync?.playersRange || 'Players!A2:I';
+  const absencesRange = config.googleSync?.absencesRange || 'Absences!A2:Q';
 
   await ensureSheetLayout(sheets, spreadsheetId, [
-    { range: fixturesRange, headers: ['eventId', 'title', 'date', 'team', 'discordMessageId', 'updatedAt'] },
+    { range: fixturesRange, headers: ['eventId', 'title', 'date', 'location', 'team', 'discordMessageId', 'updatedAt'] },
     { range: commandLogRange, headers: ['timestamp', 'source', 'command', 'subcommand', 'options', 'guildId', 'channelId', 'userId', 'username'] },
-    { range: mensFixturesRange, headers: ['eventId', 'title', 'date', 'team', 'discordMessageId', 'updatedAt'] },
-    { range: womensFixturesRange, headers: ['eventId', 'title', 'date', 'team', 'discordMessageId', 'updatedAt'] },
+    { range: mensFixturesRange, headers: ['eventId', 'title', 'date', 'location', 'team', 'discordMessageId', 'updatedAt'] },
+    { range: womensFixturesRange, headers: ['eventId', 'title', 'date', 'location', 'team', 'discordMessageId', 'updatedAt'] },
     { range: attendanceRange, headers: ['eventId', 'userId', 'username', 'team', 'status', 'updatedAt'] },
     { range: configRange, headers: ['key', 'value', 'updatedAt'] },
     { range: configIdsRange, headers: ['key', 'value', 'updatedAt'] },
-    { range: playersRange, headers: ['userId', 'customName', 'shirtNumber', 'teams', 'roles', 'joinedDiscordAt', 'notes', 'facePngUrl', 'updatedAt'] }
+    { range: playersRange, headers: ['userId', 'customName', 'shirtNumber', 'teams', 'roles', 'joinedDiscordAt', 'notes', 'facePngUrl', 'updatedAt'] },
+    { range: absencesRange, headers: ['ticketId', 'channelId', 'eventId', 'eventTitle', 'eventDate', 'eventLocation', 'team', 'playerId', 'playerName', 'attendanceStatus', 'reason', 'coachDecision', 'coachId', 'coachName', 'closedAt', 'createdAt', 'closedReason'] }
   ]);
 
-  await writeRange(sheets, spreadsheetId, fixturesRange, buildFixtureRows(db));
-  await writeRange(sheets, spreadsheetId, mensFixturesRange, buildFixtureRowsForTeam(db, 'mens'));
-  await writeRange(sheets, spreadsheetId, womensFixturesRange, buildFixtureRowsForTeam(db, 'womens'));
-  await writeRange(sheets, spreadsheetId, attendanceRange, buildAttendanceRows(db));
-  await writeRange(sheets, spreadsheetId, configRange, flattenConfig(config));
-  await writeRange(sheets, spreadsheetId, configIdsRange, buildConfigIdRows(config));
-  await writeRange(sheets, spreadsheetId, playersRange, buildPlayerRows(db));
+  await writeRange(sheets, spreadsheetId, fixturesRange, buildFixtureRows(db), options);
+  await writeRange(sheets, spreadsheetId, mensFixturesRange, buildFixtureRowsForTeam(db, 'mens'), options);
+  await writeRange(sheets, spreadsheetId, womensFixturesRange, buildFixtureRowsForTeam(db, 'womens'), options);
+  await writeRange(sheets, spreadsheetId, attendanceRange, buildAttendanceRows(db), options);
+  await writeRange(sheets, spreadsheetId, configRange, flattenConfig(config), options);
+  await writeRange(sheets, spreadsheetId, configIdsRange, await buildMergedConfigIdRows(sheets, spreadsheetId, config, configIdsRange), options);
+  await writeRange(sheets, spreadsheetId, playersRange, buildPlayerRows(db), options);
+  await writeRange(sheets, spreadsheetId, absencesRange, buildAbsenceRows(db), options);
 
   return { ok: true, spreadsheetId };
 }
@@ -391,8 +451,8 @@ async function syncConfigOnlyToSheet(config = {}) {
     { range: configIdsRange, headers: ['key', 'value', 'updatedAt'] }
   ]);
 
-  await writeRange(sheets, spreadsheetId, configRange, flattenConfig(config));
-  await writeRange(sheets, spreadsheetId, configIdsRange, buildConfigIdRows(config));
+  await writeRange(sheets, spreadsheetId, configRange, flattenConfig(config), { wipe: true });
+  await writeRange(sheets, spreadsheetId, configIdsRange, await buildMergedConfigIdRows(sheets, spreadsheetId, config, configIdsRange), { wipe: true });
 
   return { ok: true, spreadsheetId };
 }
@@ -408,6 +468,7 @@ module.exports = {
   buildFixtureRowsForTeam,
   buildAttendanceRows,
   buildPlayerRows,
+  buildAbsenceRows,
   flattenConfig,
   buildConfigIdRows,
   ensureSheetLayout,

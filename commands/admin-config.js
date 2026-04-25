@@ -1,7 +1,7 @@
 const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const { loadConfig, updateConfig } = require('../utils/config');
 const { loadDb } = require('../utils/database');
-const { syncAllToSheet } = require('../utils/googleSheetsSync');
+const { syncAllToSheet, syncConfigOnlyToSheet } = require('../utils/googleSheetsSync');
 const { hasAdminAccess, adminAccessMessage } = require('../utils/adminAccess');
 
 const FIELD_MAP = {
@@ -78,8 +78,8 @@ module.exports = {
       `Womens Team Chat Channel: ${config.channels.teamChats?.womens || 'not set'}`,
       `Mens Staff Room Channel: ${config.channels.staffRooms?.mens || 'not set'}`,
       `Womens Staff Room Channel: ${config.channels.staffRooms?.womens || 'not set'}`,
-      `Mens Private Chat Category: ${config.channels.privateChatCategories?.mens || 'not set'}`,
-      `Womens Private Chat Category: ${config.channels.privateChatCategories?.womens || 'not set'}`,
+      `Mens Absence Chat Category: ${config.channels.privateChatCategories?.mens || 'not set'}`,
+      `Womens Absence Chat Category: ${config.channels.privateChatCategories?.womens || 'not set'}`,
       `Logs Channel: ${config.channels.logs || 'not set'}`,
       `Admin Channel: ${config.channels.admin || 'not set'}`,
       `Bot Commands Channel: ${config.channels.botCommands || 'not set'}`,
@@ -129,8 +129,8 @@ module.exports = {
               { name: 'Womens team chat channel ID', value: 'womens_team_channel_id' },
               { name: 'Mens staff room channel ID', value: 'mens_staff_room_id' },
               { name: 'Womens staff room channel ID', value: 'womens_staff_room_id' },
-              { name: 'Mens private chat category ID', value: 'mens_private_chat_category_id' },
-              { name: 'Womens private chat category ID', value: 'womens_private_chat_category_id' },
+              { name: 'Mens absence chat category ID', value: 'mens_private_chat_category_id' },
+              { name: 'Womens absence chat category ID', value: 'womens_private_chat_category_id' },
               { name: 'Google sync enabled (true/false)', value: 'google_sync_enabled' },
               { name: 'Google spreadsheet ID/URL', value: 'google_spreadsheet_id' }
             )
@@ -275,7 +275,7 @@ module.exports = {
     const latestConfig = loadConfig();
     if (latestConfig.googleSync?.enabled) {
       try {
-        await syncAllToSheet(latestConfig, loadDb());
+        await syncConfigOnlyToSheet(latestConfig);
       } catch (error) {
         await interaction.reply({
           content: `✅ Updated **${field}**. ⚠️ Google sync warning: ${error.message}`,

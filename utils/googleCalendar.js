@@ -91,7 +91,8 @@ async function fetchCalendarEvents({ calendarId, daysAhead = 14, credentialsPath
         id: event.id,
         title,
         date: startIso,
-        team
+        team,
+        location: event.location || ''
       };
     })
     .filter(Boolean);

@@ -25,7 +25,9 @@ function buildReport(guild, team, teamRoles) {
     .slice(0, 8);
 
   const playerRole = guild.roles.cache.get(teamRoles[team].player);
+  const coachRole = guild.roles.cache.get(teamRoles[team].coach);
   const playerIds = playerRole ? Array.from(playerRole.members.keys()) : [];
+  const coachIds = coachRole ? Array.from(coachRole.members.keys()) : [];
 
   if (!events.length) {
     return `No upcoming events for **${team}**.`;
@@ -33,15 +35,23 @@ function buildReport(guild, team, teamRoles) {
 
   return events.map((event) => {
     const responses = event.responses || {};
-    const attending = Object.entries(responses).filter(([, value]) => value.status === 'yes').length;
-    const unavailable = Object.entries(responses).filter(([, value]) => ['pending_no', 'confirmed_no'].includes(value.status)).length;
-    const noResponse = Math.max(playerIds.length - Object.keys(responses).length, 0);
+    const attendingPlayers = Object.entries(responses).filter(([userId, value]) => playerIds.includes(userId) && value.status === 'yes').length;
+    const attendingCoaches = Object.entries(responses).filter(([userId, value]) => coachIds.includes(userId) && value.status === 'yes').length;
+    const unavailablePlayers = Object.entries(responses).filter(([userId, value]) => playerIds.includes(userId) && ['pending_no', 'confirmed_no'].includes(value.status)).length;
+    const unavailableCoaches = Object.entries(responses).filter(([userId, value]) => coachIds.includes(userId) && ['pending_no', 'confirmed_no'].includes(value.status)).length;
+    const respondedPlayerIds = Object.keys(responses).filter((id) => playerIds.includes(id));
+    const respondedCoachIds = Object.keys(responses).filter((id) => coachIds.includes(id));
+    const noResponse = Math.max(playerIds.length - respondedPlayerIds.length, 0);
+    const noResponseCoaches = Math.max(coachIds.length - respondedCoachIds.length, 0);
 
     return [
       `**${event.title}** (${new Date(event.date).toLocaleString()})`,
-      `🟢 Attending: ${attending}`,
-      `🔴 Not attending: ${unavailable}`,
-      `❓ No response: ${noResponse}`
+      `🟢 Attending (Players): ${attendingPlayers}`,
+      `🟢 Attending (Coaches): ${attendingCoaches}`,
+      `🔴 Not attending (Players): ${unavailablePlayers}`,
+      `🔴 Not attending (Coaches): ${unavailableCoaches}`,
+      `❓ No response (Players): ${noResponse}`,
+      `❓ No response (Coaches): ${noResponseCoaches}`
     ].join('\n');
   }).join('\n\n');
 }

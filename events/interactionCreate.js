@@ -29,7 +29,7 @@ const {
 const { loadConfig, updateConfig } = require('../utils/config');
 const { getTeamSetupProgress } = require('../utils/teamSetup');
 const { fetchCalendarEvents, titleMatchesPhrase } = require('../utils/googleCalendar');
-const { syncAllToSheet, appendCommandLogRow } = require('../utils/googleSheetsSync');
+const { syncAllToSheet, syncConfigOnlyToSheet, appendCommandLogRow } = require('../utils/googleSheetsSync');
 const coachCommand = require('../commands/coach');
 const adminCommand = require('../commands/admin');
 const adminConfigCommand = require('../commands/admin-config');
@@ -134,7 +134,7 @@ function createTeamConfigActionRow(config, team) {
         { label: 'Set Coach Role ID', value: 'coach_role', description: `Set ${label} coach role` },
         { label: 'Set Team Chat ID', value: 'team_chat', description: `Set ${label} team chat channel` },
         { label: 'Set Staff Room ID', value: 'staff_room', description: `Set ${label} staff room channel` },
-        { label: 'Set Private Chat Category', value: 'private_category', description: `Set category for attendance chats` },
+        { label: 'Set Absence Chat Category', value: 'private_category', description: `Set category for absence chats` },
         { label: 'Set Team Emoji', value: 'team_emoji', description: `Set emoji for ${label}` },
         { label: 'Set Captain Role ID', value: 'captain_role', description: `Set ${label} captain role` },
         { label: 'Set Captain Emoji', value: 'captain_emoji', description: `Set captain emoji shown after team emoji` },
@@ -182,7 +182,7 @@ function getTeamConfigSummary(config, guild, team) {
     `• Coach Role: ${formatConfigRef(guild, 'role', config.roles?.[team]?.coach)}`,
     `• Team Chat: ${formatConfigRef(guild, 'channel', config.channels?.teamChats?.[team])}`,
     `• Staff Room: ${formatConfigRef(guild, 'channel', config.channels?.staffRooms?.[team])}`,
-    `• Private Chat Category: ${formatConfigRef(guild, 'channel', config.channels?.privateChatCategories?.[team])}`,
+    `• Absence Chat Category: ${formatConfigRef(guild, 'channel', config.channels?.privateChatCategories?.[team])}`,
     `• Team Emoji: ${meta.emoji}`,
     `• Captain Role: ${formatConfigRef(guild, 'role', config.teams?.[team]?.captainRoleId)}`,
     `• Captain Emoji: ${config.teams?.[team]?.captainEmoji || 'not set'}`,
@@ -204,6 +204,8 @@ function buildTeamMatchers(config = {}) {
 }
 
 const pendingFixtureCorrections = new Map();
+const pendingAbsenceReasonModals = new Map();
+const pendingPlayerAttendDmTokens = new Map();
 
 function createForceAttendanceWindowRow(team) {
   return new ActionRowBuilder().addComponents(
@@ -235,7 +237,13 @@ async function postAttendancePromptForEvent(interaction, event, config) {
   );
 
   const message = await channel.send({
-    content: `<@&${teamRoleId}>\n📅 ${event.title}\n🕒 ${new Date(event.date).toLocaleString()}\nPlease mark your availability now.`,
+    content: [
+      `<@&${teamRoleId}>`,
+      `📅 ${event.title}`,
+      `🕒 ${new Date(event.date).toLocaleString()}`,
+      event.location ? `📍 ${event.location}` : null,
+      'Please mark your availability now.'
+    ].filter(Boolean).join('\n'),
     components: [row]
   });
 
@@ -260,7 +268,8 @@ function buildMonthGroupedEventLines(events, db, guild, teamRolesMap, config) {
 
     const attendance = summarizeAttendance(event, db, guild, teamRolesMap);
     const shortTitle = event.title.length > 70 ? `${event.title.slice(0, 67)}...` : event.title;
-    lines.push(`• ${date.toLocaleString()} — ${formatTeamLabel(event, config)} — **${shortTitle}** — ${attendance}`);
+    const location = event.location ? ` — 📍 ${event.location}` : '';
+    lines.push(`• ${date.toLocaleString()} — ${formatTeamLabel(event, config)} — **${shortTitle}**${location} — ${attendance}`);
   }
 
   return lines;
@@ -343,7 +352,7 @@ function getCompactDateLabel(eventDate) {
 }
 
 function getPlayerNameForUi(user, member, profile) {
-  return profile?.nickName || profile?.customName || member?.displayName || user?.globalName || user?.username || 'Player';
+  return profile?.customName || profile?.nickName || member?.displayName || user?.globalName || user?.username || 'Player';
 }
 
 function getUserTeamFromMember(member, config, mode = 'player') {
@@ -430,7 +439,6 @@ function createPlayerProfileActionRow2(userId, mode = 'player') {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`admin_player_action:set_teams:${userId}:${mode}`).setLabel('Teams').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`admin_player_action:assign_roles:${userId}:${mode}`).setLabel('Assign Roles').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_player_action:set_joined:${userId}:${mode}`).setLabel('Joined').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`admin_player_view_attendance:${userId}:${mode}`).setLabel('Attendance').setStyle(ButtonStyle.Success)
   );
 }
@@ -468,6 +476,18 @@ function createAttendanceOnlyRow(userId) {
       .setLabel('Attendance')
       .setStyle(ButtonStyle.Success)
   );
+}
+
+function getMemberTeamAssignments(member, config) {
+  const playingTeams = Object.keys(config.teams || {}).filter((teamKey) => {
+    const roleId = config.roles?.[teamKey]?.player;
+    return roleId && roleId !== 'ROLE_ID' && member?.roles?.cache?.has(roleId);
+  });
+  const coachingTeams = Object.keys(config.teams || {}).filter((teamKey) => {
+    const roleId = config.roles?.[teamKey]?.coach;
+    return roleId && roleId !== 'ROLE_ID' && member?.roles?.cache?.has(roleId);
+  });
+  return { playingTeams, coachingTeams };
 }
 
 async function handleAdminPlayerAction(interaction, selectedAction, userId, mode = 'player') {
@@ -514,9 +534,8 @@ async function handleAdminPlayerAction(interaction, selectedAction, userId, mode
   const modalTitles = {
     set_name: mode === 'coach' ? 'Set Coach Real Name' : 'Set Player Real Name',
     set_nickname: mode === 'coach' ? 'Set Coach Nickname' : 'Set Player Nickname',
-    set_face: 'Set Player Face URL (.png or .webp)',
+    set_face: 'Set Player Face URL (.png, .webp, or .jpg)',
     set_shirt: 'Set Player Shirt Number',
-    set_joined: 'Set Joined Date (YYYY-MM-DD)',
     set_notes: 'Set Player Notes'
   };
   const fieldByAction = {
@@ -524,11 +543,13 @@ async function handleAdminPlayerAction(interaction, selectedAction, userId, mode
     set_nickname: { id: 'nickname', label: 'Nickname', value: mergedProfile.nickName || '' },
     set_face: { id: 'face_image_url', label: 'Face image URL', value: mergedProfile.faceImageUrl || mergedProfile.facePngUrl || '' },
     set_shirt: { id: 'shirt_number', label: 'Shirt number', value: mergedProfile.shirtNumber || '' },
-    set_joined: { id: 'joined_discord_at', label: 'Joined date', value: mergedProfile.joinedDiscordAt || (targetMember?.joinedAt ? targetMember.joinedAt.toISOString().slice(0, 10) : '') },
     set_notes: { id: 'notes', label: 'Profile notes', value: mergedProfile.notes || '' }
   };
   const field = fieldByAction[selectedAction];
-  if (!field) return false;
+  if (!field) {
+    await interaction.reply({ content: 'That profile action is no longer supported.', flags: MessageFlags.Ephemeral }).catch(() => null);
+    return true;
+  }
 
   const modal = new ModalBuilder()
     .setCustomId(`admin_player_profile_modal:${selectedAction}:${userId}:${mode}`)
@@ -552,9 +573,11 @@ async function handleAdminPlayerAction(interaction, selectedAction, userId, mode
 
 function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mode = 'player') {
   const discordName = user?.tag || user?.username || profile.userId || 'Unknown';
-  const displayName = getPlayerNameForUi(user, member, profile);
-  const teamLabels = (profile.teams || []).map((team) => getTeamMeta(config, team).label).join(', ') || 'not set';
-  const coachTeamLabels = (profile.coachTeams || []).map((team) => getTeamMeta(config, team).label).join(', ') || 'not set';
+  const realName = profile.customName || member?.displayName || user?.globalName || user?.username || 'not set';
+  const nickname = profile.nickName || '';
+  const { playingTeams, coachingTeams } = getMemberTeamAssignments(member, config);
+  const teamLabels = playingTeams.map((team) => getTeamMeta(config, team).label).join(', ') || 'not set';
+  const coachTeamLabels = coachingTeams.map((team) => getTeamMeta(config, team).label).join(', ') || 'not set';
   const roles = (profile.roles || []).map((roleId) => formatConfigRef(guild, 'role', roleId)).join(', ') || 'not set';
   const joined = profile.joinedDiscordAt || (member?.joinedAt ? member.joinedAt.toISOString().slice(0, 10) : 'unknown');
   const shirtNumber = profile.shirtNumber || 'not set';
@@ -566,8 +589,8 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
   return [
     `${managerLabel}: <@${user?.id || profile.userId}>`,
     `• Discord: ${discordName}`,
-    `• Real Name: ${displayName}`,
-    `• Nickname: ${profile.nickName || 'not set'}`,
+    `• Real Name: ${realName}${nickname ? ` (Nickname: ${nickname})` : ''}`,
+    `• Nickname: ${nickname || 'not set'}`,
     `• Shirt Number: ${shirtNumber}`,
     `• Face Image: ${faceImageUrl}`,
     `• Teams: ${teamLabels}`,
@@ -611,21 +634,26 @@ function buildAttendanceStatsMessage(userId, config) {
   ].join('\n');
 }
 
-function createAbsenceTicketDecisionRow(eventId, userId) {
+function createAbsenceTicketDecisionRow() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId(`absence_ticket_confirm:${eventId}:${userId}`)
+      .setCustomId('absence_ticket_confirm')
       .setLabel('✅ Confirm Not Attending')
       .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
-      .setCustomId(`absence_ticket_decline:${eventId}:${userId}`)
+      .setCustomId('absence_ticket_decline')
       .setLabel('↩️ Decline (Ask to Attend)')
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
-      .setCustomId(`absence_ticket_player_attend:${eventId}:${userId}`)
+      .setCustomId('absence_ticket_player_attend')
       .setLabel('🟢 I can attend')
       .setStyle(ButtonStyle.Primary)
   );
+}
+
+async function closeAbsenceTicketChannel(channel, reason = 'Absence ticket resolved') {
+  if (!channel || !channel.deletable) return;
+  await channel.delete(reason).catch(() => null);
 }
 
 function summarizeAttendance(event, db, guild, teamRolesMap) {
@@ -684,7 +712,7 @@ async function logAdminUiAction(interaction, command, subcommand = '', options =
 async function syncConfigSnapshotIfEnabled() {
   const latestConfig = loadConfig();
   if (!latestConfig.googleSync?.enabled) return;
-  await syncAllToSheet(latestConfig, loadDb());
+  await syncConfigOnlyToSheet(latestConfig);
 }
 
 async function handlePanelGoogleSync(interaction) {
@@ -821,20 +849,34 @@ module.exports = {
         return;
       }
 
-      if (interaction.customId.startsWith('absence_ticket_confirm:') || interaction.customId.startsWith('absence_ticket_decline:') || interaction.customId.startsWith('absence_ticket_player_attend:')) {
-        const [, eventId, playerId] = interaction.customId.split(':');
+      if (
+        interaction.customId === 'absence_ticket_confirm'
+        || interaction.customId === 'absence_ticket_decline'
+        || interaction.customId === 'absence_ticket_player_attend'
+        || interaction.customId.startsWith('absence_ticket_confirm:')
+        || interaction.customId.startsWith('absence_ticket_decline:')
+        || interaction.customId.startsWith('absence_ticket_player_attend:')
+        || interaction.customId.startsWith('absence_dm_attend:')
+      ) {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         const db = loadDb();
+        const dmToken = interaction.customId.startsWith('absence_dm_attend:') ? interaction.customId.split(':')[1] : '';
+        const dmPayload = dmToken ? pendingPlayerAttendDmTokens.get(dmToken) : null;
+        const legacyParts = interaction.customId.split(':');
+        const channelTicket = interaction.channelId ? db.absenceTickets?.[interaction.channelId] : null;
+        const eventId = dmPayload?.eventId || channelTicket?.eventId || legacyParts[1];
+        const playerId = dmPayload?.playerId || channelTicket?.playerId || legacyParts[2];
         const event = db.events[eventId];
         if (!event) {
-          await interaction.reply({ content: 'Event no longer exists for this ticket.', flags: MessageFlags.Ephemeral });
+          await interaction.editReply({ content: 'Event no longer exists for this ticket.' });
           return;
         }
 
         const teamRoles = teamRolesMap[event.team];
 
-        if (interaction.customId.startsWith('absence_ticket_player_attend:')) {
+        if (interaction.customId === 'absence_ticket_player_attend' || interaction.customId.startsWith('absence_ticket_player_attend:') || interaction.customId.startsWith('absence_dm_attend:')) {
           if (interaction.user.id !== playerId) {
-            await interaction.reply({ content: 'Only the player can use this button.', flags: MessageFlags.Ephemeral });
+            await interaction.editReply({ content: 'Only the player can use this button.' });
             return;
           }
           setResponse(eventId, playerId, {
@@ -843,18 +885,27 @@ module.exports = {
             confirmed: false,
             updatedAt: new Date().toISOString()
           });
+          setAbsenceTicket(interaction.channelId, {
+            status: 'closed',
+            coachDecision: 'player_attending',
+            closedAt: new Date().toISOString(),
+            closedReason: 'Player confirmed they can attend.'
+          });
           await triggerGoogleSync(context);
-          await interaction.reply({ content: '🟢 Marked as attending. This absence ticket can be closed.' });
+          await interaction.editReply({ content: '🟢 Marked as attending. Closing this absence chat now.' });
+          await interaction.user.send(`✅ You are now marked as attending for **${event.title}** (${getCompactDateLabel(event.date)}).`).catch(() => null);
+          if (dmToken) pendingPlayerAttendDmTokens.delete(dmToken);
           await context.sendLog(`🟢 <@${playerId}> switched to attending for **${event.title}** from the ticket channel.`);
+          await closeAbsenceTicketChannel(interaction.channel, 'Player confirmed attending');
           return;
         }
 
         if (!teamRoles?.coach || !hasRole(interaction.member, teamRoles.coach)) {
-          await interaction.reply({ content: 'Only team coaches/staff can use this decision button.', flags: MessageFlags.Ephemeral });
+          await interaction.editReply({ content: 'Only team coaches/staff can use this decision button.' });
           return;
         }
 
-        if (interaction.customId.startsWith('absence_ticket_confirm:')) {
+        if (interaction.customId === 'absence_ticket_confirm' || interaction.customId.startsWith('absence_ticket_confirm:')) {
           setResponse(eventId, playerId, {
             status: 'confirmed_no',
             confirmed: true,
@@ -862,23 +913,53 @@ module.exports = {
             confirmedAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
           });
+          setAbsenceTicket(interaction.channelId, {
+            status: 'closed',
+            coachDecision: 'confirmed_not_attending',
+            coachId: interaction.user.id,
+            coachName: interaction.user.tag,
+            closedAt: new Date().toISOString(),
+            closedReason: 'Coach confirmed not attending.'
+          });
           await triggerGoogleSync(context);
-          await interaction.reply({ content: `✅ Absence confirmed for <@${playerId}>.` });
+          await interaction.editReply({ content: `✅ Absence confirmed for <@${playerId}>. Closing this absence chat now.` });
+          const member = await interaction.guild.members.fetch(playerId).catch(() => null);
+          await member?.send(`✅ Your not-attending request for **${event.title}** (${getCompactDateLabel(event.date)}) was confirmed by a coach.`).catch(() => null);
           await context.sendLog(`✅ ${interaction.user.tag} confirmed not attending for <@${playerId}> on **${event.title}**.`);
+          await closeAbsenceTicketChannel(interaction.channel, 'Absence confirmed by coach');
           return;
         }
 
         clearResponse(eventId, playerId);
         await triggerGoogleSync(context);
         const member = await interaction.guild.members.fetch(playerId).catch(() => null);
-        await member?.send(`Your absence request for **${event.title}** was declined. Please use the attendance button to confirm you can attend.`).catch(() => null);
-        await interaction.reply({
+        const newDmToken = Math.random().toString(36).slice(2, 12);
+        pendingPlayerAttendDmTokens.set(newDmToken, { eventId, playerId });
+        await member?.send({
+          content: `Your absence request for **${event.title}** (${getCompactDateLabel(event.date)}) was declined. Press below to confirm you can attend.`,
+          components: [new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+              .setCustomId(`absence_dm_attend:${newDmToken}`)
+              .setLabel('🟢 I can attend')
+              .setStyle(ButtonStyle.Primary)
+          )]
+        }).catch(() => null);
+        await interaction.editReply({
           content: [
             `↩️ Absence request declined for <@${playerId}>.`,
-            'Player should now confirm attendance from the original event message.'
+            'Player has been asked in DM to confirm they can attend. Closing this absence chat now.'
           ].join('\n')
         });
+        setAbsenceTicket(interaction.channelId, {
+          status: 'closed',
+          coachDecision: 'declined_asked_to_attend',
+          coachId: interaction.user.id,
+          coachName: interaction.user.tag,
+          closedAt: new Date().toISOString(),
+          closedReason: 'Coach declined absence and asked player to attend.'
+        });
         await context.sendLog(`↩️ ${interaction.user.tag} declined not-attending request for <@${playerId}> on **${event.title}**.`);
+        await closeAbsenceTicketChannel(interaction.channel, 'Absence declined by coach');
         return;
       }
 
@@ -898,8 +979,8 @@ module.exports = {
       }
 
       if (parsed.action === 'attend_yes') {
-        if (!hasRole(interaction.member, teamRoles.player)) {
-          await interaction.reply({ content: 'Only players for this team can respond.', flags: MessageFlags.Ephemeral });
+        if (!hasRole(interaction.member, teamRoles.player) && !hasRole(interaction.member, teamRoles.coach)) {
+          await interaction.reply({ content: 'Only players/coaches for this team can respond.', flags: MessageFlags.Ephemeral });
           return;
         }
         const existing = db.events[parsed.eventId]?.responses?.[interaction.user.id];
@@ -924,13 +1005,15 @@ module.exports = {
       }
 
       if (parsed.action === 'attend_no') {
-        if (!hasRole(interaction.member, teamRoles.player)) {
-          await interaction.reply({ content: 'Only players for this team can respond.', flags: MessageFlags.Ephemeral });
+        if (!hasRole(interaction.member, teamRoles.player) && !hasRole(interaction.member, teamRoles.coach)) {
+          await interaction.reply({ content: 'Only players/coaches for this team can respond.', flags: MessageFlags.Ephemeral });
           return;
         }
 
+        const modalToken = `${parsed.eventId}:${interaction.user.id}`.slice(-80);
+        pendingAbsenceReasonModals.set(modalToken, parsed.eventId);
         const modal = new ModalBuilder()
-          .setCustomId(`absence_reason:${parsed.eventId}`)
+          .setCustomId(`absence_reason_token:${modalToken}`)
           .setTitle('Not Attending');
 
         const reasonInput = new TextInputBuilder()
@@ -1404,6 +1487,7 @@ module.exports = {
               ...existing,
               title: event.title,
               date: event.date,
+              location: event.location || existing.location || '',
               team: existing.team || event.team,
               discordMessageId: existing.discordMessageId || '',
               responses: existing.responses || {},
@@ -1529,14 +1613,14 @@ module.exports = {
           const row = new ActionRowBuilder().addComponents(
             new ChannelSelectMenuBuilder()
               .setCustomId(`admin_set_channel:channels.privateChatCategories.${team}:${team}`)
-              .setPlaceholder(`Choose ${teamLabel} Private Chat Category`)
+              .setPlaceholder(`Choose ${teamLabel} Absence Chat Category`)
               .setChannelTypes(ChannelType.GuildCategory)
               .setMinValues(1)
               .setMaxValues(1)
           );
 
           await interaction.update({
-            content: `Select the category where **${teamLabel}** private attendance chats will be created.`,
+            content: `Select the category where **${teamLabel}** absence chats will be created.`,
             embeds: [],
             components: [row, createBackButtonRow(`admin_back_team_config:${team}`)]
           });
@@ -1781,6 +1865,7 @@ module.exports = {
       }
 
       if (interaction.customId.startsWith('admin_force_attendance_window:')) {
+        await interaction.deferUpdate();
         const team = interaction.customId.split(':')[1];
         const window = interaction.values[0];
         const latestConfig = loadConfig();
@@ -1798,6 +1883,7 @@ module.exports = {
             ...existing,
             title: event.title,
             date: event.date,
+            location: event.location || existing.location || '',
             team: event.team || existing.team || team,
             discordMessageId: existing.discordMessageId || '',
             responses: existing.responses || {},
@@ -1826,7 +1912,7 @@ module.exports = {
           }
         }
 
-        await interaction.update({
+        await interaction.editReply({
           content: `✅ Force-send complete for **${getTeamMeta(latestConfig, team).label}**. Sent ${sent}/${targets.length} attendance prompt(s).`,
           embeds: [],
           components: [createTeamConfigActionRow(latestConfig, team), createBackButtonRow('admin_back_team_management')]
@@ -1997,8 +2083,11 @@ module.exports = {
       return;
     }
 
-    if (interaction.isModalSubmit() && interaction.customId.startsWith('absence_reason:')) {
-      const eventId = interaction.customId.split(':')[1];
+    if (interaction.isModalSubmit() && (interaction.customId.startsWith('absence_reason:') || interaction.customId.startsWith('absence_reason_token:'))) {
+      const parts = interaction.customId.split(':');
+      const eventId = interaction.customId.startsWith('absence_reason_token:')
+        ? pendingAbsenceReasonModals.get(parts.slice(1).join(':'))
+        : parts[1];
       const db = loadDb();
       const event = db.events[eventId];
 
@@ -2008,12 +2097,15 @@ module.exports = {
       }
 
       const teamRoles = teamRolesMap[event.team];
-      if (!hasRole(interaction.member, teamRoles.player)) {
-        await interaction.reply({ content: 'Only players for this team can respond.', flags: MessageFlags.Ephemeral });
+      if (!hasRole(interaction.member, teamRoles.player) && !hasRole(interaction.member, teamRoles.coach)) {
+        await interaction.reply({ content: 'Only players/coaches for this team can respond.', flags: MessageFlags.Ephemeral });
         return;
       }
 
       const reason = interaction.fields.getTextInputValue('reason').trim();
+      if (interaction.customId.startsWith('absence_reason_token:')) {
+        pendingAbsenceReasonModals.delete(parts.slice(1).join(':'));
+      }
       const profile = getPlayerProfile(interaction.user.id);
       const playerDisplayName = buildRichPlayerMention(config, interaction.user, interaction.member, profile, event.team);
 
@@ -2071,9 +2163,13 @@ module.exports = {
 
       if (ticketChannel) {
         setAbsenceTicket(ticketChannel.id, {
+          ticketId: ticketChannel.id,
           eventId,
           playerId: interaction.user.id,
+          playerName: playerDisplayName,
           team: event.team,
+          reason,
+          status: 'open',
           createdBy: interaction.user.id,
           createdAt: new Date().toISOString()
         });
@@ -2083,11 +2179,12 @@ module.exports = {
             `Team/Player: ${playerDisplayName} (<@${interaction.user.id}>)`,
             `Date of event: ${eventDateLabel}`,
             `Name of event: ${event.title}`,
+            `Location: ${event.location || 'n/a'}`,
             `Reason for not attending: ${reason}`,
             '',
             'Staff/coaches: confirm or decline this absence request below.'
           ].join('\n'),
-          components: [createAbsenceTicketDecisionRow(eventId, interaction.user.id)]
+          components: [createAbsenceTicketDecisionRow()]
         });
 
         const staffRoomId = config.channels.staffRooms?.[event.team];
@@ -2099,7 +2196,7 @@ module.exports = {
         }
 
         await context.sendLog(
-          `🔴 ${playerDisplayName} submitted not-attending for **${event.title}** (${eventDateLabel}). Ticket: <#${ticketChannel.id}>`
+          `🔴 ${playerDisplayName} submitted not-attending for **${event.title}** (${eventDateLabel}). Reason: ${reason}\nTicket: <#${ticketChannel.id}>`
         );
       }
 
@@ -2174,15 +2271,14 @@ module.exports = {
       if (action === 'set_nickname') updates.nickName = interaction.fields.getTextInputValue('nickname').trim();
       if (action === 'set_face') {
         const faceImageUrl = interaction.fields.getTextInputValue('face_image_url').trim();
-        if (faceImageUrl && !/^https?:\/\/\S+\.(png|webp)(?:\?\S*)?$/i.test(faceImageUrl)) {
-          await interaction.editReply({ content: 'Face URL must be a direct image link ending in .png or .webp.' });
+        if (faceImageUrl && !/^https?:\/\/\S+\.(png|webp|jpe?g)(?:\?\S*)?$/i.test(faceImageUrl)) {
+          await interaction.editReply({ content: 'Face URL must be a direct image link ending in .png, .webp, .jpg, or .jpeg.' });
           return;
         }
         updates.faceImageUrl = faceImageUrl;
         updates.facePngUrl = faceImageUrl;
       }
       if (action === 'set_shirt') updates.shirtNumber = interaction.fields.getTextInputValue('shirt_number').trim();
-      if (action === 'set_joined') updates.joinedDiscordAt = interaction.fields.getTextInputValue('joined_discord_at').trim();
       if (action === 'set_notes') updates.notes = interaction.fields.getTextInputValue('notes').trim();
 
       const profile = upsertPlayerProfile(userId, updates);

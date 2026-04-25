@@ -8,8 +8,9 @@ module.exports = {
     .setDescription('Coach/staff: confirm an absence from inside a private attendance chat'),
 
   async execute(interaction, context) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (!interaction.channel || interaction.channel.type !== ChannelType.GuildText) {
-      await interaction.reply({ content: 'Run this in the private absence text channel.', flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: 'Run this in the private absence text channel.' });
       return;
     }
 
@@ -17,19 +18,19 @@ module.exports = {
     const ticket = db.absenceTickets?.[interaction.channelId];
 
     if (!ticket) {
-      await interaction.reply({ content: 'This channel is not linked to a pending attendance ticket.', flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: 'This channel is not linked to a pending attendance ticket.' });
       return;
     }
 
     const event = db.events[ticket.eventId];
     if (!event) {
-      await interaction.reply({ content: 'The related event could not be found.', flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: 'The related event could not be found.' });
       return;
     }
 
     const teamRoles = context.getConfig().roles?.[event.team];
     if (!teamRoles?.coach || !interaction.member.roles.cache.has(teamRoles.coach)) {
-      await interaction.reply({ content: 'Only coaches/staff for this team can confirm this absence.', flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: 'Only coaches/staff for this team can confirm this absence.' });
       return;
     }
 
@@ -51,7 +52,9 @@ module.exports = {
 
     deleteAbsenceTicket(interaction.channelId);
 
-    await interaction.reply({ content: `✅ Confirmed absence for <@${ticket.playerId}>.` });
+    await interaction.editReply({ content: `✅ Confirmed absence for <@${ticket.playerId}>.` });
+    const member = await interaction.guild.members.fetch(ticket.playerId).catch(() => null);
+    await member?.send(`✅ Your not-attending request for **${event.title}** (${new Date(event.date).toISOString().slice(0, 10)}) was confirmed by a coach.`).catch(() => null);
 
     await context.sendLog(
       `✅ Absence confirmed by ${interaction.user.tag} for <@${ticket.playerId}> on **${event.title}** (${new Date(event.date).toISOString().slice(0, 10)}).`
