@@ -231,6 +231,7 @@ function buildPlayerRows(db = {}) {
       Array.isArray(profile.roles) ? profile.roles.join(',') : '',
       profile.joinedDiscordAt || '',
       profile.notes || '',
+      profile.facePngUrl || '',
       profile.updatedAt || toIso()
     ]))
     .sort((a, b) => String(a[1] || a[0]).localeCompare(String(b[1] || b[0])));
@@ -352,7 +353,8 @@ async function syncAllToSheet(config = {}, db = {}) {
   const womensFixturesRange = config.googleSync?.womensFixturesRange || 'Womens Fixtures!A2:F';
   const attendanceRange = config.googleSync?.attendanceRange || 'Attendance!A2:F';
   const configRange = config.googleSync?.configRange || 'Config!A2:C';
-  const playersRange = config.googleSync?.playersRange || 'Players!A2:H';
+  const configIdsRange = config.googleSync?.configIdsRange || 'Config IDs!A2:C';
+  const playersRange = config.googleSync?.playersRange || 'Players!A2:I';
 
   await ensureSheetLayout(sheets, spreadsheetId, [
     { range: fixturesRange, headers: ['eventId', 'title', 'date', 'team', 'discordMessageId', 'updatedAt'] },
@@ -361,7 +363,8 @@ async function syncAllToSheet(config = {}, db = {}) {
     { range: womensFixturesRange, headers: ['eventId', 'title', 'date', 'team', 'discordMessageId', 'updatedAt'] },
     { range: attendanceRange, headers: ['eventId', 'userId', 'username', 'team', 'status', 'updatedAt'] },
     { range: configRange, headers: ['key', 'value', 'updatedAt'] },
-    { range: playersRange, headers: ['userId', 'customName', 'shirtNumber', 'teams', 'roles', 'joinedDiscordAt', 'notes', 'updatedAt'] }
+    { range: configIdsRange, headers: ['key', 'value', 'updatedAt'] },
+    { range: playersRange, headers: ['userId', 'customName', 'shirtNumber', 'teams', 'roles', 'joinedDiscordAt', 'notes', 'facePngUrl', 'updatedAt'] }
   ]);
 
   await writeRange(sheets, spreadsheetId, fixturesRange, buildFixtureRows(db));
@@ -369,7 +372,27 @@ async function syncAllToSheet(config = {}, db = {}) {
   await writeRange(sheets, spreadsheetId, womensFixturesRange, buildFixtureRowsForTeam(db, 'womens'));
   await writeRange(sheets, spreadsheetId, attendanceRange, buildAttendanceRows(db));
   await writeRange(sheets, spreadsheetId, configRange, flattenConfig(config));
+  await writeRange(sheets, spreadsheetId, configIdsRange, buildConfigIdRows(config));
   await writeRange(sheets, spreadsheetId, playersRange, buildPlayerRows(db));
+
+  return { ok: true, spreadsheetId };
+}
+
+async function syncConfigOnlyToSheet(config = {}) {
+  const spreadsheetId = getSpreadsheetId(config);
+  if (!spreadsheetId) return { ok: false, reason: 'missing_spreadsheet_id' };
+
+  const sheets = await getSheetsClient(config);
+  const configRange = config.googleSync?.configRange || 'Config!A2:C';
+  const configIdsRange = config.googleSync?.configIdsRange || 'Config IDs!A2:C';
+
+  await ensureSheetLayout(sheets, spreadsheetId, [
+    { range: configRange, headers: ['key', 'value', 'updatedAt'] },
+    { range: configIdsRange, headers: ['key', 'value', 'updatedAt'] }
+  ]);
+
+  await writeRange(sheets, spreadsheetId, configRange, flattenConfig(config));
+  await writeRange(sheets, spreadsheetId, configIdsRange, buildConfigIdRows(config));
 
   return { ok: true, spreadsheetId };
 }
@@ -388,5 +411,6 @@ module.exports = {
   flattenConfig,
   buildConfigIdRows,
   ensureSheetLayout,
-  syncAllToSheet
+  syncAllToSheet,
+  syncConfigOnlyToSheet
 };
