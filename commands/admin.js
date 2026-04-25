@@ -23,7 +23,7 @@ function createAdminPanelActionRow() {
       .setCustomId('admin_quick_action')
       .setPlaceholder('Pick an action')
       .addOptions([
-        { label: 'Team Management', value: 'team_management', description: 'Roles, team chats, team emoji, and create new teams' },
+        { label: 'Team Management', value: 'team_management', description: 'Select team, view settings, update roles/chats/emoji, create teams' },
         { label: 'Google Tools', value: 'google_tools', description: 'Google Sheets + Calendar actions' },
         { label: 'Club Report', value: 'club_report', description: 'Run admin club attendance report' },
         { label: 'Config View', value: 'config_view', description: 'Run admin-config view from this panel' }

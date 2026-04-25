@@ -68,6 +68,16 @@ function toOptionSummary(interaction) {
   }
 }
 
+function summarizeInteractionContext(interaction) {
+  const parts = [];
+  if (interaction.commandName) parts.push(`command=${interaction.commandName}`);
+  if (interaction.customId) parts.push(`customId=${interaction.customId}`);
+  if (interaction.user?.tag) parts.push(`user=${interaction.user.tag}`);
+  if (interaction.guildId) parts.push(`guild=${interaction.guildId}`);
+  if (interaction.channelId) parts.push(`channel=${interaction.channelId}`);
+  return parts.join(' | ');
+}
+
 async function logCommandUsage(interaction) {
   try {
     const config = getConfig();
@@ -274,9 +284,10 @@ client.on('interactionCreate', async (interaction) => {
     await interactionHandler.execute(interaction, { getConfig, sendLog });
   } catch (error) {
     console.error('Interaction handling failed:', error);
+    await sendLog(`❌ Interaction failed: ${error.message}\n${summarizeInteractionContext(interaction)}`);
 
     if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-      await interaction.reply({ content: 'Something went wrong.', flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: `Something went wrong. Error logged to admin chat.\nReason: ${error.message}`, flags: MessageFlags.Ephemeral });
     }
   }
 });

@@ -30,13 +30,6 @@ function getTeamMeta(config = {}, team = '') {
   };
 }
 
-function getTeamOptions(config = {}) {
-  return Object.keys(config.teams || {}).map((team) => {
-    const meta = getTeamMeta(config, team);
-    return { label: meta.label.slice(0, 100), value: team };
-  });
-}
-
 function createAdminQuickActionRow() {
   return adminCommand.createAdminPanelActionRow();
 }
@@ -50,14 +43,22 @@ function createAdminBackButtonRow() {
   );
 }
 
+function createBackButtonRow(customId = 'admin_back_to_panel', label = '⬅️ Back') {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(customId)
+      .setLabel(label)
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
+
 function createTeamManagementRow() {
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId('admin_team_management_action')
       .setPlaceholder('Team Management actions')
       .addOptions([
-        { label: 'Set Roles & Team Chats', value: 'set_team_ids', description: 'Choose team role/chat IDs and fixture team' },
-        { label: 'Set Team Emoji', value: 'set_emoji', description: 'Set a team display emoji' },
+        { label: 'Configure Existing Team', value: 'configure_team', description: 'Select a team, view current settings, and edit' },
         { label: 'Create New Team', value: 'new_team', description: 'Create a new team for setup' }
       ])
   );
@@ -72,13 +73,17 @@ function createGoogleToolsRow() {
         { label: 'Sync Google Sheets', value: 'sync_google', description: 'Force-sync fixtures and attendance to Sheets' },
         { label: 'Open Google Sheet', value: 'open_google_sheet', description: 'Open configured Google Sheet' },
         { label: 'Set Google Calendar ID', value: 'set_calendar_id', description: 'Set calendar used for sync' },
+        { label: 'Set Admin Chat', value: 'set_admin_chat', description: 'Choose where admin logs + errors are posted' },
         { label: 'View Google Calendar Events', value: 'view_google_events', description: 'Preview synced calendar events' }
       ])
   );
 }
 
 function createTeamPickerRow(config, customId, placeholder = 'Choose a team') {
-  const options = getTeamOptions(config);
+  const options = Object.keys(config.teams || {}).map((team) => {
+    const meta = getTeamMeta(config, team);
+    return { label: `${meta.emoji} ${meta.label}`.slice(0, 100), value: team };
+  });
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(customId)
@@ -99,9 +104,48 @@ function createTeamConfigActionRow(config, team) {
         { label: 'Set Team Chat ID', value: 'team_chat', description: `Set ${label} team chat channel` },
         { label: 'Set Staff Room ID', value: 'staff_room', description: `Set ${label} staff room channel` },
         { label: 'Set Private Chat Category', value: 'private_category', description: `Set category for attendance chats` },
+        { label: 'Set Team Emoji', value: 'team_emoji', description: `Set emoji for ${label}` },
         { label: 'Set Fixture Team', value: 'fixture_team', description: `Assign a fixture to ${label}` }
       ])
   );
+}
+
+function createTeamPickerButtonsRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('admin_create_team_btn')
+      .setLabel('➕ Create New Team')
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId('admin_back_to_panel')
+      .setLabel('⬅️ Back')
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function formatConfigRef(guild, type, id) {
+  if (!id || id === 'ROLE_ID') return 'not set';
+  if (type === 'role') {
+    const role = guild.roles.cache.get(id);
+    return role ? `<@&${id}>` : `${id} (missing)`;
+  }
+  const channel = guild.channels.cache.get(id);
+  return channel ? `<#${id}>` : `${id} (missing)`;
+}
+
+function getTeamConfigSummary(config, guild, team) {
+  const meta = getTeamMeta(config, team);
+  return [
+    `Now configuring: ${meta.emoji} **${meta.label}** (\`${team}\`)`,
+    '',
+    '**Current configuration**',
+    `• Player Role: ${formatConfigRef(guild, 'role', config.roles?.[team]?.player)}`,
+    `• Coach Role: ${formatConfigRef(guild, 'role', config.roles?.[team]?.coach)}`,
+    `• Team Chat: ${formatConfigRef(guild, 'channel', config.channels?.teamChats?.[team])}`,
+    `• Staff Room: ${formatConfigRef(guild, 'channel', config.channels?.staffRooms?.[team])}`,
+    `• Private Chat Category: ${formatConfigRef(guild, 'channel', config.channels?.privateChatCategories?.[team])}`,
+    `• Team Emoji: ${meta.emoji}`
+  ].join('\n');
 }
 
 function buildMonthGroupedEventLines(events, db, guild, teamRolesMap, config) {
@@ -254,6 +298,66 @@ module.exports = {
         });
         return;
       }
+      if (interaction.customId === 'admin_back_team_management') {
+        await interaction.update({
+          content: 'Team Management:',
+          embeds: [],
+          components: [createTeamManagementRow(), createAdminBackButtonRow()]
+        });
+        return;
+      }
+      if (interaction.customId === 'admin_back_google_tools') {
+        await interaction.update({
+          content: 'Google Tools:',
+          embeds: [],
+          components: [createGoogleToolsRow(), createAdminBackButtonRow()]
+        });
+        return;
+      }
+      if (interaction.customId.startsWith('admin_back_team_config:')) {
+        const team = interaction.customId.split(':')[1];
+        const latestConfig = context.getConfig();
+        await interaction.update({
+          content: getTeamConfigSummary(latestConfig, interaction.guild, team),
+          embeds: [],
+          components: [createTeamConfigActionRow(latestConfig, team), createBackButtonRow('admin_back_team_management')]
+        });
+        return;
+      }
+      if (interaction.customId === 'admin_create_team_btn') {
+        const modal = new ModalBuilder()
+          .setCustomId('admin_new_team_modal')
+          .setTitle('Create New Team');
+
+        const keyInput = new TextInputBuilder()
+          .setCustomId('team_key')
+          .setLabel('Team key (letters/numbers, e.g. u18mens)')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(30);
+
+        const labelInput = new TextInputBuilder()
+          .setCustomId('team_label')
+          .setLabel('Display name (e.g. U18 Mens)')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(80);
+
+        const emojiInput = new TextInputBuilder()
+          .setCustomId('team_emoji')
+          .setLabel('Emoji (optional, default 🔹)')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(20);
+
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(keyInput),
+          new ActionRowBuilder().addComponents(labelInput),
+          new ActionRowBuilder().addComponents(emojiInput)
+        );
+        await interaction.showModal(modal);
+        return;
+      }
 
       const parsed = parseCustomId(interaction.customId);
       const db = loadDb();
@@ -284,8 +388,8 @@ module.exports = {
           updatedAt: new Date().toISOString()
         });
 
-        await triggerGoogleSync(context);
         await interaction.reply({ content: '✅ You are marked as attending.', flags: MessageFlags.Ephemeral });
+        await triggerGoogleSync(context);
         await context.sendLog(`🟢 ${interaction.user.tag} marked attending for **${event.title}** (${getEventDateLabel(event.date)}).`);
         return;
       }
@@ -338,8 +442,8 @@ module.exports = {
           updatedAt: new Date().toISOString()
         });
 
-        await triggerGoogleSync(context);
         await interaction.reply({ content: `✅ Absence confirmed for <@${targetUserId}>.` });
+        await triggerGoogleSync(context);
         deleteAbsenceTicket(interaction.channelId);
         await context.sendLog(`✅ ${interaction.user.tag} confirmed absence for <@${targetUserId}> on **${event.title}**.`);
 
@@ -415,11 +519,11 @@ module.exports = {
       if (interaction.customId === 'admin_team_management_action' || interaction.customId === 'admin_google_tools_action') {
         const action = interaction.values[0];
 
-        if (action === 'set_team_ids') {
+        if (action === 'configure_team') {
           await interaction.update({
-            content: 'Choose a team to configure role IDs, team chat ID, and fixture team.',
+            content: 'Select your team first. Then choose what to change. You can also create a new team here.',
             embeds: [],
-            components: [createTeamPickerRow(config, 'admin_team_config_select'), createAdminBackButtonRow()]
+            components: [createTeamPickerRow(config, 'admin_team_config_select', 'Select a team to configure'), createTeamPickerButtonsRow()]
           });
           return;
         }
@@ -438,34 +542,6 @@ module.exports = {
             .setMaxLength(150);
 
           modal.addComponents(new ActionRowBuilder().addComponents(calendarIdInput));
-          await interaction.showModal(modal);
-          return;
-        }
-
-        if (action === 'set_emoji') {
-          const modal = new ModalBuilder()
-            .setCustomId('admin_set_emoji_modal')
-            .setTitle('Set Team Emoji');
-
-          const teamInput = new TextInputBuilder()
-            .setCustomId('team')
-            .setLabel('Team key (e.g. mens, womens, u18mens)')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setValue('mens')
-            .setMaxLength(10);
-
-          const emojiInput = new TextInputBuilder()
-            .setCustomId('emoji')
-            .setLabel('Emoji, e.g. 🔵 or :blue_circle:')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setMaxLength(40);
-
-          modal.addComponents(
-            new ActionRowBuilder().addComponents(teamInput),
-            new ActionRowBuilder().addComponents(emojiInput)
-          );
           await interaction.showModal(modal);
           return;
         }
@@ -502,6 +578,22 @@ module.exports = {
             new ActionRowBuilder().addComponents(emojiInput)
           );
           await interaction.showModal(modal);
+          return;
+        }
+        if (action === 'set_admin_chat') {
+          const row = new ActionRowBuilder().addComponents(
+            new ChannelSelectMenuBuilder()
+              .setCustomId('admin_set_channel:channels.admin:global')
+              .setPlaceholder('Choose Admin Chat channel')
+              .setChannelTypes(ChannelType.GuildText)
+              .setMinValues(1)
+              .setMaxValues(1)
+          );
+          await interaction.update({
+            content: 'Select the Admin chat channel. Bot errors + interaction failures are posted there.',
+            embeds: [],
+            components: [row, createBackButtonRow('admin_back_google_tools')]
+          });
           return;
         }
 
@@ -577,11 +669,11 @@ module.exports = {
 
       if (interaction.customId === 'admin_team_config_select') {
         const team = interaction.values[0];
-        const teamLabel = getTeamMeta(config, team).label;
+        const latestConfig = context.getConfig();
         await interaction.update({
-          content: `Configuring **${teamLabel}**. Pick what to update.`,
+          content: getTeamConfigSummary(latestConfig, interaction.guild, team),
           embeds: [],
-          components: [createTeamConfigActionRow(config, team), createAdminBackButtonRow()]
+          components: [createTeamConfigActionRow(latestConfig, team), createBackButtonRow('admin_back_team_management')]
         });
         return;
       }
@@ -605,7 +697,7 @@ module.exports = {
           await interaction.update({
             content: `Select the role to assign for **${label}**.`,
             embeds: [],
-            components: [row]
+            components: [row, createBackButtonRow(`admin_back_team_config:${team}`)]
           });
           return;
         }
@@ -623,7 +715,7 @@ module.exports = {
           await interaction.update({
             content: `Select the channel to assign for **${teamLabel} Team Chat**.`,
             embeds: [],
-            components: [row]
+            components: [row, createBackButtonRow(`admin_back_team_config:${team}`)]
           });
           return;
         }
@@ -641,7 +733,7 @@ module.exports = {
           await interaction.update({
             content: `Select the channel to assign for **${teamLabel} Staff Room**.`,
             embeds: [],
-            components: [row]
+            components: [row, createBackButtonRow(`admin_back_team_config:${team}`)]
           });
           return;
         }
@@ -659,8 +751,26 @@ module.exports = {
           await interaction.update({
             content: `Select the category where **${teamLabel}** private attendance chats will be created.`,
             embeds: [],
-            components: [row]
+            components: [row, createBackButtonRow(`admin_back_team_config:${team}`)]
           });
+          return;
+        }
+
+        if (selectedAction === 'team_emoji') {
+          const modal = new ModalBuilder()
+            .setCustomId(`admin_set_team_emoji_modal:${team}`)
+            .setTitle(`Set ${teamLabel} Emoji`);
+
+          const emojiInput = new TextInputBuilder()
+            .setCustomId('emoji')
+            .setLabel('Emoji, e.g. 🔵 or :blue_circle:')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setValue(getTeamMeta(config, team).emoji)
+            .setMaxLength(40);
+
+          modal.addComponents(new ActionRowBuilder().addComponents(emojiInput));
+          await interaction.showModal(modal);
           return;
         }
 
@@ -676,7 +786,7 @@ module.exports = {
             await interaction.update({
               content: 'No upcoming fixtures found in synced events yet.',
               embeds: [],
-              components: [createTeamConfigActionRow(config, team), createAdminBackButtonRow()]
+              components: [createTeamConfigActionRow(config, team), createBackButtonRow('admin_back_team_management')]
             });
             return;
           }
@@ -700,7 +810,7 @@ module.exports = {
           await interaction.update({
             content: `Pick a fixture to assign to **${teamLabel}**.`,
             embeds: [],
-            components: [row, createAdminBackButtonRow()]
+            components: [row, createBackButtonRow(`admin_back_team_config:${team}`)]
           });
           return;
         }
@@ -716,7 +826,7 @@ module.exports = {
           await interaction.update({
             content: 'Fixture was not found in synced events.',
             embeds: [],
-            components: [createTeamConfigActionRow(config, team), createAdminBackButtonRow()]
+            components: [createTeamConfigActionRow(config, team), createBackButtonRow('admin_back_team_management')]
           });
           return;
         }
@@ -727,7 +837,7 @@ module.exports = {
         await interaction.update({
           content: `✅ Assigned **${target.title}** to **${getTeamMeta(config, team).label}**.`,
           embeds: [],
-          components: [createTeamConfigActionRow(config, team), createAdminBackButtonRow()]
+          components: [createTeamConfigActionRow(config, team), createBackButtonRow('admin_back_team_management')]
         });
         return;
       }
@@ -750,7 +860,7 @@ module.exports = {
         await interaction.editReply({
           content: `✅ Updated **${configPath}** to <@&${roleId}>. ⚠️ Sync warning: ${error.message}`,
           embeds: [],
-          components: [createTeamConfigActionRow(config, team), createAdminBackButtonRow()]
+          components: [createTeamConfigActionRow(loadConfig(), team), createBackButtonRow('admin_back_team_management')]
         });
         return;
       }
@@ -758,7 +868,7 @@ module.exports = {
       await interaction.editReply({
         content: `✅ Updated **${configPath}** to <@&${roleId}>.`,
         embeds: [],
-        components: [createTeamConfigActionRow(config, team), createAdminBackButtonRow()]
+        components: [createTeamConfigActionRow(loadConfig(), team), createBackButtonRow('admin_back_team_management')]
       });
       return;
     }
@@ -780,7 +890,7 @@ module.exports = {
         await interaction.editReply({
           content: `✅ Updated **${configPath}** to <#${channelId}>. ⚠️ Sync warning: ${error.message}`,
           embeds: [],
-          components: [createTeamConfigActionRow(config, team), createAdminBackButtonRow()]
+          components: [team === 'global' ? createGoogleToolsRow() : createTeamConfigActionRow(loadConfig(), team), createBackButtonRow(team === 'global' ? 'admin_back_google_tools' : 'admin_back_team_management')]
         });
         return;
       }
@@ -788,7 +898,7 @@ module.exports = {
       await interaction.editReply({
         content: `✅ Updated **${configPath}** to <#${channelId}>.`,
         embeds: [],
-        components: [createTeamConfigActionRow(config, team), createAdminBackButtonRow()]
+        components: [team === 'global' ? createGoogleToolsRow() : createTeamConfigActionRow(loadConfig(), team), createBackButtonRow(team === 'global' ? 'admin_back_google_tools' : 'admin_back_team_management')]
       });
       return;
     }
@@ -817,6 +927,10 @@ module.exports = {
         confirmed: false,
         username: interaction.user.tag,
         updatedAt: new Date().toISOString()
+      });
+      await interaction.reply({
+        content: '🔴 Your absence was submitted and is pending coach confirmation.',
+        flags: MessageFlags.Ephemeral
       });
       await triggerGoogleSync(context);
 
@@ -883,10 +997,6 @@ module.exports = {
         );
       }
 
-      await interaction.reply({
-        content: '🔴 Your absence was submitted and is pending coach confirmation.',
-        flags: MessageFlags.Ephemeral
-      });
       return;
     }
 
@@ -914,12 +1024,12 @@ module.exports = {
       return;
     }
 
-    if (interaction.isModalSubmit() && interaction.customId === 'admin_set_emoji_modal') {
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('admin_set_team_emoji_modal:')) {
       if (!hasAdminAccess(interaction.member, config)) {
         await denyAdminAccess();
         return;
       }
-      const team = interaction.fields.getTextInputValue('team').trim().toLowerCase();
+      const team = interaction.customId.split(':')[1];
       const emoji = interaction.fields.getTextInputValue('emoji').trim();
 
       if (!config.teams?.[team]) {
@@ -978,7 +1088,7 @@ module.exports = {
       }
 
       await interaction.reply({
-        content: `✅ Team created: **${teamLabel}** (\`${teamKey}\`). It now appears in "Set Roles & Team Chats".`,
+        content: `✅ Team created: **${teamLabel}** (\`${teamKey}\`). It now appears under "Configure Existing Team".`,
         flags: MessageFlags.Ephemeral
       });
     }
