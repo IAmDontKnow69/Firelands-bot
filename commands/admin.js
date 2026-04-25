@@ -1,13 +1,14 @@
 const {
   SlashCommandBuilder,
-  PermissionFlagsBits,
   EmbedBuilder,
   ActionRowBuilder,
-  StringSelectMenuBuilder
+  StringSelectMenuBuilder,
+  MessageFlags
 } = require('discord.js');
 const { loadDb } = require('../utils/database');
 const { loadConfig, updateConfig } = require('../utils/config');
 const { syncAllToSheet } = require('../utils/googleSheetsSync');
+const { hasAdminAccess, adminAccessMessage } = require('../utils/adminAccess');
 
 function getSpreadsheetViewUrl(config = {}) {
   const input = config.googleSync?.spreadsheetId || '';
@@ -24,9 +25,9 @@ function createAdminPanelActionRow() {
       .addOptions([
         { label: 'Set Roles & Team Chats', value: 'set_team_ids', description: 'Choose a team, then set role/chat IDs and fixture team' },
         { label: 'Club Report', value: 'club_report', description: 'Run admin club attendance report' },
+        { label: 'Create New Team', value: 'new_team', description: 'Add a new team for role/chat setup' },
         { label: 'Set Team Emoji', value: 'set_emoji', description: 'Run admin set-emoji from this panel' },
         { label: 'Config View', value: 'config_view', description: 'Run admin-config view from this panel' },
-        { label: 'Config Set', value: 'config_set', description: 'Run admin-config set from this panel' },
         { label: 'Sync Google Sheets', value: 'sync_google', description: 'Run admin-config sync-google from this panel' },
         { label: 'Open Google Sheet', value: 'open_google_sheet', description: 'Get link to open configured sheet' },
         { label: 'Set Google Calendar ID', value: 'set_calendar_id', description: 'Update the calendar used by sync' },
@@ -67,10 +68,12 @@ function countPlayerAttendanceForTeam(guild, team, config, db) {
 
 async function handleSetEmoji(interaction, team, emoji) {
   updateConfig(`teams.${team}.emoji`, emoji.trim());
+  const config = loadConfig();
+  const label = config.teams?.[team]?.label || team;
 
   await interaction.reply({
-    content: `✅ Team label updated: ${emoji.trim()} **${team === 'mens' ? 'Mens Team' : "Women's Team"}**`,
-    ephemeral: true
+    content: `✅ Team label updated: ${emoji.trim()} **${label}**`,
+    flags: MessageFlags.Ephemeral
   });
 }
 
@@ -79,8 +82,9 @@ async function handleClubReport(interaction) {
   const db = loadDb();
   const sections = [];
 
-  for (const team of ['mens', 'womens']) {
+  for (const team of Object.keys(config.teams || {})) {
     const teamEmoji = config.teams?.[team]?.emoji || '🔹';
+    const teamLabel = config.teams?.[team]?.label || team;
     const { totals, players, eventCount } = countPlayerAttendanceForTeam(interaction.guild, team, config, db);
 
     const perPlayer = players.length
@@ -91,7 +95,7 @@ async function handleClubReport(interaction) {
       : '*No players found for configured role.*';
 
     sections.push([
-      `${teamEmoji} **${team === 'mens' ? 'Mens Team' : "Women's Team"}**`,
+      `${teamEmoji} **${teamLabel}**`,
       `Events tracked: ${eventCount}`,
       perPlayer
     ].join('\n'));
@@ -102,7 +106,7 @@ async function handleClubReport(interaction) {
     .setDescription(sections.join('\n\n'))
     .setColor(0x9b59b6);
 
-  await interaction.reply({ embeds: [embed], ephemeral: true });
+  await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
 }
 
 async function handleSyncGoogle(interaction, spreadsheetInput = '') {
@@ -119,14 +123,14 @@ async function handleSyncGoogle(interaction, spreadsheetInput = '') {
   if (!result.ok) {
     await interaction.reply({
       content: 'Could not sync because spreadsheet ID is not configured.',
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
     return;
   }
 
   await interaction.reply({
     content: `✅ Synced fixtures, attendance, command log, and config to Google Sheets (\`${result.spreadsheetId}\`).`,
-    ephemeral: true
+    flags: MessageFlags.Ephemeral
   });
 }
 
@@ -140,7 +144,6 @@ module.exports = {
   data: new SlashCommandBuilder()
     .setName('admin')
     .setDescription('Open admin UI for config and club-level attendance')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
     .addSubcommand((sub) =>
       sub
         .setName('panel')
@@ -148,21 +151,22 @@ module.exports = {
     ),
 
   async execute(interaction) {
-    if (!interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
-      await interaction.reply({ content: 'Administrator permission is required.', ephemeral: true });
+    const config = loadConfig();
+    if (!hasAdminAccess(interaction.member, config)) {
+      await interaction.reply({ content: adminAccessMessage(config), flags: MessageFlags.Ephemeral });
       return;
     }
 
-    const config = loadConfig();
+    const teamLabels = Object.entries(config.teams || {}).map(([team, meta]) => `${meta.emoji || '🔹'} ${meta.label || team}`).join(' | ');
     const view = new EmbedBuilder()
       .setTitle('Admin UI')
       .setDescription([
         'Use this panel to run admin actions directly (no copy/paste commands needed).',
-        'Actions include club report, team emoji, config view/set, google sync, and opening the sheet.',
+        'Actions include team setup, creating teams, club report, config view, google sync, and opening the sheet.',
         '',
-        `Current labels: ${config.teams?.mens?.emoji || '🔵'} Mens Team | ${config.teams?.womens?.emoji || '🔴'} Women's Team`
+        `Current labels: ${teamLabels || 'No teams configured'}`
       ].join('\n'));
 
-    await interaction.reply({ embeds: [view], components: [createAdminPanelActionRow()], ephemeral: true });
+    await interaction.reply({ embeds: [view], components: [createAdminPanelActionRow()], flags: MessageFlags.Ephemeral });
   }
 };

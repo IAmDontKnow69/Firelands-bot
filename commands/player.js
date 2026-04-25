@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder, MessageFlags } = require('discord.js');
 const { loadDb } = require('../utils/database');
 
 function getPlayerTeams(member, teamRoles) {
@@ -24,7 +24,7 @@ module.exports = {
     const playerTeams = getPlayerTeams(interaction.member, config.roles);
 
     if (!playerTeams.length) {
-      await interaction.reply({ content: 'You are not assigned as a player for any team.', ephemeral: true });
+      await interaction.reply({ content: 'You are not assigned as a player for any team.', flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -46,6 +46,6 @@ module.exports = {
       .setColor(0x2ecc71)
       .setFooter({ text: 'Use event attendance buttons in team channels to confirm status.' });
 
-    await interaction.reply({ embeds: [embed], ephemeral: true });
+    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   }
 };

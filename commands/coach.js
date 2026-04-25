@@ -2,7 +2,8 @@ const {
   SlashCommandBuilder,
   EmbedBuilder,
   ActionRowBuilder,
-  StringSelectMenuBuilder
+  StringSelectMenuBuilder,
+  MessageFlags
 } = require('discord.js');
 const { loadDb } = require('../utils/database');
 
@@ -55,7 +56,7 @@ module.exports = {
     const coachTeams = getCoachTeams(interaction.member, config.roles);
 
     if (!coachTeams.length) {
-      await interaction.reply({ content: 'You are not assigned as a coach for any team.', ephemeral: true });
+      await interaction.reply({ content: 'You are not assigned as a coach for any team.', flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -74,7 +75,7 @@ module.exports = {
       await interaction.reply({
         content: 'Select the team you want to view before opening attendance.',
         components: [row],
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
       return;
     }
@@ -85,7 +86,7 @@ module.exports = {
       .setDescription(report)
       .setColor(0x3498db);
 
-    await interaction.reply({ embeds: [embed], ephemeral: true });
+    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   },
 
   buildReport

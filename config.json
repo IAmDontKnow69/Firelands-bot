@@ -3,6 +3,7 @@
     "tokenReference": "",
     "clientId": "",
     "guildId": "",
+    "adminRoleId": "",
     "calendarId": "hello@firelandsunited.com"
   },
   "roles": {
