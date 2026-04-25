@@ -51,6 +51,29 @@ function toColumnLabel(index) {
   return label;
 }
 
+function columnLabelToIndex(label = '') {
+  return String(label)
+    .toUpperCase()
+    .split('')
+    .reduce((acc, ch) => (acc * 26) + (ch.charCodeAt(0) - 64), 0);
+}
+
+function expandRangeForValues(range = '', values = []) {
+  const maxColumns = Math.max(0, ...values.map((row) => (Array.isArray(row) ? row.length : 0)));
+  if (!maxColumns) return range;
+
+  const match = String(range).match(/^(?<sheet>[^!]+)!(?<startCol>[A-Z]+)(?<startRow>\d+):(?<endCol>[A-Z]+)(?<endRow>\d+)$/i);
+  if (!match?.groups) return range;
+
+  const { sheet, startCol, startRow, endCol, endRow } = match.groups;
+  const startIndex = columnLabelToIndex(startCol);
+  const currentEndIndex = columnLabelToIndex(endCol);
+  const requiredEndIndex = startIndex + maxColumns - 1;
+  if (requiredEndIndex <= currentEndIndex) return range;
+
+  return `${sheet}!${startCol}${startRow}:${toColumnLabel(requiredEndIndex)}${endRow}`;
+}
+
 async function getSheetsClient(config = {}) {
   const auth = new google.auth.GoogleAuth({
     keyFile: resolveCredentialsPath(config),
@@ -293,14 +316,16 @@ async function buildMergedConfigIdRows(sheets, spreadsheetId, config = {}, range
 }
 
 async function writeRange(sheets, spreadsheetId, range, values, options = {}) {
+  const effectiveRange = expandRangeForValues(range, values);
+
   if (options.wipe) {
-    await sheets.spreadsheets.values.clear({ spreadsheetId, range });
+    await sheets.spreadsheets.values.clear({ spreadsheetId, range: effectiveRange });
   }
   if (!values.length) return;
 
   await sheets.spreadsheets.values.update({
     spreadsheetId,
-    range,
+    range: effectiveRange,
     valueInputOption: 'RAW',
     requestBody: { values }
   });

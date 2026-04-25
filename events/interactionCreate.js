@@ -755,10 +755,11 @@ module.exports = {
         return;
       }
       if (interaction.customId === 'admin_back_team_management') {
+        const latestConfig = loadConfig();
         await interaction.update({
-          content: 'Team Management:',
+          content: 'Select your team first. Then choose what to change. You can also create a new team here.',
           embeds: [],
-          components: [createTeamManagementRow(), createAdminBackButtonRow()]
+          components: [createTeamPickerRow(latestConfig, 'admin_team_config_select', 'Select a team to configure'), createTeamPickerButtonsRow()]
         });
         return;
       }
@@ -1130,10 +1131,11 @@ module.exports = {
       if (interaction.customId === 'admin_quick_action') {
         const action = interaction.values[0];
         if (action === 'team_management') {
+          const latestConfig = loadConfig();
           await interaction.update({
-            content: 'Team Management:',
+            content: 'Select your team first. Then choose what to change. You can also create a new team here.',
             embeds: [],
-            components: [createTeamManagementRow(), createAdminBackButtonRow()]
+            components: [createTeamPickerRow(latestConfig, 'admin_team_config_select', 'Select a team to configure'), createTeamPickerButtonsRow()]
           });
           return;
         }
