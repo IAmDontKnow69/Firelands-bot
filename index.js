@@ -51,6 +51,7 @@ client.commands.set(playerCommand.data.name, playerCommand);
 client.commands.set(coachCommand.data.name, coachCommand);
 client.commands.set(adminCommand.data.name, adminCommand);
 client.commands.set(confirmCommand.data.name, confirmCommand);
+const missingAttendanceConfigWarnings = new Set();
 
 function getConfig() {
   return loadConfig();
@@ -179,10 +180,37 @@ function isWithinDays(dateValue, days) {
   return diff >= 0 && diff <= days * 24 * 60 * 60 * 1000;
 }
 
+function getAttendanceChannelId(config, team) {
+  return config.channels.teamChats?.[team] || config.channels.events || '';
+}
+
+function getAttendanceConfigIssue(config, team) {
+  const channelId = getAttendanceChannelId(config, team);
+  if (!channelId) return 'Events channel ID is not configured.';
+
+  const teamRoleId = config.roles?.[team]?.player;
+  if (!teamRoleId || teamRoleId === 'ROLE_ID') {
+    return `Role ID not configured for team: ${team}`;
+  }
+
+  return '';
+}
+
+async function warnMissingAttendanceConfig(team, issue) {
+  const warningKey = `${team}:${issue}`;
+  if (missingAttendanceConfigWarnings.has(warningKey)) return;
+  missingAttendanceConfigWarnings.add(warningKey);
+  await sendLog(`⚠️ Calendar sync skipped posting for **${team}**: ${issue}`);
+}
+
+function clearAttendanceWarning(team, issue) {
+  const warningKey = `${team}:${issue}`;
+  missingAttendanceConfigWarnings.delete(warningKey);
+}
+
 async function postEventMessage(event) {
   const config = getConfig();
-  const teamChatChannelId = config.channels.teamChats?.[event.team];
-  const eventsChannelId = teamChatChannelId || config.channels.events;
+  const eventsChannelId = getAttendanceChannelId(config, event.team);
 
   if (!eventsChannelId) {
     throw new Error('Events channel ID is not configured.');
@@ -262,6 +290,15 @@ async function syncCalendarEvents() {
 
       if (!syncedEvent?.team || syncedEvent.discordMessageId) continue;
       if (!isWithinDays(syncedEvent.date, 14)) continue;
+
+      const configIssue = getAttendanceConfigIssue(config, syncedEvent.team);
+      if (configIssue) {
+        await warnMissingAttendanceConfig(syncedEvent.team, configIssue);
+        continue;
+      }
+
+      clearAttendanceWarning(syncedEvent.team, 'Events channel ID is not configured.');
+      clearAttendanceWarning(syncedEvent.team, `Role ID not configured for team: ${syncedEvent.team}`);
 
       await postEventMessage({ ...syncedEvent, id: event.id });
       console.log(`Posted new event: ${syncedEvent.title} (${event.id})`);

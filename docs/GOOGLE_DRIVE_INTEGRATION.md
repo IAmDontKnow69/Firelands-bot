@@ -39,11 +39,15 @@ If you want a **bi-directional sync** with Google Sheets (plus optional Google D
 - `value`
 - `updatedAt`
 
-### `Config IDs`
-- `key`
-- `value`
+### `Players`
+- `userId`
+- `customName`
+- `shirtNumber`
+- `teams` (comma-separated team keys)
+- `roles` (comma-separated Discord role IDs)
+- `joinedDiscordAt`
+- `notes`
 - `updatedAt`
-- Contains only role/channel configuration paths from `roles.*` and `channels.*`
 
 ## Conflict strategy (important)
 
@@ -116,7 +120,7 @@ GOOGLE_FIXTURES_RANGE=Fixtures!A2:F
 GOOGLE_MENS_FIXTURES_RANGE=Mens\ Fixtures!A2:F
 GOOGLE_WOMENS_FIXTURES_RANGE=Womens\ Fixtures!A2:F
 GOOGLE_CONFIG_RANGE=Config!A2:C
-GOOGLE_CONFIG_IDS_RANGE=Config\ IDs!A2:C
+GOOGLE_PLAYERS_RANGE=Players!A2:H
 ```
 
 ### Common setup errors
@@ -147,6 +151,6 @@ This initializes:
 - `Womens Fixtures` with: `eventId,title,date,team,discordMessageId,updatedAt`
 - `Attendance` with: `eventId,userId,username,team,status,updatedAt`
 - `Config` with: `key,value,updatedAt`
-- `Config IDs` with: `key,value,updatedAt`
+- `Players` with: `userId,customName,shirtNumber,teams,roles,joinedDiscordAt,notes,updatedAt`
 
 If tabs already exist, headers are reset to the expected schema and row 1 is frozen.

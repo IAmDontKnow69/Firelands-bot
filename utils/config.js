@@ -62,7 +62,7 @@ function defaultConfig() {
       womensFixturesRange: process.env.GOOGLE_WOMENS_FIXTURES_RANGE || 'Womens Fixtures!A2:F',
       attendanceRange: process.env.GOOGLE_ATTENDANCE_RANGE || 'Attendance!A2:F',
       configRange: process.env.GOOGLE_CONFIG_RANGE || 'Config!A2:C',
-      configIdsRange: process.env.GOOGLE_CONFIG_IDS_RANGE || 'Config IDs!A2:C'
+      playersRange: process.env.GOOGLE_PLAYERS_RANGE || 'Players!A2:H'
     }
   };
 }

@@ -7,7 +7,7 @@ function ensureDb() {
   if (!fs.existsSync(DB_PATH)) {
     fs.writeFileSync(
       DB_PATH,
-      JSON.stringify({ events: {}, futureAvailability: {}, absenceTickets: {}, meta: { postEventCoachReminders: {} } }, null, 2)
+      JSON.stringify({ events: {}, futureAvailability: {}, absenceTickets: {}, players: {}, meta: { postEventCoachReminders: {} } }, null, 2)
     );
   }
 }
@@ -22,13 +22,14 @@ function loadDb() {
     if (!parsed.events) parsed.events = {};
     if (!parsed.futureAvailability) parsed.futureAvailability = {};
     if (!parsed.absenceTickets) parsed.absenceTickets = {};
+    if (!parsed.players) parsed.players = {};
     if (!parsed.meta) parsed.meta = {};
     if (!parsed.meta.postEventCoachReminders) parsed.meta.postEventCoachReminders = {};
 
     return parsed;
   } catch (error) {
     console.error('Failed to load database:', error);
-    return { events: {}, futureAvailability: {}, absenceTickets: {}, meta: { postEventCoachReminders: {} } };
+    return { events: {}, futureAvailability: {}, absenceTickets: {}, players: {}, meta: { postEventCoachReminders: {} } };
   }
 }
 
@@ -73,6 +74,14 @@ function setResponse(eventId, userId, response) {
   return db.events[eventId].responses[userId];
 }
 
+function clearResponse(eventId, userId) {
+  const db = loadDb();
+  if (!db.events[eventId]?.responses?.[userId]) return false;
+  delete db.events[eventId].responses[userId];
+  saveDb(db);
+  return true;
+}
+
 function markPostEventReminder(eventId, marked = true) {
   const db = loadDb();
   db.meta.postEventCoachReminders[eventId] = marked;
@@ -111,14 +120,40 @@ function deleteAbsenceTicket(channelId) {
   return true;
 }
 
+function upsertPlayerProfile(userId, payload = {}) {
+  const db = loadDb();
+  const current = db.players[userId] || {};
+  db.players[userId] = {
+    ...current,
+    ...payload,
+    updatedAt: new Date().toISOString()
+  };
+  saveDb(db);
+  return db.players[userId];
+}
+
+function getPlayerProfile(userId) {
+  const db = loadDb();
+  return db.players[userId] || null;
+}
+
+function getPlayerDisplayName(userId, fallback = '') {
+  const profile = getPlayerProfile(userId);
+  return profile?.customName || fallback;
+}
+
 module.exports = {
   loadDb,
   saveDb,
   upsertEvent,
   setEventMessageId,
   setResponse,
+  clearResponse,
   markPostEventReminder,
   setFutureAvailability,
   setAbsenceTicket,
-  deleteAbsenceTicket
+  deleteAbsenceTicket,
+  upsertPlayerProfile,
+  getPlayerProfile,
+  getPlayerDisplayName
 };

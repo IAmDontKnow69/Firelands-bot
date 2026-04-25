@@ -2,19 +2,38 @@ const { google } = require('googleapis');
 const fs = require('fs');
 const path = require('path');
 
+function normalizeMatcherText(value = '') {
+  return String(value)
+    .toLowerCase()
+    .replace(/[’']/g, "'")
+    .trim();
+}
+
+function escapeRegExp(value = '') {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function titleMatchesPhrase(title = '', phrase = '') {
+  const normalizedTitle = normalizeMatcherText(title);
+  const normalizedPhrase = normalizeMatcherText(phrase);
+  if (!normalizedTitle || !normalizedPhrase) return false;
+  const pattern = new RegExp(`(^|[^a-z0-9])${escapeRegExp(normalizedPhrase)}([^a-z0-9]|$)`, 'i');
+  return pattern.test(normalizedTitle);
+}
+
 function detectTeamFromTitle(title = '', teamMatchers = {}) {
-  const normalized = String(title).toLowerCase();
+  const normalized = normalizeMatcherText(title);
   const matcherEntries = Object.entries(teamMatchers || {});
 
   for (const [teamKey, phrases] of matcherEntries) {
     const phraseList = Array.isArray(phrases) ? phrases : [];
-    if (phraseList.some((phrase) => phrase && normalized.includes(String(phrase).toLowerCase()))) {
+    if (phraseList.some((phrase) => titleMatchesPhrase(normalized, phrase))) {
       return teamKey;
     }
   }
 
-  if (normalized.includes("women's") || normalized.includes('womens') || normalized.includes('fu women')) return 'womens';
-  if (normalized.includes('mens') || normalized.includes('fu men')) return 'mens';
+  if (titleMatchesPhrase(normalized, "women's") || titleMatchesPhrase(normalized, 'womens') || titleMatchesPhrase(normalized, 'fu women')) return 'womens';
+  if (titleMatchesPhrase(normalized, "men's") || titleMatchesPhrase(normalized, 'mens') || titleMatchesPhrase(normalized, 'fu men')) return 'mens';
   return null;
 }
 
@@ -177,5 +196,6 @@ module.exports = {
   fetchUpcomingEvents,
   resolveCredentialsPath,
   detectTeamFromTitle,
-  getEventStartIso
+  getEventStartIso,
+  titleMatchesPhrase
 };
