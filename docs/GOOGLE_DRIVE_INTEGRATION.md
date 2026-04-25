@@ -22,6 +22,10 @@ If you want a **bi-directional sync** with Google Sheets (plus optional Google D
 - `discordMessageId`
 - `updatedAt`
 
+### `Mens Fixtures` / `Womens Fixtures`
+- Same schema as `Fixtures`
+- Auto-split by `team` so coaches can view each team in a dedicated tab
+
 ### `Attendance`
 - `eventId`
 - `userId`
@@ -34,6 +38,12 @@ If you want a **bi-directional sync** with Google Sheets (plus optional Google D
 - `key` (dot path, e.g. `channels.teamChats.mens`)
 - `value`
 - `updatedAt`
+
+### `Config IDs`
+- `key`
+- `value`
+- `updatedAt`
+- Contains only role/channel configuration paths from `roles.*` and `channels.*`
 
 ## Conflict strategy (important)
 
@@ -103,7 +113,10 @@ GOOGLE_SYNC_ENABLED=true
 GOOGLE_SPREADSHEET_ID=1AbCdEfGhIjKlMnOpQrStUvWxYz1234567890
 GOOGLE_ATTENDANCE_RANGE=Attendance!A2:F
 GOOGLE_FIXTURES_RANGE=Fixtures!A2:F
+GOOGLE_MENS_FIXTURES_RANGE=Mens\ Fixtures!A2:F
+GOOGLE_WOMENS_FIXTURES_RANGE=Womens\ Fixtures!A2:F
 GOOGLE_CONFIG_RANGE=Config!A2:C
+GOOGLE_CONFIG_IDS_RANGE=Config\ IDs!A2:C
 ```
 
 ### Common setup errors
@@ -130,7 +143,10 @@ node scripts/setupGoogleSheet.js "https://docs.google.com/spreadsheets/d/<SPREAD
 
 This initializes:
 - `Fixtures` with: `eventId,title,date,team,discordMessageId,updatedAt`
+- `Mens Fixtures` with: `eventId,title,date,team,discordMessageId,updatedAt`
+- `Womens Fixtures` with: `eventId,title,date,team,discordMessageId,updatedAt`
 - `Attendance` with: `eventId,userId,username,team,status,updatedAt`
 - `Config` with: `key,value,updatedAt`
+- `Config IDs` with: `key,value,updatedAt`
 
 If tabs already exist, headers are reset to the expected schema and row 1 is frozen.

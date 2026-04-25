@@ -1,5 +1,6 @@
 const { SlashCommandBuilder, ChannelType } = require('discord.js');
 const { loadDb, setResponse, deleteAbsenceTicket } = require('../utils/database');
+const { syncAllToSheet } = require('../utils/googleSheetsSync');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -38,6 +39,15 @@ module.exports = {
       confirmedBy: interaction.user.id,
       confirmedAt: new Date().toISOString()
     });
+
+    const latestConfig = context.getConfig();
+    if (latestConfig.googleSync?.enabled) {
+      try {
+        await syncAllToSheet(latestConfig, loadDb());
+      } catch (error) {
+        await context.sendLog(`⚠️ Google Sheets sync failed after /confirm: ${error.message}`);
+      }
+    }
 
     deleteAbsenceTicket(interaction.channelId);
 

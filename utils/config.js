@@ -52,8 +52,11 @@ function defaultConfig() {
       enabled: (process.env.GOOGLE_SYNC_ENABLED || 'false').toLowerCase() === 'true',
       spreadsheetId: process.env.GOOGLE_SPREADSHEET_ID || '',
       fixturesRange: process.env.GOOGLE_FIXTURES_RANGE || 'Fixtures!A2:F',
+      mensFixturesRange: process.env.GOOGLE_MENS_FIXTURES_RANGE || 'Mens Fixtures!A2:F',
+      womensFixturesRange: process.env.GOOGLE_WOMENS_FIXTURES_RANGE || 'Womens Fixtures!A2:F',
       attendanceRange: process.env.GOOGLE_ATTENDANCE_RANGE || 'Attendance!A2:F',
-      configRange: process.env.GOOGLE_CONFIG_RANGE || 'Config!A2:C'
+      configRange: process.env.GOOGLE_CONFIG_RANGE || 'Config!A2:C',
+      configIdsRange: process.env.GOOGLE_CONFIG_IDS_RANGE || 'Config IDs!A2:C'
     }
   };
 }

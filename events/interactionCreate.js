@@ -13,6 +13,7 @@ const {
 const { loadDb, saveDb, setResponse, setAbsenceTicket, deleteAbsenceTicket } = require('../utils/database');
 const { updateConfig } = require('../utils/config');
 const { fetchCalendarEvents } = require('../utils/googleCalendar');
+const { syncAllToSheet } = require('../utils/googleSheetsSync');
 const coachCommand = require('../commands/coach');
 
 const TEAM_LABELS = {
@@ -139,6 +140,17 @@ function formatTeamLabel(event, config) {
   return `${emoji} ${label}`;
 }
 
+async function triggerGoogleSync(context) {
+  const latestConfig = context.getConfig();
+  if (!latestConfig.googleSync?.enabled) return;
+
+  try {
+    await syncAllToSheet(latestConfig, loadDb());
+  } catch (error) {
+    await context.sendLog(`⚠️ Google Sheets sync failed after attendance update: ${error.message}`);
+  }
+}
+
 module.exports = {
   name: 'interactionCreate',
 
@@ -176,6 +188,7 @@ module.exports = {
           updatedAt: new Date().toISOString()
         });
 
+        await triggerGoogleSync(context);
         await interaction.reply({ content: '✅ You are marked as attending.', ephemeral: true });
         await context.sendLog(`🟢 ${interaction.user.tag} marked attending for **${event.title}** (${getEventDateLabel(event.date)}).`);
         return;
@@ -229,6 +242,7 @@ module.exports = {
           updatedAt: new Date().toISOString()
         });
 
+        await triggerGoogleSync(context);
         await interaction.reply({ content: `✅ Absence confirmed for <@${targetUserId}>.`, ephemeral: false });
         deleteAbsenceTicket(interaction.channelId);
         await context.sendLog(`✅ ${interaction.user.tag} confirmed absence for <@${targetUserId}> on **${event.title}**.`);
@@ -551,6 +565,7 @@ module.exports = {
         username: interaction.user.tag,
         updatedAt: new Date().toISOString()
       });
+      await triggerGoogleSync(context);
 
       const shortEventId = eventId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12);
       const eventDateLabel = getEventDateLabel(event.date);

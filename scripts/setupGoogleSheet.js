@@ -19,8 +19,11 @@ function getCredentialsPath() {
 function requiredHeaders() {
   return {
     Fixtures: ['eventId', 'title', 'date', 'team', 'discordMessageId', 'updatedAt'],
+    'Mens Fixtures': ['eventId', 'title', 'date', 'team', 'discordMessageId', 'updatedAt'],
+    'Womens Fixtures': ['eventId', 'title', 'date', 'team', 'discordMessageId', 'updatedAt'],
     Attendance: ['eventId', 'userId', 'username', 'team', 'status', 'updatedAt'],
-    Config: ['key', 'value', 'updatedAt']
+    Config: ['key', 'value', 'updatedAt'],
+    'Config IDs': ['key', 'value', 'updatedAt']
   };
 }
 
