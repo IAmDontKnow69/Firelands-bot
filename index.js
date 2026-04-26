@@ -251,22 +251,36 @@ async function handleSetupInteraction(interaction) {
   if (!String(interaction.customId || '').startsWith('setup_')) return false;
 
   if (interaction.customId === 'setup_sheet_mode') {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    try {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    } catch (error) {
+      if (error?.code === 10062) return true;
+      throw error;
+    }
     updateConfig('googleSync.enabled', true);
     const config = getConfig();
+    const safeEditReply = async (payload) => {
+      try {
+        await interaction.editReply(payload);
+      } catch (error) {
+        if (error?.code === 10062) return false;
+        throw error;
+      }
+      return true;
+    };
     try {
       if (interaction.values[0] === 'fresh_config') {
         resetConfigFresh();
         saveDb({ events: {}, futureAvailability: {}, absenceTickets: {}, players: {}, meta: { postEventCoachReminders: {} } });
         const freshConfig = getConfig();
         const result = await syncAllToSheet(freshConfig, loadDb(), { wipe: true });
-        await interaction.editReply(result.ok
+        if (!await safeEditReply(result.ok
           ? `✅ Fresh config completed and sheet tabs rebuilt (\`${result.spreadsheetId}\`).`
-          : 'Could not sync because spreadsheet ID is not configured.');
+          : 'Could not sync because spreadsheet ID is not configured.')) return true;
       } else if (interaction.values[0] === 'load_backup') {
         const backups = (await loadSheetBackups(config).catch(() => [])).sort((a, b) => a.slot - b.slot);
         if (!backups.length) {
-          await interaction.editReply('No backup slots found in the Backups tab yet.');
+          if (!await safeEditReply('No backup slots found in the Backups tab yet.')) return true;
           return true;
         }
         const row = new ActionRowBuilder().addComponents(
@@ -281,21 +295,21 @@ async function handleSetupInteraction(interaction) {
               description: (entry.createdAt || 'unknown').slice(0, 100)
             })))
         );
-        await interaction.editReply({ content: 'Pick a backup slot to restore.', components: [row] });
+        if (!await safeEditReply({ content: 'Pick a backup slot to restore.', components: [row] })) return true;
         return true;
       } else if (interaction.values[0] === 'fresh') {
         const result = await syncAllToSheet(config, loadDb(), { wipe: true });
-        await interaction.editReply(result.ok
+        if (!await safeEditReply(result.ok
           ? `✅ Fresh sheet sync completed (\`${result.spreadsheetId}\`).`
-          : 'Could not sync because spreadsheet ID is not configured.');
+          : 'Could not sync because spreadsheet ID is not configured.')) return true;
       } else {
         const result = await syncConfigOnlyToSheet(config);
-        await interaction.editReply(result.ok
+        if (!await safeEditReply(result.ok
           ? `✅ Config-only sync completed (\`${result.spreadsheetId}\`). Existing sheet data was preserved.`
-          : 'Could not sync because spreadsheet ID is not configured.');
+          : 'Could not sync because spreadsheet ID is not configured.')) return true;
       }
     } catch (error) {
-      await interaction.editReply(`❌ Setup sheet action failed: ${error.message}`);
+      if (!await safeEditReply(`❌ Setup sheet action failed: ${error.message}`)) return true;
     }
 
     await interaction.message?.delete().catch(() => null);
