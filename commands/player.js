@@ -34,9 +34,10 @@ module.exports = {
       ? events.map((event) => `• **${eventTypeLabel(determineEventType(event, config))}** — ${event.title} (${event.team})\n  ${new Date(event.date).toLocaleString()}`)
       : ['No upcoming sessions found for your teams.'];
 
+    const teamLabels = playerTeams.map((team) => config.teams?.[team]?.label || team);
     const embed = new EmbedBuilder()
       .setTitle('Player UI')
-      .setDescription(`Teams: **${playerTeams.join(', ')}**\n\n${lines.join('\n')}`)
+      .setDescription(`Teams playing for: **${teamLabels.join(', ')}**\n\n${lines.join('\n')}`)
       .setColor(0x2ecc71)
       .setFooter({ text: 'Use event attendance buttons in team channels to confirm status.' });
 

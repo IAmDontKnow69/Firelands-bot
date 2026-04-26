@@ -32,6 +32,22 @@ function createAdminPanelSecondaryRow() {
   return null;
 }
 
+function buildAdminPanelEmbed(config = {}) {
+  const teamLabels = Object.entries(config.teams || {}).map(([team, meta]) => `${meta.emoji || '🔹'} ${meta.label || team}`).join(' | ');
+  return new EmbedBuilder()
+    .setTitle('🔥 Firelands Bot Admin UI')
+    .setDescription([
+      'Use this panel to run admin actions directly (no copy/paste commands needed).',
+      '• Team Management: Configure each team, IDs, fixtures, names and emojis.',
+      '• Player Management: Open and edit player profiles and attendance.',
+      '• Coach Management: Open and edit coach profiles and permissions.',
+      '• Club Management: Google sync, calendar, admin chat and command channel setup.',
+      '• Club Report: Team-by-team attendance summary.',
+      '',
+      `Current teams: ${teamLabels || 'No teams configured'}`
+    ].join('\n'));
+}
+
 function countPlayerAttendanceForTeam(guild, team, config, db) {
   const roleId = config.roles?.[team]?.player;
   const role = roleId ? guild.roles.cache.get(roleId) : null;
@@ -137,6 +153,7 @@ module.exports = {
   handleSetEmoji,
   handleClubReport,
   handleSyncGoogle,
+  buildAdminPanelEmbed,
 
   data: new SlashCommandBuilder()
     .setName('admin')
@@ -161,19 +178,7 @@ module.exports = {
       return;
     }
 
-    const teamLabels = Object.entries(config.teams || {}).map(([team, meta]) => `${meta.emoji || '🔹'} ${meta.label || team}`).join(' | ');
-    const view = new EmbedBuilder()
-      .setTitle('Firelands Bot Admin UI')
-      .setDescription([
-        'Use this panel to run admin actions directly (no copy/paste commands needed).',
-        '• Team Management: Configure each team, IDs, fixtures, names and emojis.',
-        '• Player Management: Open and edit player profiles and attendance.',
-        '• Coach Management: Open and edit coach profiles and permissions.',
-        '• Club Management: Google sync, calendar, admin chat and command channel setup.',
-        '• Club Report: Team-by-team attendance summary.',
-        '',
-        `Current labels: ${teamLabels || 'No teams configured'}`
-      ].join('\n'));
+    const view = buildAdminPanelEmbed(config);
 
     const rows = [createAdminPanelActionRow()].filter(Boolean);
     await interaction.reply({ embeds: [view], components: rows, flags: MessageFlags.Ephemeral });
