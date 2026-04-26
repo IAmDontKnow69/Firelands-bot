@@ -33,9 +33,10 @@ const {
   syncAllToSheet,
   syncConfigOnlyToSheet,
   appendCommandLogRow,
-  buildSheetsBackupSnapshot,
   loadSheetBackups,
-  saveSheetBackupSlot
+  saveSheetBackupSlot,
+  buildSpreadsheetBackupSnapshot,
+  restoreSpreadsheetFromBackupSnapshot
 } = require('../utils/googleSheetsSync');
 const coachCommand = require('../commands/coach');
 const adminCommand = require('../commands/admin');
@@ -122,7 +123,6 @@ function createGoogleToolsRow2() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('admin_google_action:view_event_locations').setLabel('📍 Event Addresses').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('admin_google_action:set_location_nickname').setLabel('🏷️ Set Address Nickname').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('admin_google_action:fresh_config').setLabel('🧼 Fresh Config').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId('admin_back_club_management').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
   );
 }
@@ -321,6 +321,29 @@ const pendingPlayerAttendDmTokens = new Map();
 const pendingLocationAliasSelections = new Map();
 const pendingSheetBackupWrites = new Map();
 
+function formatEtaMs(ms = 0) {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes <= 0) return `${seconds}s`;
+  return `${minutes}m ${seconds}s`;
+}
+
+function progressLines({ title = '', percent = 0, etaMs = 0, currentTab = '', tabs = [] } = {}) {
+  const safePercent = Math.max(0, Math.min(100, Math.round(percent)));
+  const tabList = tabs.length ? tabs.map((tab) => `• ${tab}${tab === currentTab ? ' ⏳' : ''}`).join('\n') : '• no tabs';
+  return [
+    title,
+    '',
+    `Progress: **${safePercent}%**`,
+    `Estimated time remaining: **${formatEtaMs(etaMs)}**`,
+    currentTab ? `Current tab: **${currentTab}**` : 'Current tab: starting…',
+    '',
+    'Tabs included:',
+    tabList
+  ].join('\n');
+}
+
 function normalizeLocation(value = '') {
   return String(value).trim().replace(/\s+/g, ' ').toLowerCase();
 }
@@ -506,22 +529,12 @@ function createAbsenceLogRow(ticketChannelId) {
 }
 
 function createAbsenceNotificationRow(ticketChannelId, userId, mode = 'coach', closed = false) {
-  const components = [];
-  if (!closed) {
-    components.push(
-      new ButtonBuilder()
-        .setCustomId(`absence_open_profile:${mode}:${userId}`)
-        .setLabel(mode === 'admin' ? 'Open in Admin Panel' : 'Open in Coach View')
-        .setStyle(ButtonStyle.Primary)
-    );
-  }
-  components.push(
+  return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`absence_ticket_log:${ticketChannelId}`)
       .setLabel('📜 Absence Log')
       .setStyle(ButtonStyle.Secondary)
   );
-  return new ActionRowBuilder().addComponents(...components);
 }
 
 function formatAbsenceNotification(ticket = {}, event = {}, status = 'open') {
@@ -604,18 +617,8 @@ function buildAbsenceTicketChannelName(config, event, profile, member, user) {
   return sanitizeChannelName(`${teamEmoji}${captainEmoji}-${displayName}-${eventDateLabel}-${event.title}`);
 }
 
-function createPlayerManagementRow(mode = 'player', guild = null) {
-  if (!guild) {
-    return new ActionRowBuilder().addComponents(
-      new UserSelectMenuBuilder()
-        .setCustomId('admin_player_select')
-        .setPlaceholder('Select a player to manage')
-        .setMinValues(1)
-        .setMaxValues(1)
-    );
-  }
-
-  const config = loadConfig();
+function createPlayerOptions(guild = null, config = loadConfig()) {
+  if (!guild) return [];
   const playerIds = new Set();
   for (const teamKey of Object.keys(config.teams || {})) {
     const playerRoleId = config.roles?.[teamKey]?.player;
@@ -623,24 +626,62 @@ function createPlayerManagementRow(mode = 'player', guild = null) {
     if (!role) continue;
     for (const memberId of role.members.keys()) playerIds.add(memberId);
   }
-  const options = Array.from(playerIds).slice(0, 25).map((userId) => {
-    const member = guild.members.cache.get(userId);
-    return {
-      label: (member?.displayName || member?.user?.username || userId).slice(0, 100),
-      value: userId,
-      description: `Manage player ${member?.user?.tag || userId}`.slice(0, 100)
-    };
-  });
+
+  return Array.from(playerIds)
+    .map((userId) => {
+      const member = guild.members.cache.get(userId);
+      const playingTeams = Object.keys(config.teams || {}).filter((teamKey) => {
+        const roleId = config.roles?.[teamKey]?.player;
+        return roleId && roleId !== 'ROLE_ID' && member?.roles?.cache?.has(roleId);
+      });
+      const teamLabel = playingTeams.length
+        ? playingTeams.map((team) => getTeamMeta(config, team).label).join(', ')
+        : 'Does not play for a team';
+      return {
+        label: (member?.displayName || member?.user?.username || userId).slice(0, 100),
+        value: userId,
+        description: `Teams: ${teamLabel}`.slice(0, 100)
+      };
+    })
+    .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
+}
+
+function createPlayerManagementRows(mode = 'player', guild = null, page = 0) {
+  if (!guild) {
+    return [new ActionRowBuilder().addComponents(
+      new UserSelectMenuBuilder()
+        .setCustomId('admin_player_select')
+        .setPlaceholder('Select a player to manage')
+        .setMinValues(1)
+        .setMaxValues(1)
+    )];
+  }
+
+  const config = loadConfig();
+  const allOptions = createPlayerOptions(guild, config);
+  const perPage = 25;
+  const totalPages = Math.max(1, Math.ceil(allOptions.length / perPage));
+  const safePage = Math.min(Math.max(page, 0), totalPages - 1);
+  const options = allOptions.slice(safePage * perPage, safePage * perPage + perPage);
   if (!options.length) options.push({ label: 'No players found', value: 'none', description: 'Assign player roles first' });
 
-  return new ActionRowBuilder().addComponents(
+  const rows = [new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId('admin_player_pick')
-      .setPlaceholder('Select a player to manage')
+      .setPlaceholder(`Select a player to manage (Page ${safePage + 1}/${totalPages})`)
       .setMinValues(1)
       .setMaxValues(1)
       .addOptions(options)
-  );
+  )];
+
+  if (totalPages > 1) {
+    rows.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`admin_player_page:${safePage - 1}`).setLabel('<').setStyle(ButtonStyle.Secondary).setDisabled(safePage <= 0),
+      new ButtonBuilder().setCustomId(`admin_player_page:${safePage + 1}`).setLabel('>').setStyle(ButtonStyle.Secondary).setDisabled(safePage >= totalPages - 1)
+    ));
+  }
+
+  return rows;
 }
 
 function createCoachManagementRow(config, guild) {
@@ -958,7 +999,7 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
       const shirt = getShirtForTeam(profile, team);
       return `${getTeamMeta(config, team).label}${shirt ? ` (#${shirt})` : ''}`;
     }).join(', ')
-    : 'not set';
+    : 'Does not play for a team';
   const coachTeamLabels = coachingTeams.map((team) => {
     const pos = getCoachPositionForTeam(profile, team);
     const label = pos === 'assistant_coach' ? 'Assistant Coach' : pos === 'head_coach' ? 'Head Coach' : 'Coach';
@@ -998,7 +1039,7 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
     `🪪 Name: ${realName}`,
     '',
     '**Profile**',
-    `• Discord: https://discord.com/users/${user?.id || profile.userId}`,
+    `• Discord: <@${user?.id || profile.userId}>`,
     `• Real name: ${realName}`,
     `• Gender: ${profile.gender || 'not set'}`,
     `• Nickname: ${nickname || 'not set'}`,
@@ -1300,10 +1341,11 @@ module.exports = {
         return;
       }
       if (interaction.customId === 'admin_back_player_management') {
+        await interaction.guild?.members.fetch().catch(() => null);
         await interaction.update({
           content: '👕 Player Management: select a player to edit profile details.',
           embeds: [],
-          components: [createPlayerManagementRow('player', interaction.guild), createAdminBackButtonRow()]
+          components: [...createPlayerManagementRows('player', interaction.guild, 0), createAdminBackButtonRow()]
         });
         return;
       }
@@ -1350,7 +1392,12 @@ module.exports = {
           return;
         }
         if (action === 'player_management') {
-          await interaction.update({ content: '👕 Player Management: select a player to edit profile details.', embeds: [], components: [createPlayerManagementRow('player', interaction.guild), createAdminBackButtonRow()] });
+          await interaction.guild?.members.fetch().catch(() => null);
+          await interaction.update({
+            content: '👕 Player Management: select a player to edit profile details.',
+            embeds: [],
+            components: [...createPlayerManagementRows('player', interaction.guild, 0), createAdminBackButtonRow()]
+          });
           return;
         }
         if (action === 'coach_management') {
@@ -1410,7 +1457,7 @@ module.exports = {
             new ButtonBuilder().setCustomId('admin_sheet_backup_restore').setLabel('♻️ Restore Backup').setStyle(ButtonStyle.Primary),
             new ButtonBuilder().setCustomId('admin_back_club_management').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
           );
-          await interaction.update({ content: `💾 Sheet Backups (max 5 slots)\n${lines.join('\n')}`, embeds: [], components: [row] });
+          await interaction.update({ content: `💾 Sheet Backups (max 5 slots)\nStores every non-Backups tab and every row/cell.\n${lines.join('\n')}`, embeds: [], components: [row] });
           return;
         }
       }
@@ -1565,6 +1612,16 @@ module.exports = {
           await interaction.showModal(modal);
           return;
         }
+      }
+      if (interaction.customId.startsWith('admin_player_page:')) {
+        const page = Number.parseInt(interaction.customId.split(':')[1] || '0', 10);
+        await interaction.guild?.members.fetch().catch(() => null);
+        await interaction.update({
+          content: '👕 Player Management: select a player to edit profile details.',
+          embeds: [],
+          components: [...createPlayerManagementRows('player', interaction.guild, Number.isNaN(page) ? 0 : page), createAdminBackButtonRow()]
+        });
+        return;
       }
       if (interaction.customId === 'admin_back_coach_management') {
         await interaction.update({
@@ -2463,16 +2520,49 @@ module.exports = {
         }
         try {
           const parsed = JSON.parse(picked.snapshot);
-          if (parsed.config) {
-            const merged = { ...parsed.config, _configBackups: loadConfig()._configBackups || [] };
-            saveConfig(merged);
-            context.setConfig?.(merged);
-          }
-          if (parsed.db) saveDb(parsed.db);
-          await triggerGoogleSync(context);
-          await interaction.update({ content: `✅ Restored backup slot ${slot}: **${picked.name || `Backup ${slot}`}**.`, embeds: [], components: [createBackButtonRow('admin_back_club_management')] });
+          const progressState = { percent: 0, etaMs: 0, currentTab: '', tabs: [] };
+          let lastProgressEdit = 0;
+          await interaction.update({
+            content: progressLines({
+              title: `♻️ Restoring backup slot ${slot} (**${picked.name || `Backup ${slot}`}**)`,
+              ...progressState
+            }),
+            embeds: [],
+            components: [createBackButtonRow('admin_back_club_management')]
+          });
+
+          await restoreSpreadsheetFromBackupSnapshot(loadConfig(), parsed, (progress) => {
+            progressState.percent = progress.percent;
+            progressState.etaMs = progress.etaMs;
+            progressState.currentTab = progress.currentTab;
+            progressState.tabs = progress.tabs || [];
+            const now = Date.now();
+            if (now - lastProgressEdit >= 600) {
+              lastProgressEdit = now;
+              interaction.editReply({
+                content: progressLines({
+                  title: `♻️ Restoring backup slot ${slot} (**${picked.name || `Backup ${slot}`}**)`,
+                  ...progressState
+                }),
+                embeds: [],
+                components: [createBackButtonRow('admin_back_club_management')]
+              }).catch(() => null);
+            }
+          });
+
+          await interaction.editReply({
+            content: progressLines({
+              title: `✅ Restored backup slot ${slot}: **${picked.name || `Backup ${slot}`}**`,
+              percent: 100,
+              etaMs: 0,
+              currentTab: progressState.currentTab,
+              tabs: progressState.tabs
+            }),
+            embeds: [],
+            components: [createBackButtonRow('admin_back_club_management')]
+          });
         } catch (error) {
-          await interaction.update({ content: `Could not restore backup: ${error.message}`, embeds: [], components: [createBackButtonRow('admin_back_club_management')] });
+          await interaction.editReply({ content: `Could not restore backup: ${error.message}`, embeds: [], components: [createBackButtonRow('admin_back_club_management')] });
         }
         return;
       }
@@ -2486,9 +2576,55 @@ module.exports = {
           return;
         }
         const slot = Number.parseInt(interaction.values[0] || '1', 10);
-        const snapshot = JSON.stringify(buildSheetsBackupSnapshot(loadConfig(), loadDb()));
-        await saveSheetBackupSlot(loadConfig(), { slot, name: pending.name, createdBy: `${interaction.user.tag}`, summary: pending.summary, snapshot });
-        await interaction.update({ content: `✅ Saved backup **${pending.name}** to slot ${slot}.`, embeds: [], components: [createBackButtonRow('admin_back_club_management')] });
+        const config = loadConfig();
+        const progressState = { percent: 0, etaMs: 0, currentTab: '', tabs: [] };
+        let lastProgressEdit = 0;
+        await interaction.update({
+          content: progressLines({
+            title: `💾 Saving backup **${pending.name}** to slot ${slot}`,
+            ...progressState
+          }),
+          embeds: [],
+          components: [createBackButtonRow('admin_back_club_management')]
+        });
+        const built = await buildSpreadsheetBackupSnapshot(config, (progress) => {
+          progressState.percent = progress.percent;
+          progressState.etaMs = progress.etaMs;
+          progressState.currentTab = progress.currentTab;
+          progressState.tabs = progress.tabs || [];
+          const now = Date.now();
+          if (now - lastProgressEdit >= 600) {
+            lastProgressEdit = now;
+            interaction.editReply({
+              content: progressLines({
+                title: `💾 Saving backup **${pending.name}** to slot ${slot}`,
+                ...progressState
+              }),
+              embeds: [],
+              components: [createBackButtonRow('admin_back_club_management')]
+            }).catch(() => null);
+          }
+        });
+        if (!built.ok) {
+          await interaction.editReply({
+            content: 'Could not save backup: spreadsheet ID is missing.',
+            embeds: [],
+            components: [createBackButtonRow('admin_back_club_management')]
+          });
+          return;
+        }
+        await saveSheetBackupSlot(config, { slot, name: pending.name, createdBy: `${interaction.user.tag}`, summary: pending.summary, snapshot: JSON.stringify(built.snapshot) });
+        await interaction.editReply({
+          content: progressLines({
+            title: `✅ Saved backup **${pending.name}** to slot ${slot}`,
+            percent: 100,
+            etaMs: 0,
+            currentTab: progressState.currentTab,
+            tabs: progressState.tabs
+          }),
+          embeds: [],
+          components: [createBackButtonRow('admin_back_club_management')]
+        });
         return;
       }
 
@@ -3733,11 +3869,52 @@ module.exports = {
       const used = new Set(backups.map((entry) => entry.slot));
       const freeSlot = [1, 2, 3, 4, 5].find((slot) => !used.has(slot));
       const summary = `events:${Object.keys(loadDb().events || {}).length}, players:${Object.keys(loadDb().players || {}).length}`;
+      const configForBackup = loadConfig();
 
       if (freeSlot) {
-        const snapshot = JSON.stringify(buildSheetsBackupSnapshot(loadConfig(), loadDb()));
-        await saveSheetBackupSlot(loadConfig(), { slot: freeSlot, name, createdBy: `${interaction.user.tag}`, summary, snapshot });
-        await interaction.reply({ content: `✅ Saved backup **${name}** in slot ${freeSlot}.`, flags: MessageFlags.Ephemeral });
+        await interaction.reply({
+          content: progressLines({ title: `💾 Saving backup **${name}** to slot ${freeSlot}`, percent: 0, etaMs: 0, currentTab: '', tabs: [] }),
+          flags: MessageFlags.Ephemeral
+        });
+        const progressState = { percent: 0, etaMs: 0, currentTab: '', tabs: [] };
+        let lastProgressEdit = 0;
+        const built = await buildSpreadsheetBackupSnapshot(configForBackup, (progress) => {
+          progressState.percent = progress.percent;
+          progressState.etaMs = progress.etaMs;
+          progressState.currentTab = progress.currentTab;
+          progressState.tabs = progress.tabs || [];
+          const now = Date.now();
+          if (now - lastProgressEdit >= 600) {
+            lastProgressEdit = now;
+            interaction.editReply({
+              content: progressLines({
+                title: `💾 Saving backup **${name}** to slot ${freeSlot}`,
+                ...progressState
+              })
+            }).catch(() => null);
+          }
+        });
+        if (!built.ok) {
+          await interaction.editReply({ content: 'Could not save backup: spreadsheet ID is missing.' });
+          return;
+        }
+
+        await saveSheetBackupSlot(configForBackup, {
+          slot: freeSlot,
+          name,
+          createdBy: `${interaction.user.tag}`,
+          summary,
+          snapshot: JSON.stringify(built.snapshot)
+        });
+        await interaction.editReply({
+          content: progressLines({
+            title: `✅ Saved backup **${name}** in slot ${freeSlot}`,
+            percent: 100,
+            etaMs: 0,
+            currentTab: progressState.currentTab,
+            tabs: progressState.tabs
+          })
+        });
         return;
       }
 

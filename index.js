@@ -23,10 +23,16 @@ const adminCommand = require('./commands/admin');
 const confirmCommand = require('./commands/confirm');
 const interactionHandler = require('./events/interactionCreate');
 const { fetchUpcomingEvents } = require('./utils/googleCalendar');
-const { loadDb, upsertEvent, setEventMessageId } = require('./utils/database');
+const { loadDb, saveDb, upsertEvent, setEventMessageId } = require('./utils/database');
 const { startReminderJobs } = require('./utils/reminders');
-const { ensureConfig, loadConfig, updateConfig } = require('./utils/config');
-const { syncAllToSheet, syncConfigOnlyToSheet, appendCommandLogRow } = require('./utils/googleSheetsSync');
+const { ensureConfig, loadConfig, updateConfig, resetConfigFresh } = require('./utils/config');
+const {
+  syncAllToSheet,
+  syncConfigOnlyToSheet,
+  appendCommandLogRow,
+  loadSheetBackups,
+  restoreSpreadsheetFromBackupSnapshot
+} = require('./utils/googleSheetsSync');
 const { getTeamSetupProgress, getIncompleteTeamsForMember, buildIncompleteTeamMessage } = require('./utils/teamSetup');
 
 ensureConfig();
@@ -67,9 +73,10 @@ function buildSetupSummary(config) {
     `• /admin access role: ${adminRole}`,
     `• Admin logs channel: ${adminChannel}`,
     '',
-    'Then choose Google Sheets mode (this final step will complete and remove this wizard message):',
-    '• **Fresh Sheet** = clears/rebuilds managed ranges.',
-    '• **Sync Config Only** = keeps existing sheet data and updates config/config IDs only.'
+    'Then choose initialization mode (this final step will complete and remove this wizard message):',
+    '• **Fresh Config + Empty Sheets** = wipe data, rebuild all tabs with headings only.',
+    '• **Load Backup Slot** = restore all non-Backups tabs from a saved slot.',
+    '• **Sync Config Only** = keep data and only push config tabs.'
   ].join('\n');
 }
 
@@ -93,9 +100,10 @@ function createSetupRows() {
     new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId('setup_sheet_mode')
-        .setPlaceholder('Choose Google Sheets action')
+        .setPlaceholder('Choose setup action')
         .addOptions([
-          { label: 'Fresh Sheet (wipe/rebuild)', value: 'fresh' },
+          { label: 'Fresh Config + Empty Sheets', value: 'fresh_config' },
+          { label: 'Load Backup Slot', value: 'load_backup' },
           { label: 'Sync Config Only (preserve data)', value: 'config_only' }
         ])
     )
@@ -247,7 +255,35 @@ async function handleSetupInteraction(interaction) {
     updateConfig('googleSync.enabled', true);
     const config = getConfig();
     try {
-      if (interaction.values[0] === 'fresh') {
+      if (interaction.values[0] === 'fresh_config') {
+        resetConfigFresh();
+        saveDb({ events: {}, futureAvailability: {}, absenceTickets: {}, players: {}, meta: { postEventCoachReminders: {} } });
+        const freshConfig = getConfig();
+        const result = await syncAllToSheet(freshConfig, loadDb(), { wipe: true });
+        await interaction.editReply(result.ok
+          ? `✅ Fresh config completed and sheet tabs rebuilt (\`${result.spreadsheetId}\`).`
+          : 'Could not sync because spreadsheet ID is not configured.');
+      } else if (interaction.values[0] === 'load_backup') {
+        const backups = (await loadSheetBackups(config).catch(() => [])).sort((a, b) => a.slot - b.slot);
+        if (!backups.length) {
+          await interaction.editReply('No backup slots found in the Backups tab yet.');
+          return true;
+        }
+        const row = new ActionRowBuilder().addComponents(
+          new StringSelectMenuBuilder()
+            .setCustomId('setup_restore_slot')
+            .setPlaceholder('Choose backup slot to restore')
+            .setMinValues(1)
+            .setMaxValues(1)
+            .addOptions(backups.map((entry) => ({
+              label: `Slot ${entry.slot} • ${entry.name || `Backup ${entry.slot}`}`.slice(0, 100),
+              value: String(entry.slot),
+              description: (entry.createdAt || 'unknown').slice(0, 100)
+            })))
+        );
+        await interaction.editReply({ content: 'Pick a backup slot to restore.', components: [row] });
+        return true;
+      } else if (interaction.values[0] === 'fresh') {
         const result = await syncAllToSheet(config, loadDb(), { wipe: true });
         await interaction.editReply(result.ok
           ? `✅ Fresh sheet sync completed (\`${result.spreadsheetId}\`).`
@@ -263,6 +299,43 @@ async function handleSetupInteraction(interaction) {
     }
 
     await interaction.message?.delete().catch(() => null);
+    return true;
+  }
+
+  if (interaction.customId === 'setup_restore_slot' && interaction.isStringSelectMenu()) {
+    await interaction.deferUpdate();
+    const slot = Number.parseInt(interaction.values?.[0] || '0', 10);
+    const config = getConfig();
+    const backups = await loadSheetBackups(config).catch(() => []);
+    const picked = backups.find((entry) => entry.slot === slot);
+    if (!picked?.snapshot) {
+      await interaction.message?.edit({ content: 'Selected slot is empty.', components: createSetupRows() }).catch(() => null);
+      return true;
+    }
+    try {
+      const parsed = JSON.parse(picked.snapshot);
+      const progressState = { percent: 0, etaMs: 0, currentTab: '', tabs: [] };
+      const toProgressText = (title) => [
+        title,
+        '',
+        `Progress: **${progressState.percent}%**`,
+        `ETA: **${Math.max(0, Math.round(progressState.etaMs / 1000))}s**`,
+        `Current tab: ${progressState.currentTab || 'starting…'}`,
+        '',
+        ...(progressState.tabs.length ? progressState.tabs.map((tab) => `• ${tab}${tab === progressState.currentTab ? ' ⏳' : ''}`) : ['• no tabs'])
+      ].join('\n');
+
+      await interaction.message?.edit({ content: toProgressText(`♻️ Restoring backup slot ${slot}...`), components: [] }).catch(() => null);
+      await restoreSpreadsheetFromBackupSnapshot(config, parsed, (progress) => {
+        progressState.percent = progress.percent;
+        progressState.etaMs = progress.etaMs;
+        progressState.currentTab = progress.currentTab;
+        progressState.tabs = progress.tabs || [];
+      });
+      await interaction.message?.edit({ content: toProgressText(`✅ Restored setup backup from slot ${slot}.`), components: [] }).catch(() => null);
+    } catch (error) {
+      await interaction.message?.edit({ content: `❌ Failed to restore slot ${slot}: ${error.message}`, components: createSetupRows() }).catch(() => null);
+    }
     return true;
   }
 

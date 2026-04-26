@@ -728,6 +728,121 @@ async function saveSheetBackupSlot(config = {}, { slot = 1, name = '', createdBy
   return { ok: true };
 }
 
+async function buildSpreadsheetBackupSnapshot(config = {}, onProgress) {
+  const spreadsheetId = getSpreadsheetId(config);
+  if (!spreadsheetId) return { ok: false, reason: 'missing_spreadsheet_id' };
+
+  const sheets = await getSheetsClient(config);
+  const backupsRange = config.googleSync?.sheetBackupsRange || 'Backups!A2:F';
+  const backupsTabTitle = getSheetNameFromRange(backupsRange);
+  const metadata = await sheets.spreadsheets.get({ spreadsheetId });
+  const targetSheets = (metadata.data.sheets || [])
+    .map((entry) => entry.properties?.title)
+    .filter((title) => title && title !== backupsTabTitle);
+
+  const snapshot = { version: 1, createdAt: toIso(), tabs: [] };
+  const startedAt = Date.now();
+
+  for (let i = 0; i < targetSheets.length; i += 1) {
+    const title = targetSheets[i];
+    const escaped = String(title).replace(/'/g, "''");
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `'${escaped}'!A1:ZZZ`
+    }).catch(() => ({ data: { values: [] } }));
+
+    snapshot.tabs.push({ title, values: response.data.values || [] });
+
+    if (typeof onProgress === 'function') {
+      const completed = i + 1;
+      const elapsedMs = Math.max(1, Date.now() - startedAt);
+      const etaMs = Math.max(0, Math.round((elapsedMs / completed) * (targetSheets.length - completed)));
+      onProgress({
+        phase: 'backup',
+        currentTab: title,
+        completed,
+        total: targetSheets.length,
+        percent: Math.min(100, Math.round((completed / Math.max(targetSheets.length, 1)) * 100)),
+        etaMs,
+        tabs: targetSheets
+      });
+    }
+  }
+
+  return { ok: true, snapshot };
+}
+
+async function restoreSpreadsheetFromBackupSnapshot(config = {}, snapshot = {}, onProgress) {
+  const spreadsheetId = getSpreadsheetId(config);
+  if (!spreadsheetId) return { ok: false, reason: 'missing_spreadsheet_id' };
+  const tabs = Array.isArray(snapshot?.tabs) ? snapshot.tabs : [];
+  if (!tabs.length) return { ok: false, reason: 'empty_snapshot' };
+
+  const sheets = await getSheetsClient(config);
+  const backupsRange = config.googleSync?.sheetBackupsRange || 'Backups!A2:F';
+  const backupsTabTitle = getSheetNameFromRange(backupsRange);
+
+  const metadata = await sheets.spreadsheets.get({ spreadsheetId });
+  const existingTitles = (metadata.data.sheets || [])
+    .map((entry) => entry.properties?.title)
+    .filter(Boolean);
+  const existingSet = new Set(existingTitles);
+
+  const addRequests = tabs
+    .filter((tab) => tab.title && !existingSet.has(tab.title))
+    .map((tab) => ({ addSheet: { properties: { title: tab.title } } }));
+
+  if (addRequests.length) {
+    await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests: addRequests } });
+  }
+
+  const refreshedMetadata = await sheets.spreadsheets.get({ spreadsheetId });
+  const allNonBackupTitles = (refreshedMetadata.data.sheets || [])
+    .map((entry) => entry.properties?.title)
+    .filter((title) => title && title !== backupsTabTitle);
+
+  if (allNonBackupTitles.length) {
+    await sheets.spreadsheets.values.batchClear({
+      spreadsheetId,
+      requestBody: {
+        ranges: allNonBackupTitles.map((title) => `'${String(title).replace(/'/g, "''")}'!A1:ZZZ`)
+      }
+    });
+  }
+
+  const startedAt = Date.now();
+  for (let i = 0; i < tabs.length; i += 1) {
+    const tab = tabs[i];
+    const values = Array.isArray(tab.values) ? tab.values : [];
+    const escaped = String(tab.title || '').replace(/'/g, "''");
+    if (values.length) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `'${escaped}'!A1`,
+        valueInputOption: 'RAW',
+        requestBody: { values }
+      });
+    }
+
+    if (typeof onProgress === 'function') {
+      const completed = i + 1;
+      const elapsedMs = Math.max(1, Date.now() - startedAt);
+      const etaMs = Math.max(0, Math.round((elapsedMs / completed) * (tabs.length - completed)));
+      onProgress({
+        phase: 'restore',
+        currentTab: tab.title,
+        completed,
+        total: tabs.length,
+        percent: Math.min(100, Math.round((completed / Math.max(tabs.length, 1)) * 100)),
+        etaMs,
+        tabs: tabs.map((entry) => entry.title)
+      });
+    }
+  }
+
+  return { ok: true, restoredTabs: tabs.length };
+}
+
 async function syncAllToSheet(config = {}, db = {}, options = {}) {
   const spreadsheetId = getSpreadsheetId(config);
   if (!spreadsheetId) return { ok: false, reason: 'missing_spreadsheet_id' };
@@ -880,6 +995,8 @@ module.exports = {
   buildSheetsBackupSnapshot,
   loadSheetBackups,
   saveSheetBackupSlot,
+  buildSpreadsheetBackupSnapshot,
+  restoreSpreadsheetFromBackupSnapshot,
   syncAllToSheet,
   syncConfigOnlyToSheet
 };
