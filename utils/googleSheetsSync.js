@@ -132,6 +132,71 @@ async function loadAttendanceFromSheet(config = {}, range = 'Attendance!A2:F') {
   return (response.data.values || []).map(mapAttendanceRow);
 }
 
+function getNestedValue(obj = {}, path = '') {
+  return String(path || '')
+    .split('.')
+    .filter(Boolean)
+    .reduce((acc, key) => (acc && typeof acc === 'object' ? acc[key] : undefined), obj);
+}
+
+function setNestedValue(obj = {}, path = '', value = '') {
+  const keys = String(path || '').split('.').filter(Boolean);
+  if (!keys.length) return;
+  let pointer = obj;
+  for (let i = 0; i < keys.length - 1; i += 1) {
+    const key = keys[i];
+    if (!pointer[key] || typeof pointer[key] !== 'object' || Array.isArray(pointer[key])) pointer[key] = {};
+    pointer = pointer[key];
+  }
+  pointer[keys[keys.length - 1]] = value;
+}
+
+function parseConfigValue(rawValue = '', template) {
+  const text = String(rawValue ?? '').trim();
+  if (Array.isArray(template)) {
+    if (!text) return [];
+    return text.split(',').map((part) => part.trim()).filter(Boolean);
+  }
+  if (typeof template === 'boolean') {
+    return text.toLowerCase() === 'true';
+  }
+  if (typeof template === 'number') {
+    const parsed = Number(text);
+    return Number.isFinite(parsed) ? parsed : template;
+  }
+  return String(rawValue ?? '');
+}
+
+async function loadConfigFromSheet(config = {}) {
+  const spreadsheetId = getSpreadsheetId(config);
+  if (!spreadsheetId) return null;
+
+  const sheets = await getSheetsClient(config);
+  const configRange = config.googleSync?.configRange || 'Config!A2:C';
+  const configIdsRange = config.googleSync?.configIdsRange || 'Config IDs!A2:C';
+  const [configRowsResponse, configIdsRowsResponse] = await Promise.all([
+    sheets.spreadsheets.values.get({ spreadsheetId, range: configRange }).catch(() => ({ data: { values: [] } })),
+    sheets.spreadsheets.values.get({ spreadsheetId, range: configIdsRange }).catch(() => ({ data: { values: [] } }))
+  ]);
+
+  const configRows = configRowsResponse.data.values || [];
+  if (!configRows.length) return null;
+
+  const idRows = configIdsRowsResponse.data.values || [];
+  const idOverrides = new Map(idRows.map((row) => [row[0], row[1] || '']).filter(([key]) => key));
+  const merged = JSON.parse(JSON.stringify(config || {}));
+
+  for (const row of configRows) {
+    const key = row[0];
+    if (!key || key.startsWith('_')) continue;
+    const template = getNestedValue(merged, key);
+    const rawValue = idOverrides.has(key) ? idOverrides.get(key) : (row[1] || '');
+    setNestedValue(merged, key, parseConfigValue(rawValue, template));
+  }
+
+  return merged;
+}
+
 async function appendAttendanceRow(config = {}, attendance = {}, range = 'Attendance!A2:F') {
   const spreadsheetId = getSpreadsheetId(config);
   if (!spreadsheetId) return false;
@@ -998,6 +1063,7 @@ async function syncConfigOnlyToSheet(config = {}) {
 module.exports = {
   getSheetsClient,
   loadAttendanceFromSheet,
+  loadConfigFromSheet,
   appendAttendanceRow,
   appendCommandLogRow,
   mapAttendanceRow,

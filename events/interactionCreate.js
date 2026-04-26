@@ -36,7 +36,8 @@ const {
   loadSheetBackups,
   saveSheetBackupSlot,
   buildSpreadsheetBackupSnapshot,
-  restoreSpreadsheetFromBackupSnapshot
+  restoreSpreadsheetFromBackupSnapshot,
+  loadConfigFromSheet
 } = require('../utils/googleSheetsSync');
 const coachCommand = require('../commands/coach');
 const adminCommand = require('../commands/admin');
@@ -2690,6 +2691,11 @@ module.exports = {
               }).catch(() => null);
             }
           });
+          const restoredConfig = await loadConfigFromSheet(loadConfig()).catch(() => null);
+          if (restoredConfig) {
+            saveConfig(restoredConfig);
+            context.setConfig?.(restoredConfig);
+          }
 
           await interaction.editReply({
             content: progressLines({

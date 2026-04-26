@@ -26,12 +26,13 @@ const interactionHandler = require('./events/interactionCreate');
 const { fetchUpcomingEvents } = require('./utils/googleCalendar');
 const { loadDb, saveDb, upsertEvent, setEventMessageId } = require('./utils/database');
 const { startReminderJobs } = require('./utils/reminders');
-const { ensureConfig, loadConfig, updateConfig, resetConfigFresh } = require('./utils/config');
+const { ensureConfig, loadConfig, saveConfig, updateConfig, resetConfigFresh } = require('./utils/config');
 const {
   syncAllToSheet,
   appendCommandLogRow,
   loadSheetBackups,
-  restoreSpreadsheetFromBackupSnapshot
+  restoreSpreadsheetFromBackupSnapshot,
+  loadConfigFromSheet
 } = require('./utils/googleSheetsSync');
 const { getTeamSetupProgress, getIncompleteTeamsForMember, buildIncompleteTeamMessage } = require('./utils/teamSetup');
 
@@ -141,12 +142,8 @@ function createSetupFinishRow() {
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId('setup_finish')
-        .setLabel('Start using Firelands Bot')
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
         .setCustomId('setup_delete_message')
-        .setLabel('Delete Message')
+        .setLabel('Delete this message')
         .setStyle(ButtonStyle.Danger)
     )
   ];
@@ -200,7 +197,7 @@ function buildSetupRestoreProgressText(slot, progressState, done = false) {
     '',
     ...(progressState.tabs?.length ? progressState.tabs.map((tab) => `• ${tab}${!done && tab === progressState.currentTab ? ' ⏳' : ''}`) : ['• no tabs']),
     '',
-    done ? 'Click **Start using Firelands Bot** to finish setup.' : 'Please wait while Firelands imports this backup into all synced Google Sheet tabs.'
+    done ? 'Firelands Bot setup is complete and ready to use. Delete this message to finish setup.' : 'Please wait while Firelands imports this backup into all synced Google Sheet tabs.'
   ].join('\n');
 }
 
@@ -394,11 +391,6 @@ async function handleSetupInteraction(interaction) {
     }).catch(() => null);
     return true;
   }
-  if (interaction.customId === 'setup_finish' && interaction.isButton()) {
-    await interaction.deferUpdate().catch(() => null);
-    await finalizeSetupWizard(interaction);
-    return true;
-  }
   if (interaction.customId === 'setup_delete_message' && interaction.isButton()) {
     const member = interaction.member;
     const canDelete = Boolean(member?.permissions?.has?.(PermissionFlagsBits.ManageMessages) || member?.permissions?.has?.(PermissionFlagsBits.Administrator));
@@ -429,7 +421,7 @@ async function handleSetupInteraction(interaction) {
         const freshConfig = getConfig();
         const result = await syncAllToSheet(freshConfig, loadDb(), { wipe: true });
         await interaction.message?.edit(result.ok
-          ? { content: `✅ Fresh config completed and sheet tabs rebuilt (\`${result.spreadsheetId}\`).\nFirelands Bot setup is complete and the bot is ready to be used. Click **Start using Firelands Bot** to finish setup.`, components: createSetupFinishRow() }
+          ? { content: `✅ Fresh config completed and sheet tabs rebuilt (\`${result.spreadsheetId}\`).\nFirelands Bot setup is complete and ready to use. Delete this message to finish setup.`, components: createSetupFinishRow() }
           : { content: 'Could not sync because spreadsheet ID is not configured.', components: createSetupRows() }).catch(() => null);
         return true;
       } else if (interaction.values[0] === 'load_backup') {
@@ -475,6 +467,8 @@ async function handleSetupInteraction(interaction) {
           interaction.message?.edit({ content: buildSetupRestoreProgressText(slot, progressState), components: [] }).catch(() => null);
         }
       });
+      const restoredConfig = await loadConfigFromSheet(config).catch(() => null);
+      if (restoredConfig) saveConfig(restoredConfig);
       progressState.percent = 100;
       await interaction.message?.edit({
         content: buildSetupRestoreProgressText(slot, progressState, true),
