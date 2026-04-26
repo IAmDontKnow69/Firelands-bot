@@ -1,6 +1,8 @@
 const REQUIRED_TEAM_FIELDS = [
   { key: 'playerRole', label: 'Player Role' },
   { key: 'coachRole', label: 'Coach Role' },
+  { key: 'captainRole', label: 'Captain Role' },
+  { key: 'teamGender', label: 'Team Gender' },
   { key: 'teamChat', label: 'Team Chat' },
   { key: 'staffRoom', label: 'Staff Room' },
   { key: 'privateChatCategory', label: 'Private Chat Category' }
@@ -10,6 +12,8 @@ function getTeamRequirementValues(config, team) {
   return {
     playerRole: config.roles?.[team]?.player,
     coachRole: config.roles?.[team]?.coach,
+    captainRole: config.teams?.[team]?.captainRoleId,
+    teamGender: config.teams?.[team]?.gender,
     teamChat: config.channels?.teamChats?.[team],
     staffRoom: config.channels?.staffRooms?.[team],
     privateChatCategory: config.channels?.privateChatCategories?.[team]
@@ -20,16 +24,20 @@ function isConfiguredId(value) {
   return !!value && value !== 'ROLE_ID';
 }
 
+function isConfiguredGender(value) {
+  return ['male', 'female', 'mixed'].includes(String(value || '').toLowerCase());
+}
+
 function getMissingTeamSetupItems(config, team) {
   const values = getTeamRequirementValues(config, team);
   return REQUIRED_TEAM_FIELDS
-    .filter((item) => !isConfiguredId(values[item.key]))
+    .filter((item) => (item.key === 'teamGender' ? !isConfiguredGender(values[item.key]) : !isConfiguredId(values[item.key])))
     .map((item) => item.label);
 }
 
 function getTeamSetupProgress(config, team) {
   const values = getTeamRequirementValues(config, team);
-  const completed = REQUIRED_TEAM_FIELDS.filter((item) => isConfiguredId(values[item.key])).length;
+  const completed = REQUIRED_TEAM_FIELDS.filter((item) => (item.key === 'teamGender' ? isConfiguredGender(values[item.key]) : isConfiguredId(values[item.key]))).length;
   const total = REQUIRED_TEAM_FIELDS.length;
   return {
     completed,

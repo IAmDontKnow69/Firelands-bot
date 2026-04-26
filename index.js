@@ -12,7 +12,8 @@ const {
   ChannelType,
   REST,
   Routes,
-  MessageFlags
+  MessageFlags,
+  PermissionFlagsBits
 } = require('discord.js');
 const cron = require('node-cron');
 
@@ -142,7 +143,11 @@ function createSetupFinishRow() {
       new ButtonBuilder()
         .setCustomId('setup_finish')
         .setLabel('Start using Firelands Bot')
-        .setStyle(ButtonStyle.Success)
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId('setup_delete_message')
+        .setLabel('Delete Message')
+        .setStyle(ButtonStyle.Danger)
     )
   ];
 }
@@ -394,6 +399,17 @@ async function handleSetupInteraction(interaction) {
     await finalizeSetupWizard(interaction);
     return true;
   }
+  if (interaction.customId === 'setup_delete_message' && interaction.isButton()) {
+    const member = interaction.member;
+    const canDelete = Boolean(member?.permissions?.has?.(PermissionFlagsBits.ManageMessages) || member?.permissions?.has?.(PermissionFlagsBits.Administrator));
+    if (!canDelete) {
+      await interaction.reply({ content: 'Only admins can delete this setup message.', flags: MessageFlags.Ephemeral }).catch(() => null);
+      return true;
+    }
+    await interaction.message?.delete().catch(() => null);
+    await interaction.reply({ content: '✅ Setup message deleted.', flags: MessageFlags.Ephemeral }).catch(() => null);
+    return true;
+  }
   if (interaction.customId === 'setup_back_to_mode' && interaction.isButton()) {
     await interaction.update({
       content: buildSetupSummary(getConfig()),
@@ -413,7 +429,7 @@ async function handleSetupInteraction(interaction) {
         const freshConfig = getConfig();
         const result = await syncAllToSheet(freshConfig, loadDb(), { wipe: true });
         await interaction.message?.edit(result.ok
-          ? { content: `✅ Fresh config completed and sheet tabs rebuilt (\`${result.spreadsheetId}\`).\nClick **Start using Firelands Bot** to finish setup.`, components: createSetupFinishRow() }
+          ? { content: `✅ Fresh config completed and sheet tabs rebuilt (\`${result.spreadsheetId}\`).\nFirelands Bot setup is complete and the bot is ready to be used. Click **Start using Firelands Bot** to finish setup.`, components: createSetupFinishRow() }
           : { content: 'Could not sync because spreadsheet ID is not configured.', components: createSetupRows() }).catch(() => null);
         return true;
       } else if (interaction.values[0] === 'load_backup') {

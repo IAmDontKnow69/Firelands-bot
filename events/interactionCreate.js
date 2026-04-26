@@ -51,6 +51,41 @@ function getTeamMeta(config = {}, team = '') {
   };
 }
 
+
+function getGoogleToolsSummary(config = {}) {
+  const calendarId = config.bot?.calendarId || 'not set';
+  const lastSyncedAt = config.googleSync?.lastSyncedAt;
+  const lastSyncedLabel = lastSyncedAt ? new Date(lastSyncedAt).toLocaleString() : 'never';
+  return [
+    '📗 **Google Tools**',
+    `Current calendar source: **${calendarId}**`,
+    `Last calendar/sheets sync: **${lastSyncedLabel}**`,
+    '',
+    'What each button does:',
+    '• Sync Google Sheets: force sync fixtures/attendance/config into the sheet.',
+    '• Open Google Sheet: opens the configured spreadsheet URL.',
+    '• Set Google Calendar ID: choose which calendar fixtures are pulled from.',
+    '• View Google Calendar Events: import and preview fixtures from Google Calendar.',
+    '• Event Addresses: list event addresses captured from fixtures.',
+    '• Set Address Nickname: map venue addresses to readable nicknames.'
+  ].join('\n');
+}
+
+function teamAllowsGender(teamGender = '', playerGender = '') {
+  const teamValue = String(teamGender || '').toLowerCase();
+  const playerValue = String(playerGender || '').toLowerCase();
+  if (!teamValue || teamValue === 'mixed') return true;
+  if (!playerValue) return true;
+  return teamValue === playerValue;
+}
+
+function getGenderMismatchMessage(teamLabel = 'team', teamGender = '') {
+  const normalized = String(teamGender || '').toLowerCase();
+  if (normalized === 'male') return `${teamLabel} is a male team. Your profile gender does not match.`;
+  if (normalized === 'female') return `${teamLabel} is a female team. Your profile gender does not match.`;
+  return `Your profile gender does not match ${teamLabel} requirements.`;
+}
+
 function createAdminQuickActionRow() {
   return adminCommand.createAdminPanelActionRow();
 }
@@ -112,7 +147,7 @@ function createClubManagementRow2() {
 
 function createGoogleToolsRow() {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('admin_google_action:sync_google').setLabel('🔄 Sync Google Sheets').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('admin_google_action:sync_google').setLabel('🔄 Sync Calendar → Fixtures').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId('admin_google_action:open_google_sheet').setLabel('📄 Open Google Sheet').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('admin_google_action:set_calendar_id').setLabel('🗓️ Set Google Calendar ID').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('admin_google_action:view_google_events').setLabel('📆 View Google Calendar Events').setStyle(ButtonStyle.Secondary)
@@ -129,16 +164,17 @@ function createGoogleToolsRow2() {
 
 function createEventTypeRulesRow() {
   return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId('admin_event_type_rules_action')
-      .setPlaceholder('Event type rule actions')
-      .addOptions([
-        { label: 'Toggle Auto Detect', value: 'toggle_auto_detect', description: 'Enable/disable keyword auto classification' },
-        { label: 'Set Practice Exact Names', value: 'set_practice_exact', description: 'Comma-separated exact names that mean practice' },
-        { label: 'Set Match Exact Names', value: 'set_match_exact', description: 'Comma-separated exact names that mean match' },
-        { label: 'Set Other Exact Names', value: 'set_other_exact', description: 'Comma-separated exact names that mean other' },
-        { label: 'Manually Set Event Type', value: 'manual_set_event_type', description: 'Pick a fixture and assign a type manually' }
-      ])
+    new ButtonBuilder().setCustomId('admin_event_type_rule:disable_auto_detect').setLabel('🛑 Turn OFF Auto Detect').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId('admin_event_type_rule:set_practice_exact').setLabel('📝 Practice Exact Names').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_event_type_rule:set_match_exact').setLabel('🏁 Match Exact Names').setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function createEventTypeRulesRow2() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('admin_event_type_rule:set_other_exact').setLabel('🧩 Other Exact Names').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_event_type_rule:manual_set_event_type').setLabel('🎯 Manual Event Type').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('admin_back_club_management').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
   );
 }
 
@@ -186,7 +222,7 @@ function createTeamConfigIdSettingsRows(team, config = loadConfig()) {
     ),
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:private_category`).setLabel('🚫 Absence Category ID').setStyle(privateCategorySet ? ButtonStyle.Success : ButtonStyle.Danger),
-      new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:team_gender`).setLabel('⚧️ Team Gender').setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:team_gender`).setLabel('⚧️ Team Gender').setStyle(isConfiguredId(config.teams?.[team]?.gender) ? ButtonStyle.Success : ButtonStyle.Danger)
     )
   ];
 }
@@ -341,6 +377,7 @@ const pendingAbsenceReasonModals = new Map();
 const pendingPlayerAttendDmTokens = new Map();
 const pendingLocationAliasSelections = new Map();
 const pendingSheetBackupWrites = new Map();
+const pendingSheetBackupOverwriteConfirms = new Map();
 
 function formatEtaMs(ms = 0) {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
@@ -975,7 +1012,7 @@ async function handleAdminPlayerAction(interaction, selectedAction, userId, mode
     set_nickname: mode === 'coach' ? 'Set Coach Nickname' : 'Set Player Nickname',
     set_face: 'Set Player Face URL (.png, .webp, or .jpg)',
     set_shirt: 'Set Player Shirt Number',
-    set_gender: 'Set Player Gender (male/female)'
+    set_gender: 'Set Player Gender (male/female only)'
   };
   const fieldByAction = {
     set_name: { id: 'custom_name', label: 'Real name', value: mergedProfile.customName || '' },
@@ -1265,6 +1302,7 @@ async function triggerGoogleSync(context) {
 
   try {
     await syncAllToSheet(latestConfig, loadDb());
+    updateConfig('googleSync.lastSyncedAt', new Date().toISOString());
   } catch (error) {
     await context.sendLog(`⚠️ Google Sheets sync failed after attendance update: ${error.message}`);
   }
@@ -1308,6 +1346,7 @@ async function handlePanelGoogleSync(interaction) {
       await interaction.editReply('Could not sync because spreadsheet ID is not configured.');
       return;
     }
+    updateConfig('googleSync.lastSyncedAt', new Date().toISOString());
 
     await interaction.editReply(`✅ Synced fixtures, attendance, command log, and config to Google Sheets (\`${result.spreadsheetId}\`).`);
   } catch (error) {
@@ -1355,7 +1394,7 @@ module.exports = {
       }
       if (interaction.customId === 'admin_back_google_tools') {
         await interaction.update({
-          content: 'Google:',
+          content: getGoogleToolsSummary(loadConfig()),
           embeds: [],
           components: [createGoogleToolsRow(), createGoogleToolsRow2()]
         });
@@ -1372,9 +1411,14 @@ module.exports = {
       }
       if (interaction.customId === 'admin_sheet_backup_create') {
         const modal = new ModalBuilder().setCustomId('admin_sheet_backup_create_modal').setTitle('Save Sheet Backup');
-        modal.addComponents(new ActionRowBuilder().addComponents(
-          new TextInputBuilder().setCustomId('backup_name').setLabel('Backup name').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80)
-        ));
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId('backup_name').setLabel('Backup name').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId('backup_slot').setLabel('Backup slot (1-5)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(1).setValue('1')
+          )
+        );
         await interaction.showModal(modal);
         return;
       }
@@ -1434,7 +1478,7 @@ module.exports = {
       if (interaction.customId.startsWith('admin_club_action:')) {
         const action = interaction.customId.split(':')[1];
         if (action === 'google') {
-          await interaction.update({ content: 'Google:', embeds: [], components: [createGoogleToolsRow(), createGoogleToolsRow2()] });
+          await interaction.update({ content: getGoogleToolsSummary(loadConfig()), embeds: [], components: [createGoogleToolsRow(), createGoogleToolsRow2()] });
           return;
         }
         if (action === 'set_admin_chat') {
@@ -1462,7 +1506,7 @@ module.exports = {
               `• Other Exact Names: ${rules.otherExactNames.join(', ') || 'none'}`
             ].join('\n'),
             embeds: [],
-            components: [createEventTypeRulesRow(), createBackButtonRow('admin_back_club_management')]
+            components: [createEventTypeRulesRow(), createEventTypeRulesRow2()]
           });
           return;
         }
@@ -1504,7 +1548,7 @@ module.exports = {
           return;
         }
         if (action === 'view_google_events') {
-          await interaction.update({ content: 'Choose a team to view fixtures, or choose **All Teams**.', embeds: [], components: withOptionalRow([createEventScopePickerRow(config), createBackButtonRow('admin_back_google_tools')]) });
+          await interaction.update({ content: 'Choose a team to view fixtures, or choose **All Teams**.', embeds: [], components: withOptionalRow([createEventScopePickerRow(loadConfig()), createBackButtonRow('admin_back_google_tools')]) });
           return;
         }
         if (action === 'view_event_locations') {
@@ -1621,6 +1665,81 @@ module.exports = {
           return;
         }
       }
+      if (interaction.customId.startsWith('admin_event_type_rule:')) {
+        const selected = interaction.customId.split(':')[1];
+        const latestConfig = loadConfig();
+
+        if (selected === 'disable_auto_detect') {
+          updateConfig('eventTypes.autoDetect', false);
+          const updated = getEventTypeConfig(loadConfig());
+          await interaction.update({
+            content: `✅ Auto detect is now **${updated.autoDetect ? 'ON' : 'OFF'}**.`,
+            embeds: [],
+            components: [createEventTypeRulesRow(), createEventTypeRulesRow2()]
+          });
+          return;
+        }
+
+        if (['set_practice_exact', 'set_match_exact', 'set_other_exact'].includes(selected)) {
+          const modal = new ModalBuilder()
+            .setCustomId(`admin_event_type_exact_modal:${selected}`)
+            .setTitle('Set Exact Event Names');
+          const current = selected === 'set_practice_exact'
+            ? latestConfig.eventTypes?.practiceExactNames
+            : selected === 'set_match_exact'
+              ? latestConfig.eventTypes?.matchExactNames
+              : latestConfig.eventTypes?.otherExactNames;
+          modal.addComponents(
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder()
+                .setCustomId('exact_names')
+                .setLabel('Comma-separated exact names')
+                .setStyle(TextInputStyle.Paragraph)
+                .setRequired(true)
+                .setValue((current || []).join(', '))
+            )
+          );
+          await interaction.showModal(modal);
+          return;
+        }
+
+        if (selected === 'manual_set_event_type') {
+          const db = loadDb();
+          const options = Object.entries(db.events || {})
+            .map(([eventId, event]) => ({ eventId, ...event }))
+            .filter((event) => new Date(event.date).getTime() >= Date.now())
+            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+            .slice(0, 25)
+            .map((event) => ({
+              label: `${new Date(event.date).toLocaleDateString()} — ${event.title}`.slice(0, 100),
+              value: event.eventId
+            }));
+
+          if (!options.length) {
+            await interaction.update({
+              content: 'No upcoming events are available for manual type assignment.',
+              embeds: [],
+              components: [createEventTypeRulesRow(), createEventTypeRulesRow2()]
+            });
+            return;
+          }
+
+          await interaction.update({
+            content: 'Select an event to assign type.',
+            embeds: [],
+            components: [
+              new ActionRowBuilder().addComponents(
+                new StringSelectMenuBuilder()
+                  .setCustomId('admin_event_type_pick_event')
+                  .setPlaceholder('Pick event')
+                  .addOptions(options)
+              ),
+              createBackButtonRow('admin_back_club_management')
+            ]
+          });
+          return;
+        }
+      }
       if (interaction.customId.startsWith('admin_team_management:')) {
         const action = interaction.customId.split(':')[1];
         if (action === 'new_team') {
@@ -1628,7 +1747,7 @@ module.exports = {
           const keyInput = new TextInputBuilder().setCustomId('team_key').setLabel('Team key (letters/numbers, e.g. u18mens)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(30);
           const labelInput = new TextInputBuilder().setCustomId('team_label').setLabel('Display name (e.g. U18 Mens)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80);
           const emojiInput = new TextInputBuilder().setCustomId('team_emoji').setLabel('Emoji (optional, default 🔹)').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(20);
-          const genderInput = new TextInputBuilder().setCustomId('team_gender').setLabel('Team gender (male/female)').setStyle(TextInputStyle.Short).setRequired(true).setValue('male').setMaxLength(10);
+          const genderInput = new TextInputBuilder().setCustomId('team_gender').setLabel('Team gender (male/female/mixed)').setStyle(TextInputStyle.Short).setRequired(true).setValue('male').setMaxLength(10);
           modal.addComponents(new ActionRowBuilder().addComponents(keyInput), new ActionRowBuilder().addComponents(labelInput), new ActionRowBuilder().addComponents(emojiInput), new ActionRowBuilder().addComponents(genderInput));
           await interaction.showModal(modal);
           return;
@@ -1721,7 +1840,8 @@ module.exports = {
               .setPlaceholder(`Select ${teamLabel} gender`)
               .addOptions([
                 { label: 'Male Team', value: 'male', description: 'Only male players can play for this team' },
-                { label: 'Female Team', value: 'female', description: 'Only female players can play for this team' }
+                { label: 'Female Team', value: 'female', description: 'Only female players can play for this team' },
+                { label: 'Mixed Team', value: 'mixed', description: 'Male and female players can play for this team' }
               ])
           );
           await interaction.update({
@@ -1925,7 +2045,7 @@ module.exports = {
           .setMaxLength(20);
         const genderInput = new TextInputBuilder()
           .setCustomId('team_gender')
-          .setLabel('Team gender (male/female)')
+          .setLabel('Team gender (male/female/mixed)')
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
           .setValue('male')
@@ -2298,8 +2418,8 @@ module.exports = {
         }
         const profile = getPlayerProfile(interaction.user.id) || {};
         const requiredGender = config.teams?.[event.team]?.gender;
-        if (requiredGender && profile.gender && profile.gender !== requiredGender) {
-          await interaction.reply({ content: `This is a ${requiredGender} team. Your profile gender does not match.`, flags: MessageFlags.Ephemeral });
+        if (!teamAllowsGender(requiredGender, profile.gender)) {
+          await interaction.reply({ content: getGenderMismatchMessage(getTeamMeta(config, event.team).label, requiredGender), flags: MessageFlags.Ephemeral });
           return;
         }
 
@@ -2336,8 +2456,8 @@ module.exports = {
 
         const profile = getPlayerProfile(interaction.user.id) || {};
         const requiredGender = config.teams?.[event.team]?.gender;
-        if (requiredGender && profile.gender && profile.gender !== requiredGender) {
-          await interaction.reply({ content: `This is a ${requiredGender} team. Your profile gender does not match.`, flags: MessageFlags.Ephemeral });
+        if (!teamAllowsGender(requiredGender, profile.gender)) {
+          await interaction.reply({ content: getGenderMismatchMessage(getTeamMeta(config, event.team).label, requiredGender), flags: MessageFlags.Ephemeral });
           return;
         }
 
@@ -2675,6 +2795,7 @@ module.exports = {
         return;
       }
 
+
       if (interaction.customId === 'admin_event_type_rules_action') {
         const selected = interaction.values[0];
         const latestConfig = loadConfig();
@@ -2685,7 +2806,7 @@ module.exports = {
           await interaction.update({
             content: `✅ Auto detect is now **${updated.autoDetect ? 'ON' : 'OFF'}**.`,
             embeds: [],
-            components: [createEventTypeRulesRow(), createBackButtonRow('admin_back_club_management')]
+            components: [createEventTypeRulesRow(), createEventTypeRulesRow2()]
           });
           return;
         }
@@ -2729,7 +2850,7 @@ module.exports = {
             await interaction.update({
               content: 'No upcoming events are available for manual type assignment.',
               embeds: [],
-              components: [createEventTypeRulesRow(), createBackButtonRow('admin_back_club_management')]
+              components: [createEventTypeRulesRow(), createEventTypeRulesRow2()]
             });
             return;
           }
@@ -2788,7 +2909,7 @@ module.exports = {
         await interaction.update({
           content: `✅ Event type set to **${eventTypeLabel(eventType)}** for **${db.events[eventId].title}**.`,
           embeds: [],
-          components: [createEventTypeRulesRow(), createBackButtonRow('admin_back_club_management')]
+          components: [createEventTypeRulesRow(), createEventTypeRulesRow2()]
         });
         return;
       }
@@ -3168,9 +3289,23 @@ module.exports = {
       if (interaction.customId.startsWith('admin_player_set_teams:')) {
         const userId = interaction.customId.split(':')[1];
       const mode = interaction.customId.split(':')[2] || 'player';
+      const existingProfile = getPlayerProfile(userId) || {};
+      const selectedTeams = interaction.values;
+      if (mode !== 'coach') {
+        const blocked = selectedTeams.find((teamKey) => !teamAllowsGender(loadConfig().teams?.[teamKey]?.gender, existingProfile.gender));
+        if (blocked) {
+          const label = getTeamMeta(loadConfig(), blocked).label;
+          await interaction.update({
+            content: `❌ ${getGenderMismatchMessage(label, loadConfig().teams?.[blocked]?.gender)} Set player gender to match or pick a different team.`,
+            embeds: [],
+            components: [createPlayerProfileActionRow(userId, mode), createPlayerProfileActionRow2(userId, mode), createBackButtonRow('admin_back_player_management')]
+          });
+          return;
+        }
+      }
       const profile = upsertPlayerProfile(userId, mode === 'coach'
-        ? { coachTeams: interaction.values }
-        : { teams: interaction.values });
+        ? { coachTeams: selectedTeams }
+        : { teams: selectedTeams });
       const targetMember = await interaction.guild.members.fetch(userId).catch(() => null);
       const targetUser = targetMember?.user || await interaction.client.users.fetch(userId).catch(() => null);
       await interaction.update({
@@ -3544,8 +3679,8 @@ module.exports = {
       }
       const profile = getPlayerProfile(interaction.user.id);
       const requiredGender = config.teams?.[event.team]?.gender;
-      if (requiredGender && profile?.gender && profile.gender !== requiredGender) {
-        await interaction.reply({ content: `This is a ${requiredGender} team. Your profile gender does not match.`, flags: MessageFlags.Ephemeral });
+      if (!teamAllowsGender(requiredGender, profile?.gender)) {
+        await interaction.reply({ content: getGenderMismatchMessage(getTeamMeta(config, event.team).label, requiredGender), flags: MessageFlags.Ephemeral });
         return;
       }
       const playerDisplayName = buildRichPlayerMention(config, interaction.user, interaction.member, profile, event.team);
@@ -3705,6 +3840,7 @@ module.exports = {
           `• Match: ${rules.matchExactNames.join(', ') || 'none'}`,
           `• Other: ${rules.otherExactNames.join(', ') || 'none'}`
         ].join('\n'),
+        components: [createEventTypeRulesRow(), createEventTypeRulesRow2()],
         flags: MessageFlags.Ephemeral
       });
       return;
@@ -4043,7 +4179,8 @@ module.exports = {
 
       const latestConfig = loadConfig();
       await interaction.editReply({
-        content: `${renderProgressMessage(100, `Team name updated to **${teamName}**.`)}\n\n${getTeamConfigSummary(latestConfig, interaction.guild, team)}`
+        content: `${renderProgressMessage(100, `Team name updated to **${teamName}**.`)}\n\n${getTeamConfigSummary(latestConfig, interaction.guild, team)}`,
+        components: [createTeamConfigActionRow(latestConfig, team), createBackButtonRow(`admin_back_team_config:${team}`)]
       });
       return;
     }
@@ -4105,8 +4242,8 @@ module.exports = {
         await interaction.reply({ content: `Team \`${teamKey}\` already exists.`, flags: MessageFlags.Ephemeral });
         return;
       }
-      if (!['male', 'female'].includes(teamGender)) {
-        await interaction.reply({ content: 'Team gender must be male or female.', flags: MessageFlags.Ephemeral });
+      if (!['male', 'female', 'mixed'].includes(teamGender)) {
+        await interaction.reply({ content: 'Team gender must be male, female, or mixed.', flags: MessageFlags.Ephemeral });
         return;
       }
 
