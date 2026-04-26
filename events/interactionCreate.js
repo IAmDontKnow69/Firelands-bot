@@ -32,7 +32,6 @@ const { fetchCalendarEvents, titleMatchesPhrase } = require('../utils/googleCale
 const { syncAllToSheet, syncConfigOnlyToSheet, appendCommandLogRow } = require('../utils/googleSheetsSync');
 const coachCommand = require('../commands/coach');
 const adminCommand = require('../commands/admin');
-const adminConfigCommand = require('../commands/admin-config');
 const { hasAdminAccess, adminAccessMessage } = require('../utils/adminAccess');
 const { determineEventType, eventTypeLabel, getEventTypeConfig } = require('../utils/eventType');
 
@@ -50,6 +49,10 @@ function createAdminQuickActionRow() {
 
 function createAdminQuickActionExtraRow() {
   return adminCommand.createAdminPanelSecondaryRow();
+}
+
+function withOptionalRow(rows = []) {
+  return rows.filter(Boolean);
 }
 
 function createAdminBackButtonRow() {
@@ -73,30 +76,38 @@ function createBackButtonRow(customId = 'admin_back_to_panel', label = '⬅️ B
 function createTeamManagementRow() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setCustomId('admin_team_management:configure_team')
-      .setLabel('Configure Team')
-      .setStyle(ButtonStyle.Primary),
-    new ButtonBuilder()
       .setCustomId('admin_team_management:new_team')
-      .setLabel('Create Team')
-      .setStyle(ButtonStyle.Success)
+      .setLabel('➕ Create Team')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId('admin_back_to_panel')
+      .setLabel('⬅️ Back')
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function createClubManagementRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('admin_club_action:google').setLabel('📗 Google').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('admin_club_action:set_admin_chat').setLabel('🛎️ Set Admin Chat').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_club_action:set_bot_commands_chat').setLabel('💬 Set Bot Commands Chat').setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function createClubManagementRow2() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('admin_club_action:event_type_rules').setLabel('🧭 Event Type Rules').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_back_to_panel').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
   );
 }
 
 function createGoogleToolsRow() {
   return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId('admin_google_tools_action')
-      .setPlaceholder('Google actions')
-      .addOptions([
-        { label: 'Sync Google Sheets', value: 'sync_google', description: 'Force-sync fixtures and attendance to Sheets' },
-        { label: 'Open Google Sheet', value: 'open_google_sheet', description: 'Open configured Google Sheet' },
-        { label: 'Set Google Calendar ID', value: 'set_calendar_id', description: 'Set calendar used for sync' },
-        { label: 'Set Admin Chat', value: 'set_admin_chat', description: 'Choose where admin logs + errors are posted' },
-        { label: 'Set Bot Commands Chat', value: 'set_bot_commands_chat', description: 'Choose where /player and /coach can be used' },
-        { label: 'Event Type Rules', value: 'event_type_rules', description: 'Configure how events are classified' },
-        { label: 'View Google Calendar Events', value: 'view_google_events', description: 'Preview synced calendar events' }
-      ])
+    new ButtonBuilder().setCustomId('admin_google_action:sync_google').setLabel('🔄 Sync Google Sheets').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('admin_google_action:open_google_sheet').setLabel('📄 Open Google Sheet').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_google_action:set_calendar_id').setLabel('🗓️ Set Google Calendar ID').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_google_action:view_google_events').setLabel('📆 View Google Calendar Events').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_back_club_management').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
   );
 }
 
@@ -131,29 +142,29 @@ function createTeamPickerRow(config, customId, placeholder = 'Choose a team') {
 function createTeamConfigActionRow(config, team) {
   const label = getTeamMeta(config, team).label;
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:id_settings`).setLabel('ID Settings').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:fixtures_settings`).setLabel('Fixture Settings').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:team_name`).setLabel('Set Team Name').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:team_emoji`).setLabel('Set Team Emoji').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:id_settings`).setLabel('🪪 ID Settings').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:fixtures_settings`).setLabel('📅 Fixture Settings').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:team_name`).setLabel('🏷️ Set Team Name').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:team_emoji`).setLabel('😀 Set Team Emoji').setStyle(ButtonStyle.Secondary)
   );
 }
 
 function createTeamConfigIdSettingsRow(team) {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:player_role`).setLabel('Player Role ID').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:coach_role`).setLabel('Coach Role ID').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:team_chat`).setLabel('Team Chat ID').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:staff_room`).setLabel('Staff Room ID').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:private_category`).setLabel('Absence Category ID').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:player_role`).setLabel('👕 Player Role ID').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:coach_role`).setLabel('🧢 Coach Role ID').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:team_chat`).setLabel('💬 Team Chat ID').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:staff_room`).setLabel('🧰 Staff Room ID').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:private_category`).setLabel('🚫 Absence Category ID').setStyle(ButtonStyle.Secondary)
   );
 }
 
 function createTeamConfigFixtureSettingsRow(team) {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:event_name_phrases`).setLabel('Event Name Phrases').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:fixture_team`).setLabel('Set Fixture Team').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:auto_assign_fixtures`).setLabel('Auto Assign Fixtures').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:force_send_attendance`).setLabel('Force Send Attendance').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:event_name_phrases`).setLabel('📝 Event Name Phrases').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:fixture_team`).setLabel('🔁 Set Fixture Team').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:auto_assign_fixtures`).setLabel('⚡ Auto Assign Fixtures').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:force_send_attendance`).setLabel('📣 Force Send Attendance').setStyle(ButtonStyle.Secondary)
   );
 }
 
@@ -168,6 +179,30 @@ function createTeamPickerButtonsRow() {
       .setLabel('⬅️ Back')
       .setStyle(ButtonStyle.Secondary)
   );
+}
+
+function createTeamButtonsRows(config = {}) {
+  const rows = [];
+  let current = new ActionRowBuilder();
+  let count = 0;
+
+  for (const [team, meta] of Object.entries(config.teams || {})) {
+    if (count === 5) {
+      rows.push(current);
+      current = new ActionRowBuilder();
+      count = 0;
+    }
+    current.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`admin_open_team:${team}`)
+        .setLabel(`${meta?.emoji || '🔹'} ${meta?.label || team}`.slice(0, 80))
+        .setStyle(ButtonStyle.Primary)
+    );
+    count += 1;
+  }
+
+  if (count > 0) rows.push(current);
+  return rows;
 }
 
 function formatConfigRef(guild, type, id) {
@@ -437,20 +472,64 @@ function createCoachManagementRow(config, guild) {
 
 function createPlayerProfileActionRow(userId, mode = 'player') {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`admin_player_action:set_name:${userId}:${mode}`).setLabel('Name').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`admin_player_action:set_nickname:${userId}:${mode}`).setLabel('Nickname').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`admin_player_action:set_face:${userId}:${mode}`).setLabel('Photo URL').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`admin_player_action:set_shirt:${userId}:${mode}`).setLabel('Shirt').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`admin_player_action:set_notes:${userId}:${mode}`).setLabel('Notes').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId(`admin_player_action:set_name:${userId}:${mode}`).setLabel('🪪 Name').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`admin_player_action:set_nickname:${userId}:${mode}`).setLabel('🤿 Nickname').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`admin_player_action:set_face:${userId}:${mode}`).setLabel('📸 Photo').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`admin_player_action:set_shirt:${userId}:${mode}`).setLabel('👕 Shirt').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`admin_player_action:set_notes:${userId}:${mode}`).setLabel('🗒️ Notes').setStyle(ButtonStyle.Secondary)
   );
 }
 
 function createPlayerProfileActionRow2(userId, mode = 'player') {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`admin_player_action:set_teams:${userId}:${mode}`).setLabel('Teams').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_player_action:assign_roles:${userId}:${mode}`).setLabel('Assign Roles').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_player_view_attendance:${userId}:${mode}`).setLabel('Attendance').setStyle(ButtonStyle.Success)
+    new ButtonBuilder().setCustomId(`admin_player_action:set_teams:${userId}:${mode}`).setLabel('🧩 Teams').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_player_action:assign_roles:${userId}:${mode}`).setLabel('🎭 Assign Roles').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_player_view_attendance:${userId}:${mode}`).setLabel('📈 Attendance').setStyle(ButtonStyle.Success)
   );
+}
+
+function getProfileNotes(profile = {}) {
+  return Array.isArray(profile.notesLog) ? profile.notesLog : [];
+}
+
+function createPlayerNotesActionRows(userId, mode = 'player', isAdmin = false, profile = {}) {
+  const notes = getProfileNotes(profile);
+  const visibleNotes = notes.filter((note) => !note.hidden);
+  const hiddenNotes = notes.filter((note) => note.hidden);
+  const rows = [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`admin_player_note_add:${userId}:${mode}`).setLabel('➕ Add Note').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`admin_player_back_to_profile:${userId}:${mode}`).setLabel('⬅️ Back to Player').setStyle(ButtonStyle.Secondary)
+    )
+  ];
+
+  if (isAdmin && visibleNotes.length) {
+    rows.push(new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`admin_player_note_toggle:${userId}:${mode}:hide`)
+        .setPlaceholder('Hide a visible note')
+        .addOptions(visibleNotes.slice(0, 25).map((note) => ({
+          label: `${new Date(note.createdAt).toLocaleDateString()} · ${(note.authorTag || note.authorId || 'unknown')}`.slice(0, 100),
+          value: note.id,
+          description: String(note.text || '').slice(0, 100)
+        })))
+    ));
+  }
+
+  if (isAdmin && hiddenNotes.length) {
+    rows.push(new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`admin_player_note_toggle:${userId}:${mode}:unhide`)
+        .setPlaceholder('Restore a hidden note')
+        .addOptions(hiddenNotes.slice(0, 25).map((note) => ({
+          label: `${new Date(note.createdAt).toLocaleDateString()} · ${(note.authorTag || note.authorId || 'unknown')}`.slice(0, 100),
+          value: note.id,
+          description: String(note.text || '').slice(0, 100)
+        })))
+    ));
+  }
+
+  return rows;
 }
 
 function createPlayerTeamSelectRow(config, userId, mode = 'player') {
@@ -483,7 +562,7 @@ function createAttendanceOnlyRow(userId) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`admin_player_view_attendance:${userId}:player`)
-      .setLabel('Attendance')
+      .setLabel('📈 Attendance')
       .setStyle(ButtonStyle.Success)
   );
 }
@@ -541,19 +620,34 @@ async function handleAdminPlayerAction(interaction, selectedAction, userId, mode
     return true;
   }
 
+  if (selectedAction === 'set_notes') {
+    const isAdminViewer = hasAdminAccess(interaction.member, latestConfig);
+    const visibleNotes = getProfileNotes(mergedProfile).filter((note) => !note.hidden);
+    await interaction.update({
+      content: [
+        `Notes for <@${userId}> (${mode} profile):`,
+        visibleNotes.length
+          ? visibleNotes.map((note, idx) => `${idx + 1}. [${new Date(note.createdAt).toISOString().slice(0, 10)}] ${note.authorTag || note.authorId || 'unknown'} — ${note.text}`).join('\n')
+          : '*No visible notes yet.*',
+        isAdminViewer ? '' : '_Hidden notes are admin-only._'
+      ].join('\n'),
+      embeds: [],
+      components: createPlayerNotesActionRows(userId, mode, isAdminViewer, mergedProfile)
+    });
+    return true;
+  }
+
   const modalTitles = {
     set_name: mode === 'coach' ? 'Set Coach Real Name' : 'Set Player Real Name',
     set_nickname: mode === 'coach' ? 'Set Coach Nickname' : 'Set Player Nickname',
     set_face: 'Set Player Face URL (.png, .webp, or .jpg)',
-    set_shirt: 'Set Player Shirt Number',
-    set_notes: 'Set Player Notes'
+    set_shirt: 'Set Player Shirt Number'
   };
   const fieldByAction = {
     set_name: { id: 'custom_name', label: 'Real name', value: mergedProfile.customName || '' },
     set_nickname: { id: 'nickname', label: 'Nickname', value: mergedProfile.nickName || '' },
     set_face: { id: 'face_image_url', label: 'Face image URL', value: mergedProfile.faceImageUrl || mergedProfile.facePngUrl || '' },
-    set_shirt: { id: 'shirt_number', label: 'Shirt number', value: mergedProfile.shirtNumber || '' },
-    set_notes: { id: 'notes', label: 'Profile notes', value: mergedProfile.notes || '' }
+    set_shirt: { id: 'shirt_number', label: 'Shirt number', value: mergedProfile.shirtNumber || '' }
   };
   const field = fieldByAction[selectedAction];
   if (!field) {
@@ -570,10 +664,10 @@ async function handleAdminPlayerAction(interaction, selectedAction, userId, mode
       new TextInputBuilder()
         .setCustomId(field.id)
         .setLabel(field.label)
-        .setStyle(selectedAction === 'set_notes' ? TextInputStyle.Paragraph : TextInputStyle.Short)
-        .setRequired(!['set_notes', 'set_face'].includes(selectedAction))
+        .setStyle(TextInputStyle.Short)
+        .setRequired(selectedAction !== 'set_face')
         .setValue(field.value)
-        .setMaxLength(selectedAction === 'set_notes' ? 300 : 200)
+        .setMaxLength(200)
     )
   );
 
@@ -592,7 +686,15 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
   const joined = profile.joinedDiscordAt || (member?.joinedAt ? member.joinedAt.toISOString().slice(0, 10) : 'unknown');
   const shirtNumber = profile.shirtNumber || 'not set';
   const faceImageUrl = profile.faceImageUrl || profile.facePngUrl || 'not set';
-  const notes = profile.notes || 'none';
+  const notes = getProfileNotes(profile);
+  const visibleNotes = notes.filter((note) => !note.hidden);
+  const hiddenCount = notes.length - visibleNotes.length;
+  const notesPreview = visibleNotes.length
+    ? visibleNotes
+      .slice(-5)
+      .map((note) => `  - ${new Date(note.createdAt).toISOString().slice(0, 10)} · ${note.authorTag || note.authorId || 'unknown'}: ${note.text}`)
+      .join('\n')
+    : '  - none';
 
   const managerLabel = mode === 'coach' ? 'Managing manager (coach profile)' : 'Managing player';
 
@@ -607,7 +709,8 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
     `• Teams Coaching: ${coachTeamLabels}`,
     `• Roles: ${roles}`,
     `• Joined Discord: ${joined}`,
-    `• Notes: ${notes}`
+    `• Notes: visible ${visibleNotes.length}${hiddenCount ? ` | hidden ${hiddenCount}` : ''}`,
+    notesPreview
   ].join('\n');
 }
 
@@ -676,18 +779,18 @@ function buildDetailedAttendanceMessage(userId, config, type = 'all') {
 
 function createAttendanceTypeRow(userId, mode = 'player') {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`admin_player_attendance_type:${userId}:${mode}:practice`).setLabel('Practices').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_player_attendance_type:${userId}:${mode}:match`).setLabel('Matches').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_player_attendance_type:${userId}:${mode}:other`).setLabel('Other').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_player_attendance_type:${userId}:${mode}:all`).setLabel('All').setStyle(ButtonStyle.Primary)
+    new ButtonBuilder().setCustomId(`admin_player_attendance_type:${userId}:${mode}:practice`).setLabel('🏃 Practices').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_player_attendance_type:${userId}:${mode}:match`).setLabel('⚽ Matches').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_player_attendance_type:${userId}:${mode}:other`).setLabel('📌 Other').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_player_attendance_type:${userId}:${mode}:all`).setLabel('📚 All').setStyle(ButtonStyle.Primary)
   );
 }
 
 function createAttendanceResultRows(userId, mode = 'player', type = 'all') {
   return [
     new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`admin_player_attendance_export:${userId}:${mode}:${type}`).setLabel('Export Attendance').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`admin_player_back_to_profile:${userId}:${mode}`).setLabel('Back to Player').setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId(`admin_player_attendance_export:${userId}:${mode}:${type}`).setLabel('📤 Export Attendance').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`admin_player_back_to_profile:${userId}:${mode}`).setLabel('⬅️ Back to Player').setStyle(ButtonStyle.Secondary)
     ),
     createAttendanceTypeRow(userId, mode)
   ];
@@ -809,24 +912,32 @@ module.exports = {
         await interaction.update({
           content: 'Admin panel:',
           embeds: [],
-          components: [createAdminQuickActionRow(), createAdminQuickActionExtraRow()]
+          components: withOptionalRow([createAdminQuickActionRow(), createAdminQuickActionExtraRow()])
         });
         return;
       }
       if (interaction.customId === 'admin_back_team_management') {
         const latestConfig = loadConfig();
         await interaction.update({
-          content: 'Team Management: configure teams or create a new one.',
+          content: 'Team Management: choose a team button, create a team, or go back.',
           embeds: [],
-          components: [createTeamManagementRow(), createTeamPickerRow(latestConfig, 'admin_team_config_select', 'Select a team to configure'), createTeamPickerButtonsRow()]
+          components: [...createTeamButtonsRows(latestConfig), createTeamManagementRow()]
+        });
+        return;
+      }
+      if (interaction.customId === 'admin_back_club_management') {
+        await interaction.update({
+          content: 'Club Management:',
+          embeds: [],
+          components: [createClubManagementRow(), createClubManagementRow2()]
         });
         return;
       }
       if (interaction.customId === 'admin_back_google_tools') {
         await interaction.update({
-          content: 'Google Tools:',
+          content: 'Google:',
           embeds: [],
-          components: [createGoogleToolsRow(), createAdminBackButtonRow()]
+          components: [createGoogleToolsRow()]
         });
         return;
       }
@@ -843,14 +954,14 @@ module.exports = {
         if (action === 'team_management') {
           const latestConfig = loadConfig();
           await interaction.update({
-            content: 'Team Management: configure teams or create a new one.',
+            content: 'Team Management: choose a team button, create a team, or go back.',
             embeds: [],
-            components: [createTeamManagementRow(), createTeamPickerRow(latestConfig, 'admin_team_config_select', 'Select a team to configure'), createAdminBackButtonRow()]
+            components: [...createTeamButtonsRows(latestConfig), createTeamManagementRow()]
           });
           return;
         }
-        if (action === 'google_tools') {
-          await interaction.update({ content: 'Google Tools:', embeds: [], components: [createGoogleToolsRow(), createAdminBackButtonRow()] });
+        if (action === 'club_management') {
+          await interaction.update({ content: 'Club Management:', embeds: [], components: [createClubManagementRow(), createClubManagementRow2()] });
           return;
         }
         if (action === 'player_management') {
@@ -861,27 +972,76 @@ module.exports = {
           await interaction.update({ content: 'Coach Management: only users with coach roles are shown here.', embeds: [], components: [createCoachManagementRow(loadConfig(), interaction.guild), createAdminBackButtonRow()] });
           return;
         }
-        if (action === 'config_view') {
-          await logAdminUiAction(interaction, 'admin-config', 'view');
-          await adminConfigCommand.handleView(interaction);
-          return;
-        }
         if (action === 'club_report') {
           await logAdminUiAction(interaction, 'admin', 'club-report');
           await adminCommand.handleClubReport(interaction);
           return;
         }
       }
-      if (interaction.customId.startsWith('admin_team_management:')) {
+      if (interaction.customId.startsWith('admin_club_action:')) {
         const action = interaction.customId.split(':')[1];
-        if (action === 'configure_team') {
+        if (action === 'google') {
+          await interaction.update({ content: 'Google:', embeds: [], components: [createGoogleToolsRow()] });
+          return;
+        }
+        if (action === 'set_admin_chat') {
+          const row = new ActionRowBuilder().addComponents(
+            new ChannelSelectMenuBuilder().setCustomId('admin_set_channel:channels.admin:global').setPlaceholder('Choose Admin Chat channel').setChannelTypes(ChannelType.GuildText).setMinValues(1).setMaxValues(1)
+          );
+          await interaction.update({ content: 'Select the Admin chat channel. Bot errors + interaction failures are posted there.', embeds: [], components: [row, createBackButtonRow('admin_back_club_management')] });
+          return;
+        }
+        if (action === 'set_bot_commands_chat') {
+          const row = new ActionRowBuilder().addComponents(
+            new ChannelSelectMenuBuilder().setCustomId('admin_set_channel:channels.botCommands:global').setPlaceholder('Choose Bot Commands channel').setChannelTypes(ChannelType.GuildText).setMinValues(1).setMaxValues(1)
+          );
+          await interaction.update({ content: 'Select the channel where /player and /coach commands must be used.', embeds: [], components: [row, createBackButtonRow('admin_back_club_management')] });
+          return;
+        }
+        if (action === 'event_type_rules') {
+          const rules = getEventTypeConfig(loadConfig());
           await interaction.update({
-            content: 'Select your team first. Then choose what to change.',
+            content: [
+              'Event type rules:',
+              `• Auto Detect: **${rules.autoDetect ? 'ON' : 'OFF'}**`,
+              `• Practice Exact Names: ${rules.practiceExactNames.join(', ') || 'none'}`,
+              `• Match Exact Names: ${rules.matchExactNames.join(', ') || 'none'}`,
+              `• Other Exact Names: ${rules.otherExactNames.join(', ') || 'none'}`
+            ].join('\n'),
             embeds: [],
-            components: [createTeamPickerRow(loadConfig(), 'admin_team_config_select', 'Select a team to configure'), createTeamPickerButtonsRow()]
+            components: [createEventTypeRulesRow(), createBackButtonRow('admin_back_club_management')]
           });
           return;
         }
+      }
+      if (interaction.customId.startsWith('admin_google_action:')) {
+        const action = interaction.customId.split(':')[1];
+        if (action === 'set_calendar_id') {
+          const modal = new ModalBuilder().setCustomId('admin_set_calendar_modal').setTitle('Set Google Calendar ID');
+          const calendarIdInput = new TextInputBuilder().setCustomId('calendar_id').setLabel('Google Calendar ID (email-like)').setStyle(TextInputStyle.Short).setRequired(true).setValue(config.bot.calendarId || '').setMaxLength(150);
+          modal.addComponents(new ActionRowBuilder().addComponents(calendarIdInput));
+          await interaction.showModal(modal);
+          return;
+        }
+        if (action === 'sync_google') {
+          await logAdminUiAction(interaction, 'admin-config', 'sync-google');
+          await handlePanelGoogleSync(interaction);
+          return;
+        }
+        if (action === 'open_google_sheet') {
+          const latestConfig = context.getConfig();
+          const sheetUrl = adminCommand.getSpreadsheetViewUrl(latestConfig);
+          await logAdminUiAction(interaction, 'admin', 'open-google-sheet');
+          await interaction.update({ content: sheetUrl ? `Open Google Sheet: ${sheetUrl}` : 'Google spreadsheet is not configured yet. Set it first in Club Management > Google.', embeds: [], components: [createGoogleToolsRow()] });
+          return;
+        }
+        if (action === 'view_google_events') {
+          await interaction.update({ content: 'Choose a team to view fixtures, or choose **All Teams**.', embeds: [], components: withOptionalRow([createEventScopePickerRow(config), createBackButtonRow('admin_back_google_tools')]) });
+          return;
+        }
+      }
+      if (interaction.customId.startsWith('admin_team_management:')) {
+        const action = interaction.customId.split(':')[1];
         if (action === 'new_team') {
           const modal = new ModalBuilder().setCustomId('admin_new_team_modal').setTitle('Create New Team');
           const keyInput = new TextInputBuilder().setCustomId('team_key').setLabel('Team key (letters/numbers, e.g. u18mens)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(30);
@@ -913,6 +1073,7 @@ module.exports = {
       if (interaction.customId.startsWith('admin_team_config_action:')) {
         const [, team, selectedAction] = interaction.customId.split(':');
         const latestConfig = loadConfig();
+        const teamLabel = getTeamMeta(latestConfig, team).label || team;
         if (selectedAction === 'id_settings') {
           await interaction.update({
             content: `${getTeamConfigSummary(latestConfig, interaction.guild, team)}\n\n**ID settings**`,
@@ -929,6 +1090,64 @@ module.exports = {
           });
           return;
         }
+        if (selectedAction === 'player_role' || selectedAction === 'coach_role') {
+          const label = selectedAction === 'player_role' ? `${teamLabel} Player Role` : `${teamLabel} Coach Role`;
+          const path = selectedAction === 'player_role' ? `roles.${team}.player` : `roles.${team}.coach`;
+          const row = new ActionRowBuilder().addComponents(
+            new RoleSelectMenuBuilder()
+              .setCustomId(`admin_set_role:${path}:${team}`)
+              .setPlaceholder(`Choose ${label}`)
+              .setMinValues(1)
+              .setMaxValues(1)
+          );
+          await interaction.update({ content: `Select the role to assign for **${label}**.`, embeds: [], components: [row, createBackButtonRow(`admin_back_team_config:${team}`)] });
+          return;
+        }
+        if (selectedAction === 'team_chat' || selectedAction === 'staff_room' || selectedAction === 'private_category') {
+          const isCategory = selectedAction === 'private_category';
+          const path = selectedAction === 'team_chat'
+            ? `channels.teamChats.${team}`
+            : selectedAction === 'staff_room'
+              ? `channels.staffRooms.${team}`
+              : `channels.privateChatCategories.${team}`;
+          const label = selectedAction === 'team_chat' ? `${teamLabel} Team Chat` : selectedAction === 'staff_room' ? `${teamLabel} Staff Room` : `${teamLabel} Absence Chat Category`;
+          const row = new ActionRowBuilder().addComponents(
+            new ChannelSelectMenuBuilder()
+              .setCustomId(`admin_set_channel:${path}:${team}`)
+              .setPlaceholder(`Choose ${label}`)
+              .setChannelTypes(isCategory ? ChannelType.GuildCategory : ChannelType.GuildText)
+              .setMinValues(1)
+              .setMaxValues(1)
+          );
+          await interaction.update({ content: `Select the ${isCategory ? 'category' : 'channel'} to assign for **${label}**.`, embeds: [], components: [row, createBackButtonRow(`admin_back_team_config:${team}`)] });
+          return;
+        }
+        if (selectedAction === 'team_emoji') {
+          const modal = new ModalBuilder()
+            .setCustomId(`admin_set_team_emoji_modal:${team}`)
+            .setTitle(`Set ${teamLabel} Emoji`);
+          const emojiInput = new TextInputBuilder().setCustomId('emoji').setLabel('Emoji, e.g. 🔵 or :blue_circle:').setStyle(TextInputStyle.Short).setRequired(true).setValue(getTeamMeta(latestConfig, team).emoji).setMaxLength(40);
+          modal.addComponents(new ActionRowBuilder().addComponents(emojiInput));
+          await interaction.showModal(modal);
+          return;
+        }
+        if (selectedAction === 'team_name') {
+          const modal = new ModalBuilder().setCustomId(`admin_set_team_name_modal:${team}`).setTitle(`Set ${teamLabel} Name`);
+          const nameInput = new TextInputBuilder().setCustomId('team_name').setLabel('Team display name').setStyle(TextInputStyle.Short).setRequired(true).setValue(teamLabel).setMaxLength(80);
+          modal.addComponents(new ActionRowBuilder().addComponents(nameInput));
+          await interaction.showModal(modal);
+          return;
+        }
+      }
+      if (interaction.customId.startsWith('admin_open_team:')) {
+        const team = interaction.customId.split(':')[1];
+        const latestConfig = context.getConfig();
+        await interaction.update({
+          content: getTeamConfigSummary(latestConfig, interaction.guild, team),
+          embeds: [],
+          components: [createTeamConfigActionRow(latestConfig, team), createBackButtonRow('admin_back_team_management')]
+        });
+        return;
       }
       if (interaction.customId === 'admin_create_team_btn') {
         const modal = new ModalBuilder()
@@ -972,6 +1191,19 @@ module.exports = {
         }
         const [, selectedAction, userId, mode = 'player'] = interaction.customId.split(':');
         await handleAdminPlayerAction(interaction, selectedAction, userId, mode);
+        return;
+      }
+      if (interaction.customId.startsWith('admin_player_note_add:')) {
+        if (!hasAdminAccess(interaction.member, config) && !Object.values(config.roles || {}).some((r) => r?.coach && interaction.member?.roles?.cache?.has(r.coach))) {
+          await denyAdminAccess();
+          return;
+        }
+        const [, userId, mode = 'player'] = interaction.customId.split(':');
+        const modal = new ModalBuilder().setCustomId(`admin_player_note_modal:add:${userId}:${mode}`).setTitle('Add Profile Note');
+        modal.addComponents(new ActionRowBuilder().addComponents(
+          new TextInputBuilder().setCustomId('note_text').setLabel('Note').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(500)
+        ));
+        await interaction.showModal(modal);
         return;
       }
       if (interaction.customId.startsWith('admin_player_view_attendance:')) {
@@ -1295,215 +1527,6 @@ module.exports = {
         return;
       }
 
-      if (interaction.customId === 'admin_quick_action') {
-        const action = interaction.values[0];
-        if (action === 'team_management') {
-          const latestConfig = loadConfig();
-          await interaction.update({
-            content: 'Select your team first. Then choose what to change. You can also create a new team here.',
-            embeds: [],
-            components: [createTeamPickerRow(latestConfig, 'admin_team_config_select', 'Select a team to configure'), createTeamPickerButtonsRow()]
-          });
-          return;
-        }
-
-        if (action === 'google_tools') {
-          await interaction.update({
-            content: 'Google Tools:',
-            embeds: [],
-            components: [createGoogleToolsRow(), createAdminBackButtonRow()]
-          });
-          return;
-        }
-
-        if (action === 'player_management') {
-          await interaction.update({
-            content: 'Player Management: select a player to edit profile details.',
-            embeds: [],
-            components: [createPlayerManagementRow('player'), createAdminBackButtonRow()]
-          });
-          return;
-        }
-
-        if (action === 'coach_management') {
-          await interaction.update({
-            content: 'Coach Management: only users with coach roles are shown here.',
-            embeds: [],
-            components: [createCoachManagementRow(loadConfig(), interaction.guild), createAdminBackButtonRow()]
-          });
-          return;
-        }
-
-        if (action === 'config_view') {
-          await logAdminUiAction(interaction, 'admin-config', 'view');
-          await adminConfigCommand.handleView(interaction);
-          return;
-        }
-
-        if (action === 'club_report') {
-          await logAdminUiAction(interaction, 'admin', 'club-report');
-          await adminCommand.handleClubReport(interaction);
-          return;
-        }
-
-        await interaction.update({
-          content: 'Unknown admin action.',
-          embeds: [],
-          components: [createAdminQuickActionRow(), createAdminQuickActionExtraRow()]
-        });
-        return;
-      }
-
-      if (interaction.customId === 'admin_team_management_action' || interaction.customId === 'admin_google_tools_action') {
-        const action = interaction.values[0];
-
-        if (action === 'configure_team') {
-          await interaction.update({
-            content: 'Select your team first. Then choose what to change. You can also create a new team here.',
-            embeds: [],
-            components: [createTeamPickerRow(config, 'admin_team_config_select', 'Select a team to configure'), createTeamPickerButtonsRow()]
-          });
-          return;
-        }
-
-        if (action === 'set_calendar_id') {
-          const modal = new ModalBuilder()
-            .setCustomId('admin_set_calendar_modal')
-            .setTitle('Set Google Calendar ID');
-
-          const calendarIdInput = new TextInputBuilder()
-            .setCustomId('calendar_id')
-            .setLabel('Google Calendar ID (email-like)')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setValue(config.bot.calendarId || '')
-            .setMaxLength(150);
-
-          modal.addComponents(new ActionRowBuilder().addComponents(calendarIdInput));
-          await interaction.showModal(modal);
-          return;
-        }
-
-        if (action === 'new_team') {
-          const modal = new ModalBuilder()
-            .setCustomId('admin_new_team_modal')
-            .setTitle('Create New Team');
-
-          const keyInput = new TextInputBuilder()
-            .setCustomId('team_key')
-            .setLabel('Team key (letters/numbers, e.g. u18mens)')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setMaxLength(30);
-
-          const labelInput = new TextInputBuilder()
-            .setCustomId('team_label')
-            .setLabel('Display name (e.g. U18 Mens)')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(true)
-            .setMaxLength(80);
-
-          const emojiInput = new TextInputBuilder()
-            .setCustomId('team_emoji')
-            .setLabel('Emoji (optional, default 🔹)')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(false)
-            .setMaxLength(20);
-
-          modal.addComponents(
-            new ActionRowBuilder().addComponents(keyInput),
-            new ActionRowBuilder().addComponents(labelInput),
-            new ActionRowBuilder().addComponents(emojiInput)
-          );
-          await interaction.showModal(modal);
-          return;
-        }
-        if (action === 'set_admin_chat') {
-          const row = new ActionRowBuilder().addComponents(
-            new ChannelSelectMenuBuilder()
-              .setCustomId('admin_set_channel:channels.admin:global')
-              .setPlaceholder('Choose Admin Chat channel')
-              .setChannelTypes(ChannelType.GuildText)
-              .setMinValues(1)
-              .setMaxValues(1)
-          );
-          await interaction.update({
-            content: 'Select the Admin chat channel. Bot errors + interaction failures are posted there.',
-            embeds: [],
-            components: [row, createBackButtonRow('admin_back_google_tools')]
-          });
-          return;
-        }
-        if (action === 'set_bot_commands_chat') {
-          const row = new ActionRowBuilder().addComponents(
-            new ChannelSelectMenuBuilder()
-              .setCustomId('admin_set_channel:channels.botCommands:global')
-              .setPlaceholder('Choose Bot Commands channel')
-              .setChannelTypes(ChannelType.GuildText)
-              .setMinValues(1)
-              .setMaxValues(1)
-          );
-          await interaction.update({
-            content: 'Select the channel where /player and /coach commands must be used.',
-            embeds: [],
-            components: [row, createBackButtonRow('admin_back_google_tools')]
-          });
-          return;
-        }
-        if (action === 'event_type_rules') {
-          const rules = getEventTypeConfig(loadConfig());
-          await interaction.update({
-            content: [
-              'Event type rules:',
-              `• Auto Detect: **${rules.autoDetect ? 'ON' : 'OFF'}**`,
-              `• Practice Exact Names: ${rules.practiceExactNames.join(', ') || 'none'}`,
-              `• Match Exact Names: ${rules.matchExactNames.join(', ') || 'none'}`,
-              `• Other Exact Names: ${rules.otherExactNames.join(', ') || 'none'}`
-            ].join('\n'),
-            embeds: [],
-            components: [createEventTypeRulesRow(), createBackButtonRow('admin_back_google_tools')]
-          });
-          return;
-        }
-
-        if (action === 'sync_google') {
-          await logAdminUiAction(interaction, 'admin-config', 'sync-google');
-          await handlePanelGoogleSync(interaction);
-          return;
-        }
-
-        if (action === 'open_google_sheet') {
-          const latestConfig = context.getConfig();
-          const sheetUrl = adminCommand.getSpreadsheetViewUrl(latestConfig);
-          await logAdminUiAction(interaction, 'admin', 'open-google-sheet');
-
-          await interaction.update({
-            content: sheetUrl
-              ? `Open Google Sheet: ${sheetUrl}`
-              : 'Google spreadsheet is not configured yet. Set it first via /admin-config set.',
-            embeds: [],
-            components: [createGoogleToolsRow(), createAdminBackButtonRow()]
-          });
-          return;
-        }
-
-        if (action === 'view_google_events') {
-          await interaction.update({
-            content: 'Choose a team to view fixtures, or choose **All Teams**.',
-            embeds: [],
-            components: [createEventScopePickerRow(config), createAdminQuickActionRow(), createAdminQuickActionExtraRow(), createAdminBackButtonRow()]
-          });
-          return;
-        }
-
-        await interaction.update({
-          content: 'Unknown admin action.',
-          embeds: [],
-          components: [interaction.customId === 'admin_google_tools_action' ? createGoogleToolsRow() : createTeamManagementRow(), createAdminBackButtonRow()]
-        });
-        return;
-      }
-
       if (interaction.customId === 'admin_event_type_rules_action') {
         const selected = interaction.values[0];
         const latestConfig = loadConfig();
@@ -1514,7 +1537,7 @@ module.exports = {
           await interaction.update({
             content: `✅ Auto detect is now **${updated.autoDetect ? 'ON' : 'OFF'}**.`,
             embeds: [],
-            components: [createEventTypeRulesRow(), createBackButtonRow('admin_back_google_tools')]
+            components: [createEventTypeRulesRow(), createBackButtonRow('admin_back_club_management')]
           });
           return;
         }
@@ -1558,7 +1581,7 @@ module.exports = {
             await interaction.update({
               content: 'No upcoming events are available for manual type assignment.',
               embeds: [],
-              components: [createEventTypeRulesRow(), createBackButtonRow('admin_back_google_tools')]
+              components: [createEventTypeRulesRow(), createBackButtonRow('admin_back_club_management')]
             });
             return;
           }
@@ -1573,7 +1596,7 @@ module.exports = {
                   .setPlaceholder('Pick event')
                   .addOptions(options)
               ),
-              createBackButtonRow('admin_back_google_tools')
+              createBackButtonRow('admin_back_club_management')
             ]
           });
           return;
@@ -1596,7 +1619,7 @@ module.exports = {
                   { label: 'Other', value: 'other' }
                 ])
             ),
-            createBackButtonRow('admin_back_google_tools')
+            createBackButtonRow('admin_back_club_management')
           ]
         });
         return;
@@ -1617,7 +1640,7 @@ module.exports = {
         await interaction.update({
           content: `✅ Event type set to **${eventTypeLabel(eventType)}** for **${db.events[eventId].title}**.`,
           embeds: [],
-          components: [createEventTypeRulesRow(), createBackButtonRow('admin_back_google_tools')]
+          components: [createEventTypeRulesRow(), createBackButtonRow('admin_back_club_management')]
         });
         return;
       }
@@ -1683,7 +1706,7 @@ module.exports = {
           await interaction.editReply({
             content: `${renderProgressMessage(100, 'Fixtures loaded.')}\nReturning to admin panel.`,
             embeds: [embeds[0]],
-            components: [createAdminQuickActionRow(), createAdminQuickActionExtraRow()]
+            components: withOptionalRow([createAdminQuickActionRow(), createAdminQuickActionExtraRow()])
           });
 
           for (let i = 1; i < embeds.length; i += 1) {
@@ -1703,8 +1726,7 @@ module.exports = {
       }
 
       if (interaction.customId.startsWith('admin_team_config_action:')) {
-        const team = interaction.customId.split(':')[1];
-        const selectedAction = interaction.values[0];
+        const [, team, selectedAction] = interaction.customId.split(':');
         const teamLabel = getTeamMeta(config, team).label || team;
 
         if (selectedAction === 'player_role' || selectedAction === 'coach_role') {
@@ -2219,6 +2241,34 @@ module.exports = {
       return;
     }
 
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('admin_player_note_toggle:')) {
+      const [, userId, mode = 'player', operation = 'hide'] = interaction.customId.split(':');
+      const canAdmin = hasAdminAccess(interaction.member, config);
+      if (!canAdmin) {
+        await interaction.reply({ content: 'Only admins can hide or restore notes.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const profile = getPlayerProfile(userId) || {};
+      const selectedNoteId = interaction.values[0];
+      const updatedNotes = getProfileNotes(profile).map((note) => note.id === selectedNoteId
+        ? { ...note, hidden: operation === 'hide', updatedAt: new Date().toISOString(), updatedBy: interaction.user.id, updatedByTag: interaction.user.tag }
+        : note);
+      const updatedProfile = upsertPlayerProfile(userId, { ...profile, notesLog: updatedNotes });
+      await triggerGoogleSync(context);
+      const visibleNotes = getProfileNotes(updatedProfile).filter((note) => !note.hidden);
+      await interaction.update({
+        content: [
+          `Notes for <@${userId}> (${mode} profile):`,
+          visibleNotes.length
+            ? visibleNotes.map((note, idx) => `${idx + 1}. [${new Date(note.createdAt).toISOString().slice(0, 10)}] ${note.authorTag || note.authorId || 'unknown'} — ${note.text}`).join('\n')
+            : '*No visible notes yet.*'
+        ].join('\n'),
+        embeds: [],
+        components: createPlayerNotesActionRows(userId, mode, true, updatedProfile)
+      });
+      return;
+    }
+
     if (interaction.isChannelSelectMenu() && interaction.customId.startsWith('admin_set_channel:')) {
       if (!hasAdminAccess(interaction.member, config)) {
         await denyAdminAccess();
@@ -2239,7 +2289,9 @@ module.exports = {
         await interaction.editReply({
           content: `✅ Updated **${configPath}** to <#${channelId}>. ⚠️ Sync warning: ${error.message}`,
           embeds: [],
-          components: [team === 'global' ? createGoogleToolsRow() : createTeamConfigActionRow(loadConfig(), team), createBackButtonRow(team === 'global' ? 'admin_back_google_tools' : 'admin_back_team_management')]
+          components: team === 'global'
+            ? [createClubManagementRow(), createClubManagementRow2()]
+            : [createTeamConfigActionRow(loadConfig(), team), createBackButtonRow('admin_back_team_management')]
         });
         return;
       }
@@ -2247,7 +2299,9 @@ module.exports = {
       await interaction.editReply({
         content: `${renderProgressMessage(100, `Updated ${configPath} to <#${channelId}>.`)}${team === 'global' ? '' : `\n\n${getTeamConfigSummary(loadConfig(), interaction.guild, team)}`}`,
         embeds: [],
-        components: [team === 'global' ? createGoogleToolsRow() : createTeamConfigActionRow(loadConfig(), team), createBackButtonRow(team === 'global' ? 'admin_back_google_tools' : 'admin_back_team_management')]
+        components: team === 'global'
+          ? [createClubManagementRow(), createClubManagementRow2()]
+          : [createTeamConfigActionRow(loadConfig(), team), createBackButtonRow('admin_back_team_management')]
       });
       return;
     }
@@ -2427,6 +2481,44 @@ module.exports = {
       return;
     }
 
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('admin_player_note_modal:add:')) {
+      const [, , userId, mode = 'player'] = interaction.customId.split(':');
+      const noteText = interaction.fields.getTextInputValue('note_text').trim();
+      if (!noteText) {
+        await interaction.reply({ content: 'Note cannot be empty.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      await interaction.deferUpdate();
+      const existing = getPlayerProfile(userId) || {};
+      const notes = getProfileNotes(existing);
+      const note = {
+        id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        text: noteText,
+        hidden: false,
+        profileType: mode,
+        createdAt: new Date().toISOString(),
+        authorId: interaction.user.id,
+        authorTag: interaction.user.tag
+      };
+      const updatedProfile = upsertPlayerProfile(userId, { ...existing, notesLog: [...notes, note] });
+      await triggerGoogleSync(context);
+      const canAdmin = hasAdminAccess(interaction.member, config);
+      const visibleNotes = getProfileNotes(updatedProfile).filter((entry) => !entry.hidden);
+      await interaction.editReply({
+        content: [
+          `Notes for <@${userId}> (${mode} profile):`,
+          visibleNotes.length
+            ? visibleNotes.map((entry, idx) => `${idx + 1}. [${new Date(entry.createdAt).toISOString().slice(0, 10)}] ${entry.authorTag || entry.authorId || 'unknown'} — ${entry.text}`).join('\n')
+            : '*No visible notes yet.*',
+          canAdmin ? '' : '_Hidden notes are admin-only._'
+        ].join('\n'),
+        embeds: [],
+        components: createPlayerNotesActionRows(userId, mode, canAdmin, updatedProfile)
+      });
+      return;
+    }
+
     if (interaction.isModalSubmit() && interaction.customId.startsWith('admin_player_profile_modal:')) {
       if (!hasAdminAccess(interaction.member, config)) {
         await denyAdminAccess();
@@ -2434,14 +2526,19 @@ module.exports = {
       }
       const [, action, userId, mode = 'player'] = interaction.customId.split(':');
       const updates = {};
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await interaction.deferUpdate();
+      await interaction.editReply({
+        content: renderProgressMessage(35, 'Updating player profile...'),
+        embeds: [],
+        components: []
+      });
 
       if (action === 'set_name') updates.customName = interaction.fields.getTextInputValue('custom_name').trim();
       if (action === 'set_nickname') updates.nickName = interaction.fields.getTextInputValue('nickname').trim();
       if (action === 'set_face') {
         const faceImageUrl = interaction.fields.getTextInputValue('face_image_url').trim();
         if (faceImageUrl && !/^https?:\/\/\S+\.(png|webp|jpe?g)(?:\?\S*)?$/i.test(faceImageUrl)) {
-          await interaction.editReply({ content: 'Face URL must be a direct image link ending in .png, .webp, .jpg, or .jpeg.' });
+          await interaction.editReply({ content: 'Face URL must be a direct image link ending in .png, .webp, .jpg, or .jpeg.', components: [createPlayerProfileActionRow(userId, mode), createPlayerProfileActionRow2(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')] });
           return;
         }
         updates.faceImageUrl = faceImageUrl;

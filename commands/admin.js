@@ -20,18 +20,16 @@ function getSpreadsheetViewUrl(config = {}) {
 
 function createAdminPanelActionRow() {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('admin_action:team_management').setLabel('Team Management').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('admin_action:player_management').setLabel('Player Management').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('admin_action:coach_management').setLabel('Coach Management').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('admin_action:google_tools').setLabel('Google Tools').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('admin_action:club_report').setLabel('Club Report').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId('admin_action:team_management').setLabel('🛠️ Team Management').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('admin_action:player_management').setLabel('👕 Player Management').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_action:coach_management').setLabel('🧢 Coach Management').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_action:club_management').setLabel('🏟️ Club Management').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_action:club_report').setLabel('📊 Club Report').setStyle(ButtonStyle.Secondary)
   );
 }
 
 function createAdminPanelSecondaryRow() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('admin_action:config_view').setLabel('Config View').setStyle(ButtonStyle.Secondary)
-  );
+  return null;
 }
 
 function countPlayerAttendanceForTeam(guild, team, config, db) {
@@ -165,14 +163,19 @@ module.exports = {
 
     const teamLabels = Object.entries(config.teams || {}).map(([team, meta]) => `${meta.emoji || '🔹'} ${meta.label || team}`).join(' | ');
     const view = new EmbedBuilder()
-      .setTitle('Admin UI')
+      .setTitle('Firelands Bot Admin UI')
       .setDescription([
         'Use this panel to run admin actions directly (no copy/paste commands needed).',
-        'Team and Google actions are grouped into dedicated menus.',
+        '• Team Management: Configure each team, IDs, fixtures, names and emojis.',
+        '• Player Management: Open and edit player profiles and attendance.',
+        '• Coach Management: Open and edit coach profiles and permissions.',
+        '• Club Management: Google sync, calendar, admin chat and command channel setup.',
+        '• Club Report: Team-by-team attendance summary.',
         '',
         `Current labels: ${teamLabels || 'No teams configured'}`
       ].join('\n'));
 
-    await interaction.reply({ embeds: [view], components: [createAdminPanelActionRow(), createAdminPanelSecondaryRow()], flags: MessageFlags.Ephemeral });
+    const rows = [createAdminPanelActionRow()].filter(Boolean);
+    await interaction.reply({ embeds: [view], components: rows, flags: MessageFlags.Ephemeral });
   }
 };
