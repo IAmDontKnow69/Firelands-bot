@@ -2,7 +2,8 @@ const {
   SlashCommandBuilder,
   EmbedBuilder,
   ActionRowBuilder,
-  StringSelectMenuBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   MessageFlags
 } = require('discord.js');
 const { loadDb } = require('../utils/database');
@@ -19,17 +20,17 @@ function getSpreadsheetViewUrl(config = {}) {
 
 function createAdminPanelActionRow() {
   return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId('admin_quick_action')
-      .setPlaceholder('Pick an action')
-      .addOptions([
-        { label: 'Team Management', value: 'team_management', description: 'Select team, view settings, update roles/chats/emoji, create teams' },
-        { label: 'Player Management', value: 'player_management', description: 'Manage player profiles, names, shirt numbers, and roles' },
-        { label: 'Coach Management', value: 'coach_management', description: 'Manage coach profiles, names, avatars, and teams' },
-        { label: 'Google Tools', value: 'google_tools', description: 'Google Sheets + Calendar actions' },
-        { label: 'Club Report', value: 'club_report', description: 'Run admin club attendance report' },
-        { label: 'Config View', value: 'config_view', description: 'Run admin-config view from this panel' }
-      ])
+    new ButtonBuilder().setCustomId('admin_action:team_management').setLabel('Team Management').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('admin_action:player_management').setLabel('Player Management').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_action:coach_management').setLabel('Coach Management').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_action:google_tools').setLabel('Google Tools').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_action:club_report').setLabel('Club Report').setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function createAdminPanelSecondaryRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('admin_action:config_view').setLabel('Config View').setStyle(ButtonStyle.Secondary)
   );
 }
 
@@ -133,6 +134,7 @@ async function handleSyncGoogle(interaction, spreadsheetInput = '') {
 
 module.exports = {
   createAdminPanelActionRow,
+  createAdminPanelSecondaryRow,
   getSpreadsheetViewUrl,
   handleSetEmoji,
   handleClubReport,
@@ -171,6 +173,6 @@ module.exports = {
         `Current labels: ${teamLabels || 'No teams configured'}`
       ].join('\n'));
 
-    await interaction.reply({ embeds: [view], components: [createAdminPanelActionRow()], flags: MessageFlags.Ephemeral });
+    await interaction.reply({ embeds: [view], components: [createAdminPanelActionRow(), createAdminPanelSecondaryRow()], flags: MessageFlags.Ephemeral });
   }
 };

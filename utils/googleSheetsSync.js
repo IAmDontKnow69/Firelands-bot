@@ -62,7 +62,7 @@ function expandRangeForValues(range = '', values = []) {
   const maxColumns = Math.max(0, ...values.map((row) => (Array.isArray(row) ? row.length : 0)));
   if (!maxColumns) return range;
 
-  const match = String(range).match(/^(?<sheet>[^!]+)!(?<startCol>[A-Z]+)(?<startRow>\d+):(?<endCol>[A-Z]+)(?<endRow>\d+)$/i);
+  const match = String(range).match(/^(?<sheet>[^!]+)!(?<startCol>[A-Z]+)(?<startRow>\d+):(?<endCol>[A-Z]+)(?<endRow>\d+)?$/i);
   if (!match?.groups) return range;
 
   const { sheet, startCol, startRow, endCol, endRow } = match.groups;
@@ -301,18 +301,52 @@ function isPlaceholderConfigValue(key = '', value = '') {
   return false;
 }
 
+async function buildMergedConfigRows(sheets, spreadsheetId, config = {}, range = 'Config!A2:C') {
+  const incomingRows = flattenConfig(config);
+  const existingResponse = await sheets.spreadsheets.values.get({ spreadsheetId, range }).catch(() => ({ data: { values: [] } }));
+  const existingRows = existingResponse.data.values || [];
+  const existingMap = new Map(existingRows.map((row) => [row[0], row]));
+  const seenKeys = new Set();
+
+  const mergedRows = incomingRows.map(([key, value, updatedAt]) => {
+    seenKeys.add(key);
+    if (isPlaceholderConfigValue(key, value) && existingMap.has(key)) {
+      return [key, existingMap.get(key)?.[1] || '', updatedAt];
+    }
+    return [key, value, updatedAt];
+  });
+
+  for (const row of existingRows) {
+    const key = row[0];
+    if (!key || seenKeys.has(key)) continue;
+    mergedRows.push([key, row[1] || '', row[2] || toIso()]);
+  }
+
+  return mergedRows;
+}
+
 async function buildMergedConfigIdRows(sheets, spreadsheetId, config = {}, range = 'Config IDs!A2:C') {
   const incomingRows = buildConfigIdRows(config);
   const existingResponse = await sheets.spreadsheets.values.get({ spreadsheetId, range }).catch(() => ({ data: { values: [] } }));
   const existingRows = existingResponse.data.values || [];
   const existingMap = new Map(existingRows.map((row) => [row[0], row[1] || '']));
+  const seenKeys = new Set();
 
-  return incomingRows.map(([key, value, updatedAt]) => {
+  const mergedRows = incomingRows.map(([key, value, updatedAt]) => {
+    seenKeys.add(key);
     if (isPlaceholderConfigValue(key, value) && existingMap.has(key)) {
       return [key, existingMap.get(key), updatedAt];
     }
     return [key, value, updatedAt];
   });
+
+  for (const row of existingRows) {
+    const key = row[0];
+    if (!key || seenKeys.has(key)) continue;
+    mergedRows.push([key, row[1] || '', row[2] || toIso()]);
+  }
+
+  return mergedRows;
 }
 
 async function writeRange(sheets, spreadsheetId, range, values, options = {}) {
@@ -476,8 +510,8 @@ async function syncConfigOnlyToSheet(config = {}) {
     { range: configIdsRange, headers: ['key', 'value', 'updatedAt'] }
   ]);
 
-  await writeRange(sheets, spreadsheetId, configRange, flattenConfig(config), { wipe: true });
-  await writeRange(sheets, spreadsheetId, configIdsRange, await buildMergedConfigIdRows(sheets, spreadsheetId, config, configIdsRange), { wipe: true });
+  await writeRange(sheets, spreadsheetId, configRange, await buildMergedConfigRows(sheets, spreadsheetId, config, configRange));
+  await writeRange(sheets, spreadsheetId, configIdsRange, await buildMergedConfigIdRows(sheets, spreadsheetId, config, configIdsRange));
 
   return { ok: true, spreadsheetId };
 }
@@ -496,6 +530,7 @@ module.exports = {
   buildAbsenceRows,
   flattenConfig,
   buildConfigIdRows,
+  buildMergedConfigRows,
   ensureSheetLayout,
   syncAllToSheet,
   syncConfigOnlyToSheet
