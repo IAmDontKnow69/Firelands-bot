@@ -26,7 +26,7 @@ const {
   getPlayerProfile,
   getPlayerDisplayName
 } = require('../utils/database');
-const { loadConfig, updateConfig } = require('../utils/config');
+const { loadConfig, updateConfig, restoreConfigFromBackup, resetConfigFresh } = require('../utils/config');
 const { getTeamSetupProgress } = require('../utils/teamSetup');
 const { fetchCalendarEvents, titleMatchesPhrase } = require('../utils/googleCalendar');
 const { syncAllToSheet, syncConfigOnlyToSheet, appendCommandLogRow } = require('../utils/googleSheetsSync');
@@ -114,6 +114,8 @@ function createGoogleToolsRow2() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('admin_google_action:view_event_locations').setLabel('📍 Event Addresses').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('admin_google_action:set_location_nickname').setLabel('🏷️ Set Address Nickname').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_google_action:sync_backup').setLabel('🧰 Sync Backup').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_google_action:fresh_config').setLabel('🧼 Fresh Config').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId('admin_back_club_management').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
   );
 }
@@ -453,6 +455,44 @@ function createAbsenceLogRow(ticketChannelId) {
       .setLabel('📜 View Absence Log')
       .setStyle(ButtonStyle.Secondary)
   );
+}
+
+function createAbsenceNotificationRow(ticketChannelId, userId, mode = 'coach', closed = false) {
+  const components = [];
+  if (!closed) {
+    components.push(
+      new ButtonBuilder()
+        .setCustomId(`absence_open_profile:${mode}:${userId}`)
+        .setLabel(mode === 'admin' ? 'Open in Admin Panel' : 'Open in Coach View')
+        .setStyle(ButtonStyle.Primary)
+    );
+  }
+  components.push(
+    new ButtonBuilder()
+      .setCustomId(`absence_ticket_log:${ticketChannelId}`)
+      .setLabel('📜 Absence Log')
+      .setStyle(ButtonStyle.Secondary)
+  );
+  return new ActionRowBuilder().addComponents(...components);
+}
+
+function formatAbsenceNotification(ticket = {}, event = {}, status = 'open') {
+  const playerName = ticket.playerName || `<@${ticket.playerId}>`;
+  const eventLabel = event?.title || ticket.eventId || 'Unknown event';
+  const dateLabel = event?.date ? getCompactDateLabel(event.date) : 'unknown date';
+  if (status === 'closed') {
+    return [
+      `✅ Absence Ticket Closed`,
+      `👤 ${playerName}`,
+      `📅 ${dateLabel} — ${eventLabel}`
+    ].join('\n');
+  }
+  return [
+    `🚨 New Absence Ticket Open`,
+    `👤 ${playerName}`,
+    `📅 ${dateLabel} — ${eventLabel}`,
+    `Status: OPEN`
+  ].join('\n');
 }
 
 function sanitizeChannelName(name) {
@@ -1002,13 +1042,27 @@ function createAbsenceTicketDecisionRow() {
 
 async function closeAbsenceTicketChannel(channel, reason = 'Absence ticket resolved') {
   if (!channel) return;
+  const db = loadDb();
+  const ticket = db.absenceTickets?.[channel.id];
+  const event = ticket ? db.events?.[ticket.eventId] : null;
   try {
     if (channel.isTextBased()) {
       const fetched = await channel.messages.fetch({ limit: 100 }).catch(() => null);
       if (fetched) {
         const chatLog = Array.from(fetched.values())
           .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
-          .map((msg) => `[${new Date(msg.createdTimestamp).toISOString()}] ${msg.author?.tag || 'unknown'}: ${msg.content || '(no text)'}`);
+          .map((msg) => {
+            const iso = new Date(msg.createdTimestamp).toISOString();
+            const date = new Date(msg.createdTimestamp);
+            return {
+              ts: iso,
+              day: date.toISOString().slice(0, 10),
+              time: date.toISOString().slice(11, 16),
+              userId: msg.author?.id || '',
+              name: getPlayerDisplayName(msg.author?.id || '', loadConfig()) || msg.member?.displayName || msg.author?.username || 'unknown',
+              message: msg.content || '(no text)'
+            };
+          });
         if (chatLog.length) {
           setAbsenceTicket(channel.id, { chatLog });
         }
@@ -1016,6 +1070,21 @@ async function closeAbsenceTicketChannel(channel, reason = 'Absence ticket resol
     }
   } catch (error) {
     await Promise.resolve();
+  }
+
+  if (ticket) {
+    const notices = [ticket.staffNotification, ticket.adminNotification].filter(Boolean);
+    for (const notice of notices) {
+      const noticeChannel = await channel.guild.channels.fetch(notice.channelId).catch(() => null);
+      if (!noticeChannel?.isTextBased()) continue;
+      const message = await noticeChannel.messages.fetch(notice.messageId).catch(() => null);
+      if (!message) continue;
+      const mode = notice.mode === 'admin' ? 'admin' : 'coach';
+      await message.edit({
+        content: formatAbsenceNotification(ticket, event, 'closed'),
+        components: [createAbsenceNotificationRow(channel.id, ticket.playerId, mode, true)]
+      }).catch(() => null);
+    }
   }
 
   if (channel.deletable) {
@@ -1315,6 +1384,49 @@ module.exports = {
           });
           return;
         }
+        if (action === 'sync_backup') {
+          const latestConfig = loadConfig();
+          const backups = Array.isArray(latestConfig._configBackups) ? latestConfig._configBackups.slice(0, 5) : [];
+          if (!backups.length) {
+            await interaction.update({
+              content: 'No config backups are available yet. Make at least one config change first.',
+              embeds: [],
+              components: [createGoogleToolsRow(), createGoogleToolsRow2()]
+            });
+            return;
+          }
+
+          const row = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId('admin_google_restore_backup')
+              .setPlaceholder('Choose config backup to restore')
+              .setMinValues(1)
+              .setMaxValues(1)
+              .addOptions(backups.map((backup, index) => ({
+                label: `${new Date(backup.timestamp || Date.now()).toLocaleString()} • ${backup.reason || 'update'}`.slice(0, 100),
+                value: String(index),
+                description: `Path: ${backup.changedPath || 'n/a'}`.slice(0, 100)
+              })))
+          );
+
+          await interaction.update({
+            content: 'Select a backup snapshot to restore into active config.',
+            embeds: [],
+            components: [row, createBackButtonRow('admin_back_google_tools')]
+          });
+          return;
+        }
+        if (action === 'fresh_config') {
+          const fresh = resetConfigFresh();
+          await syncConfigSnapshotIfEnabled().catch(() => null);
+          await interaction.update({
+            content: '🧼 Config reset to fresh (blank) values.',
+            embeds: [],
+            components: [createGoogleToolsRow(), createGoogleToolsRow2()]
+          });
+          context.setConfig?.(fresh);
+          return;
+        }
       }
       if (interaction.customId.startsWith('admin_team_management:')) {
         const action = interaction.customId.split(':')[1];
@@ -1431,6 +1543,145 @@ module.exports = {
           const nameInput = new TextInputBuilder().setCustomId('team_name').setLabel('Team display name').setStyle(TextInputStyle.Short).setRequired(true).setValue(teamLabel).setMaxLength(80);
           modal.addComponents(new ActionRowBuilder().addComponents(nameInput));
           await interaction.showModal(modal);
+          return;
+        }
+        if (selectedAction === 'captain_role') {
+          const row = new ActionRowBuilder().addComponents(
+            new RoleSelectMenuBuilder()
+              .setCustomId(`admin_set_role:teams.${team}.captainRoleId:${team}`)
+              .setPlaceholder(`Choose ${teamLabel} Captain Role`)
+              .setMinValues(1)
+              .setMaxValues(1)
+          );
+          await interaction.update({
+            content: `Select the role to assign for **${teamLabel} Captain Role**.`,
+            embeds: [],
+            components: [row, createBackButtonRow(`admin_back_team_config:${team}`)]
+          });
+          return;
+        }
+        if (selectedAction === 'event_name_phrases') {
+          const modal = new ModalBuilder()
+            .setCustomId(`admin_set_event_phrases_modal:${team}`)
+            .setTitle(`Set ${teamLabel} Event Phrases`);
+          const phrasesInput = new TextInputBuilder()
+            .setCustomId('phrases')
+            .setLabel('Comma-separated EXACT phrases')
+            .setStyle(TextInputStyle.Paragraph)
+            .setRequired(true)
+            .setValue((latestConfig.teams?.[team]?.eventNamePhrases || []).join(', '))
+            .setMaxLength(500);
+          modal.addComponents(new ActionRowBuilder().addComponents(phrasesInput));
+          await interaction.showModal(modal);
+          return;
+        }
+        if (selectedAction === 'fixture_team') {
+          const db = loadDb();
+          const upcomingEvents = Object.entries(db.events || {})
+            .map(([id, event]) => ({ id, ...event }))
+            .filter((event) => new Date(event.date).getTime() >= Date.now())
+            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+            .slice(0, 25);
+
+          if (!upcomingEvents.length) {
+            await interaction.update({
+              content: 'No upcoming fixtures found in synced events yet.',
+              embeds: [],
+              components: [createTeamConfigActionRow(latestConfig, team), createBackButtonRow('admin_back_team_management')]
+            });
+            return;
+          }
+
+          const row = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId(`admin_set_fixture_team:${team}`)
+              .setPlaceholder(`Select fixture for ${teamLabel}`)
+              .addOptions(
+                upcomingEvents.map((event) => {
+                  const when = new Date(event.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                  return {
+                    label: `${when} — ${event.title}`.slice(0, 100),
+                    value: event.id,
+                    description: `Current: ${getTeamMeta(latestConfig, event.team).label || 'Unassigned'}`.slice(0, 100)
+                  };
+                })
+              )
+          );
+
+          await interaction.update({
+            content: `Pick a fixture to assign to **${teamLabel}**.`,
+            embeds: [],
+            components: [row, createBackButtonRow(`admin_back_team_config:${team}`)]
+          });
+          return;
+        }
+        if (selectedAction === 'auto_assign_fixtures') {
+          await interaction.deferUpdate();
+          const db = loadDb();
+          const teamMatchers = buildTeamMatchers(latestConfig);
+          const assigned = [];
+
+          for (const [eventId, event] of Object.entries(db.events || {})) {
+            const normalizedTitle = String(event.title || '').toLowerCase();
+            const matched = Object.entries(teamMatchers).find(([, phrases]) =>
+              (phrases || []).some((phrase) => phrase && titleMatchesPhrase(normalizedTitle, phrase))
+            );
+            if (!matched) continue;
+
+            const [matchedTeam] = matched;
+            if (event.team !== matchedTeam) {
+              db.events[eventId].team = matchedTeam;
+              assigned.push({ eventId, title: event.title, date: event.date, team: matchedTeam });
+            }
+          }
+
+          saveDb(db);
+          await triggerGoogleSync(context);
+
+          const preview = assigned
+            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+            .slice(0, 25);
+
+          if (!preview.length) {
+            await interaction.editReply({
+              content: 'No fixtures changed from exact phrase matching. Update event phrases if needed.',
+              embeds: [],
+              components: [createTeamConfigActionRow(loadConfig(), team), createBackButtonRow('admin_back_team_management')]
+            });
+            return;
+          }
+
+          pendingFixtureCorrections.set(interaction.user.id, preview.map((item) => item.eventId));
+
+          const correctionRow = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId(`admin_fixture_correction_dates:${team}`)
+              .setPlaceholder('Select any wrong fixture dates (optional)')
+              .setMinValues(0)
+              .setMaxValues(preview.length)
+              .addOptions(preview.map((item) => ({
+                label: `${new Date(item.date).toLocaleDateString()} — ${item.title}`.slice(0, 100),
+                value: item.eventId,
+                description: `Assigned to ${getTeamMeta(latestConfig, item.team).label}`.slice(0, 100)
+              })))
+          );
+
+          await interaction.editReply({
+            content: [
+              `✅ Auto-assigned ${assigned.length} fixture(s) by exact event-name phrase.`,
+              'Review the list below. If any dates are wrong, select them next.'
+            ].join('\n'),
+            embeds: [],
+            components: [correctionRow, createBackButtonRow(`admin_back_team_config:${team}`)]
+          });
+          return;
+        }
+        if (selectedAction === 'force_send_attendance') {
+          await interaction.update({
+            content: `Choose how far ahead to force-send attendance for **${teamLabel}**.`,
+            embeds: [],
+            components: [createForceAttendanceWindowRow(team), createBackButtonRow(`admin_back_team_config:${team}`)]
+          });
           return;
         }
       }
@@ -1616,6 +1867,20 @@ module.exports = {
       }
 
       if (
+        interaction.customId.startsWith('absence_open_profile:')
+      ) {
+        const [, mode, userId] = interaction.customId.split(':');
+        const member = await interaction.guild.members.fetch(userId).catch(() => null);
+        const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
+        const profile = upsertPlayerProfile(userId, { userId });
+        await interaction.reply({
+          content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, profile, mode === 'admin' ? 'player' : 'coach'),
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+
+      if (
         interaction.customId.startsWith('absence_ticket_log:')
       ) {
         const ticketId = interaction.customId.split(':')[1];
@@ -1634,9 +1899,24 @@ module.exports = {
           return;
         }
 
-        const lines = (ticket.chatLog || []).length
-          ? ticket.chatLog.slice(-40)
-          : ['No saved chat log entries.'];
+        const entries = Array.isArray(ticket.chatLog) ? ticket.chatLog.slice(-60) : [];
+        const lines = [];
+        let lastDay = '';
+        for (const item of entries) {
+          if (typeof item === 'string') {
+            lines.push(item);
+            continue;
+          }
+          const day = item.day || String(item.ts || '').slice(0, 10) || 'unknown-day';
+          const time = item.time || String(item.ts || '').slice(11, 16) || '??:??';
+          const name = item.name || getPlayerDisplayName(item.userId || '', loadConfig()) || 'unknown';
+          const text = item.message || '(no text)';
+          if (day !== lastDay) {
+            lines.push(`\n📅 ${day}`);
+            lastDay = day;
+          }
+          lines.push(`${time} — ${name}: ${text}`);
+        }
         await interaction.reply({
           content: [
             `📜 Absence Ticket Log (${ticket.team || 'unknown'})`,
@@ -1644,7 +1924,7 @@ module.exports = {
             `Event: ${ticket.eventId}`,
             `Status: ${ticket.status || 'unknown'}`,
             '',
-            lines.join('\n')
+            lines.length ? lines.join('\n') : 'No saved chat log entries.'
           ].join('\n').slice(0, 1950),
           flags: MessageFlags.Ephemeral
         });
@@ -1726,7 +2006,7 @@ module.exports = {
           await triggerGoogleSync(context);
           await interaction.editReply({ content: `✅ Absence confirmed for <@${playerId}>. Closing this absence chat now.` });
           const member = await interaction.guild.members.fetch(playerId).catch(() => null);
-          await member?.send(`✅ Your not-attending request for **${event.title}** (${getCompactDateLabel(event.date)}) was confirmed by a coach.`).catch(() => null);
+          await member?.send(`✅ Your not-attending request for **${event.title}** (${getCompactDateLabel(event.date)}) was confirmed by **${interaction.user.tag}**.`).catch(() => null);
           await context.sendLog(`✅ ${interaction.user.tag} confirmed not attending for <@${playerId}> on **${event.title}**.`);
           await closeAbsenceTicketChannel(interaction.channel, 'Absence confirmed by coach');
           return;
@@ -1902,10 +2182,14 @@ module.exports = {
         setResponse(parsed.eventId, targetUserId, {
           status: 'confirmed_no',
           confirmed: true,
+          confirmedBy: interaction.user.id,
+          confirmedAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         });
 
         await interaction.reply({ content: `✅ Absence confirmed for <@${targetUserId}>.` });
+        const targetMember = await interaction.guild.members.fetch(targetUserId).catch(() => null);
+        await targetMember?.send(`✅ Your not-attending request for **${event.title}** (${getCompactDateLabel(event.date)}) was confirmed by **${interaction.user.tag}**.`).catch(() => null);
         await triggerGoogleSync(context);
         deleteAbsenceTicket(interaction.channelId);
         await context.sendLog(`✅ ${interaction.user.tag} confirmed absence for <@${targetUserId}> on **${event.title}**.`);
@@ -1926,9 +2210,36 @@ module.exports = {
         return;
       }
 
+      if (interaction.customId === 'admin_google_restore_backup') {
+        const backupIndex = Number.parseInt(interaction.values?.[0] || '0', 10);
+        const restored = restoreConfigFromBackup(Number.isNaN(backupIndex) ? 0 : backupIndex);
+        if (!restored) {
+          await interaction.update({
+            content: 'Could not restore that backup snapshot.',
+            embeds: [],
+            components: [createGoogleToolsRow(), createGoogleToolsRow2()]
+          });
+          return;
+        }
+        await syncConfigSnapshotIfEnabled().catch(() => null);
+        context.setConfig?.(restored);
+        await interaction.update({
+          content: '✅ Restored config from backup snapshot.',
+          embeds: [],
+          components: [createGoogleToolsRow(), createGoogleToolsRow2()]
+        });
+        return;
+      }
+
       if (interaction.customId === 'coach_team_select') {
         const selectedTeam = interaction.values[0];
-        const report = coachCommand.buildReport(interaction.guild, selectedTeam, teamRolesMap);
+        const targetGuild = interaction.guild
+          || await interaction.client.guilds.fetch(config.bot?.guildId || '').catch(() => null);
+        if (!targetGuild) {
+          await interaction.update({ content: 'Could not resolve the server for this coach report.', embeds: [], components: [] });
+          return;
+        }
+        const report = coachCommand.buildReport(targetGuild, selectedTeam, teamRolesMap);
 
         const embed = new EmbedBuilder()
           .setTitle(`Coach UI — ${selectedTeam}`)
@@ -2897,6 +3208,7 @@ module.exports = {
       }
 
       if (ticketChannel) {
+        const ticketUrl = `https://discord.com/channels/${interaction.guild.id}/${ticketChannel.id}`;
         setAbsenceTicket(ticketChannel.id, {
           ticketId: ticketChannel.id,
           eventId,
@@ -2910,13 +3222,20 @@ module.exports = {
           createdAt: new Date().toISOString()
         });
 
+        await interaction.user.send({
+          content: [
+            `🧾 Your absence ticket was created for **${event.title}**.`,
+            `📅 ${eventDateLabel}`,
+            `📝 Reason: ${reason}`,
+            `🔗 Open ticket: ${ticketUrl}`
+          ].join('\n')
+        }).catch(() => null);
+
         await ticketChannel.send({
           content: [
-            `Team/Player: ${playerDisplayName} (<@${interaction.user.id}>)`,
-            `Date of event: ${eventDateLabel}`,
-            `Name of event: ${event.title}`,
-            `Location: ${event.location || 'n/a'}`,
-            `Reason for not attending: ${reason}`,
+            `🧾 Absence ticket for <@${interaction.user.id}>`,
+            `📅 ${eventDateLabel} — ${event.title}`,
+            `📝 Reason: ${reason}`,
             '',
             'Staff/coaches: confirm or decline this absence request below.'
           ].join('\n'),
@@ -2924,35 +3243,40 @@ module.exports = {
         });
 
         const staffRoomId = config.channels.staffRooms?.[event.team];
-        const logRow = createAbsenceLogRow(ticketChannel.id);
+        let staffNotification;
+        let adminNotification;
         if (staffRoomId) {
           const staffRoom = await interaction.guild.channels.fetch(staffRoomId).catch(() => null);
           if (staffRoom?.isTextBased()) {
-            await staffRoom.send({
-              content: [
-                `🚨 New absence ticket opened`,
-                `👤 Player: ${interaction.user}`,
-                `📅 Event: ${event.title}`,
-                `🔗 Ticket: <#${ticketChannel.id}>`
-              ].join('\n'),
-              components: [logRow]
-            });
+            const staffMessage = await staffRoom.send({
+              content: formatAbsenceNotification({
+                playerId: interaction.user.id,
+                playerName: playerDisplayName
+              }, event, 'open'),
+              components: [createAbsenceNotificationRow(ticketChannel.id, interaction.user.id, 'coach')]
+            }).catch(() => null);
+            if (staffMessage) {
+              staffNotification = { channelId: staffRoom.id, messageId: staffMessage.id, mode: 'coach' };
+            }
           }
         }
         if (config.channels?.admin) {
           const adminChannel = await interaction.guild.channels.fetch(config.channels.admin).catch(() => null);
           if (adminChannel?.isTextBased()) {
-            await adminChannel.send({
-              content: [
-                `🚨 New absence ticket opened`,
-                `👤 Player: ${interaction.user}`,
-                `📅 Event: ${event.title}`,
-                `👥 Team: ${getTeamMeta(config, event.team).label}`,
-                `🔗 Ticket: <#${ticketChannel.id}>`
-              ].join('\n'),
-              components: [logRow]
-            });
+            const adminMessage = await adminChannel.send({
+              content: formatAbsenceNotification({
+                playerId: interaction.user.id,
+                playerName: playerDisplayName
+              }, event, 'open'),
+              components: [createAbsenceNotificationRow(ticketChannel.id, interaction.user.id, 'admin')]
+            }).catch(() => null);
+            if (adminMessage) {
+              adminNotification = { channelId: adminChannel.id, messageId: adminMessage.id, mode: 'admin' };
+            }
           }
+        }
+        if (staffNotification || adminNotification) {
+          setAbsenceTicket(ticketChannel.id, { staffNotification, adminNotification });
         }
 
         await context.sendLog(

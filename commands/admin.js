@@ -158,6 +158,7 @@ module.exports = {
   data: new SlashCommandBuilder()
     .setName('admin')
     .setDescription('Open admin UI for config and club-level attendance')
+    .setDMPermission(true)
     .addSubcommand((sub) =>
       sub
         .setName('panel')
@@ -166,11 +167,16 @@ module.exports = {
 
   async execute(interaction) {
     const config = loadConfig();
-    if (!hasAdminAccess(interaction.member, config)) {
+    const guild = interaction.guild
+      || await interaction.client.guilds.fetch(config.bot?.guildId || '').catch(() => null);
+    const member = interaction.member
+      || (guild ? await guild.members.fetch(interaction.user.id).catch(() => null) : null);
+
+    if (!hasAdminAccess(member, config)) {
       await interaction.reply({ content: adminAccessMessage(config), flags: MessageFlags.Ephemeral });
       return;
     }
-    if (config.channels?.admin && interaction.channelId !== config.channels.admin) {
+    if (interaction.inGuild() && config.channels?.admin && interaction.channelId !== config.channels.admin) {
       await interaction.reply({
         content: `Please use this command in the admin chat: <#${config.channels.admin}>.`,
         flags: MessageFlags.Ephemeral

@@ -28,6 +28,7 @@ module.exports = {
   data: new SlashCommandBuilder()
     .setName('attendance')
     .setDescription('Attendance reports and future availability updates')
+    .setDMPermission(false)
     .addSubcommand((sub) =>
       sub
         .setName('report')

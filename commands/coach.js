@@ -13,6 +13,15 @@ function getCoachTeams(member, teamRoles) {
     .map(([team]) => team);
 }
 
+async function resolveGuildMember(interaction, config) {
+  if (interaction.member && interaction.guild) return { guild: interaction.guild, member: interaction.member };
+  const guildId = config.bot?.guildId;
+  if (!guildId) return { guild: null, member: null };
+  const guild = await interaction.client.guilds.fetch(guildId).catch(() => null);
+  const member = guild ? await guild.members.fetch(interaction.user.id).catch(() => null) : null;
+  return { guild, member };
+}
+
 function buildReport(guild, team, teamRoles) {
   const db = loadDb();
   const now = Date.now();
@@ -59,11 +68,13 @@ function buildReport(guild, team, teamRoles) {
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('coach')
-    .setDescription('Open the coach UI for attendance reports'),
+    .setDescription('Open the coach UI for attendance reports')
+    .setDMPermission(true),
 
   async execute(interaction, context) {
     const config = context.getConfig();
-    const coachTeams = getCoachTeams(interaction.member, config.roles);
+    const { guild, member } = await resolveGuildMember(interaction, config);
+    const coachTeams = member ? getCoachTeams(member, config.roles) : [];
 
     if (!coachTeams.length) {
       await interaction.reply({ content: 'You are not assigned as a coach for any team.', flags: MessageFlags.Ephemeral });
@@ -90,7 +101,7 @@ module.exports = {
       return;
     }
 
-    const report = buildReport(interaction.guild, coachTeams[0], config.roles);
+    const report = buildReport(guild, coachTeams[0], config.roles);
     const embed = new EmbedBuilder()
       .setTitle(`Coach UI — ${coachTeams[0]}`)
       .setDescription(report)

@@ -8,14 +8,27 @@ function getPlayerTeams(member, teamRoles) {
     .map(([team]) => team);
 }
 
+async function resolveGuildMember(interaction, config) {
+  if (interaction.member && interaction.guild) {
+    return { guild: interaction.guild, member: interaction.member };
+  }
+  const guildId = config.bot?.guildId;
+  if (!guildId) return { guild: null, member: null };
+  const guild = await interaction.client.guilds.fetch(guildId).catch(() => null);
+  const member = guild ? await guild.members.fetch(interaction.user.id).catch(() => null) : null;
+  return { guild, member };
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('player')
-    .setDescription('Open the player UI for upcoming training, matches, and events'),
+    .setDescription('Open the player UI for upcoming training, matches, and events')
+    .setDMPermission(true),
 
   async execute(interaction, context) {
     const config = context.getConfig();
-    const playerTeams = getPlayerTeams(interaction.member, config.roles);
+    const { member } = await resolveGuildMember(interaction, config);
+    const playerTeams = member ? getPlayerTeams(member, config.roles) : [];
 
     if (!playerTeams.length) {
       await interaction.reply({ content: 'You are not assigned as a player for any team.', flags: MessageFlags.Ephemeral });

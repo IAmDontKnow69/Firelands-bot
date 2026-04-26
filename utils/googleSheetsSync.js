@@ -6,6 +6,13 @@ function toIso(date = new Date()) {
   return new Date(date).toISOString();
 }
 
+function truncateId(id = '') {
+  const value = String(id || '');
+  if (!value) return '';
+  if (value.length <= 12) return value;
+  return `${value.slice(0, 6)}…${value.slice(-4)}`;
+}
+
 function resolveCredentialsPath(config = {}) {
   const configuredPath = config.bot?.calendarCredentialsPath
     || process.env.CALENDAR_CREDENTIALS_PATH
@@ -223,6 +230,7 @@ function buildAttendanceRows(db = {}) {
 function flattenConfig(config = {}, prefix = '') {
   const entries = [];
   for (const [key, value] of Object.entries(config)) {
+    if (key.startsWith('_')) continue;
     const path = prefix ? `${prefix}.${key}` : key;
     if (value && typeof value === 'object' && !Array.isArray(value)) {
       entries.push(...flattenConfig(value, path));
@@ -235,6 +243,24 @@ function flattenConfig(config = {}, prefix = '') {
   return entries;
 }
 
+function buildConfigBackupRows(config = {}) {
+  const backups = Array.isArray(config._configBackups) ? config._configBackups.slice(0, 5) : [];
+  return backups.map((entry, index) => {
+    const snapshot = String(entry.snapshot || '');
+    const compact = snapshot
+      ? snapshot.replace(/\s+/g, ' ').slice(0, 180)
+      : '';
+    return [
+      index + 1,
+      entry.timestamp || '',
+      entry.changedPath || '',
+      entry.reason || '',
+      compact,
+      snapshot
+    ];
+  });
+}
+
 function buildConfigIdRows(config = {}) {
   return flattenConfig(config).filter(([key]) => {
     if (key.startsWith('roles.') || key.startsWith('channels.')) return true;
@@ -245,19 +271,43 @@ function buildConfigIdRows(config = {}) {
   });
 }
 
-function buildPlayerRows(db = {}) {
+function buildRoleNameMap(config = {}) {
+  const map = new Map();
+  const walk = (node, path = []) => {
+    if (!node || typeof node !== 'object' || Array.isArray(node)) return;
+    for (const [key, value] of Object.entries(node)) {
+      const nextPath = [...path, key];
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        walk(value, nextPath);
+        continue;
+      }
+      if (/^\d{8,25}$/.test(String(value || ''))) {
+        map.set(String(value), nextPath.join(' / '));
+      }
+    }
+  };
+
+  walk(config.roles || {}, []);
+  return map;
+}
+
+function buildPlayerRows(db = {}, config = {}) {
   const players = db.players || {};
+  const roleNameMap = buildRoleNameMap(config);
   return Object.entries(players)
     .map(([userId, profile]) => ([
-      userId,
+      truncateId(userId),
       profile.customName || '',
       profile.shirtNumber || '',
       Array.isArray(profile.teams) ? profile.teams.join(',') : '',
-      Array.isArray(profile.roles) ? profile.roles.join(',') : '',
+      Array.isArray(profile.roles)
+        ? profile.roles.map((roleId) => roleNameMap.get(String(roleId)) || `Unknown (${truncateId(roleId)})`).join(', ')
+        : '',
       profile.joinedDiscordAt || '',
       profile.notes || '',
       profile.facePngUrl || '',
-      profile.updatedAt || toIso()
+      profile.updatedAt || toIso(),
+      userId
     ]))
     .sort((a, b) => String(a[1] || a[0]).localeCompare(String(b[1] || b[0])));
 }
@@ -270,46 +320,63 @@ function buildAbsenceRows(db = {}) {
     const event = db.events?.[ticket.eventId] || {};
     const response = event.responses?.[ticket.playerId] || {};
     rows.push([
-      ticket.ticketId || channelId,
-      channelId,
-      ticket.eventId || '',
+      truncateId(ticket.ticketId || channelId),
+      truncateId(channelId),
+      truncateId(ticket.eventId || ''),
       event.title || '',
       event.date || '',
       event.location || '',
       ticket.team || event.team || '',
-      ticket.playerId || '',
+      truncateId(ticket.playerId || ''),
       ticket.playerName || response.username || '',
       response.status || ticket.status || '',
       response.reason || ticket.reason || '',
       ticket.coachDecision || '',
-      ticket.coachId || '',
+      truncateId(ticket.coachId || ''),
       ticket.coachName || '',
       ticket.closedAt || '',
       ticket.createdAt || '',
-      ticket.closedReason || ''
+      ticket.closedReason || '',
+      ticket.ticketId || channelId,
+      channelId,
+      ticket.eventId || '',
+      ticket.playerId || '',
+      ticket.coachId || ''
     ]);
   }
 
   return rows.sort((a, b) => new Date(a[15] || 0).getTime() - new Date(b[15] || 0).getTime());
 }
 
-function buildPlayerCoachNoteRows(db = {}) {
+function buildPlayerCoachNoteRows(db = {}, notesSheetId) {
   const rows = [];
   const players = db.players || {};
+  let rowIndex = 2;
   for (const [userId, profile] of Object.entries(players)) {
     const notes = Array.isArray(profile.notesLog) ? profile.notesLog : [];
     for (const note of notes) {
+      const noteCol = 'L';
+      const openLink = Number.isInteger(notesSheetId)
+        ? `=HYPERLINK("#gid=${notesSheetId}&range=${noteCol}${rowIndex}", "Open Note")`
+        : 'Open Note';
+      const fullNote = note.text || '';
+      const summary = fullNote.length > 90 ? `${fullNote.slice(0, 87)}...` : fullNote;
       rows.push([
-        note.id || '',
-        userId,
+        truncateId(note.id || ''),
+        openLink,
+        profile.customName || '',
         note.profileType || 'player',
-        note.text || '',
+        summary,
         note.hidden ? 'true' : 'false',
-        note.authorId || '',
         note.authorTag || '',
         note.createdAt || '',
-        note.updatedAt || ''
+        note.updatedAt || '',
+        note.id || '',
+        userId,
+        note.authorId || '',
+        fullNote
       ]);
+      rowIndex += 1;
     }
   }
   return rows.sort((a, b) => new Date(a[7] || 0).getTime() - new Date(b[7] || 0).getTime());
@@ -478,6 +545,31 @@ async function ensureSheetLayout(sheets, spreadsheetId, sections = []) {
       requestBody: { requests: formatRequests }
     });
   }
+
+  return existingSheets;
+}
+
+function buildHomeRows(sections = [], sheetIdByTitle = new Map()) {
+  if (!sections.length) return [];
+
+  return sections.map((section, index) => {
+    const previous = sections[index - 1];
+    const next = sections[index + 1];
+    const title = getSheetNameFromRange(section.range);
+    const previousLink = previous
+      ? `=HYPERLINK("#gid=${sheetIdByTitle.get(getSheetNameFromRange(previous.range))}", "⬅ Previous")`
+      : '';
+    const nextLink = next
+      ? `=HYPERLINK("#gid=${sheetIdByTitle.get(getSheetNameFromRange(next.range))}", "Next ➜")`
+      : '';
+    return [
+      title,
+      section.description || '',
+      `=HYPERLINK("#gid=${sheetIdByTitle.get(title)}", "Open Tab")`,
+      previousLink,
+      nextLink
+    ];
+  });
 }
 
 async function syncAllToSheet(config = {}, db = {}, options = {}) {
@@ -492,22 +584,27 @@ async function syncAllToSheet(config = {}, db = {}, options = {}) {
   const attendanceRange = config.googleSync?.attendanceRange || 'Attendance!A2:F';
   const configRange = config.googleSync?.configRange || 'Config!A2:C';
   const configIdsRange = config.googleSync?.configIdsRange || 'Config IDs!A2:C';
+  const configBackupsRange = config.googleSync?.configBackupsRange || 'Config Backups!A2:F';
   const playersRange = config.googleSync?.playersRange || 'Players!A2:I';
   const absencesRange = config.googleSync?.absencesRange || 'Absences!A2:Q';
   const playerCoachNotesRange = config.googleSync?.playerCoachNotesRange || 'Player and Coach Notes!A2:I';
 
-  await ensureSheetLayout(sheets, spreadsheetId, [
-    { range: fixturesRange, headers: ['eventId', 'title', 'date', 'location', 'team', 'discordMessageId', 'updatedAt'] },
-    { range: commandLogRange, headers: ['timestamp', 'source', 'command', 'subcommand', 'options', 'guildId', 'channelId', 'userId', 'username'] },
-    { range: mensFixturesRange, headers: ['eventId', 'title', 'date', 'location', 'team', 'discordMessageId', 'updatedAt'] },
-    { range: womensFixturesRange, headers: ['eventId', 'title', 'date', 'location', 'team', 'discordMessageId', 'updatedAt'] },
-    { range: attendanceRange, headers: ['eventId', 'userId', 'username', 'team', 'status', 'updatedAt'] },
-    { range: configRange, headers: ['key', 'value', 'updatedAt'] },
-    { range: configIdsRange, headers: ['key', 'value', 'updatedAt'] },
-    { range: playersRange, headers: ['userId', 'customName', 'shirtNumber', 'teams', 'roles', 'joinedDiscordAt', 'notes', 'facePngUrl', 'updatedAt'] },
-    { range: absencesRange, headers: ['ticketId', 'channelId', 'eventId', 'eventTitle', 'eventDate', 'eventLocation', 'team', 'playerId', 'playerName', 'attendanceStatus', 'reason', 'coachDecision', 'coachId', 'coachName', 'closedAt', 'createdAt', 'closedReason'] },
-    { range: playerCoachNotesRange, headers: ['noteId', 'userId', 'profileType', 'note', 'hidden', 'authorId', 'authorTag', 'createdAt', 'updatedAt'] }
-  ]);
+  const sections = [
+    { range: 'Home!A2:E', headers: ['Tab', 'Purpose', 'Open', 'Previous', 'Next'], description: 'Navigation hub for every tab.' },
+    { range: fixturesRange, headers: ['eventId', 'title', 'date', 'location', 'team', 'discordMessageId', 'updatedAt'], description: 'All fixtures synced from events.' },
+    { range: commandLogRange, headers: ['timestamp', 'source', 'command', 'subcommand', 'options', 'guildId', 'channelId', 'userId', 'username'], description: 'Slash command activity log.' },
+    { range: mensFixturesRange, headers: ['eventId', 'title', 'date', 'location', 'team', 'discordMessageId', 'updatedAt'], description: 'Mens fixtures only.' },
+    { range: womensFixturesRange, headers: ['eventId', 'title', 'date', 'location', 'team', 'discordMessageId', 'updatedAt'], description: 'Womens fixtures only.' },
+    { range: attendanceRange, headers: ['eventId', 'userId', 'username', 'team', 'status', 'updatedAt'], description: 'Attendance responses by event.' },
+    { range: configRange, headers: ['key', 'value', 'updatedAt'], description: 'Flattened runtime configuration.' },
+    { range: configIdsRange, headers: ['key', 'value', 'updatedAt'], description: 'Role / channel / team identifiers.' },
+    { range: configBackupsRange, headers: ['backupOrder', 'timestamp', 'changedPath', 'reason', 'snapshotPreview', 'snapshot'], description: 'Last 5 config states before changes.' },
+    { range: playersRange, headers: ['userIdPreview', 'customName', 'shirtNumber', 'teams', 'roles', 'joinedDiscordAt', 'notes', 'facePngUrl', 'updatedAt', 'userId'], description: 'Player profiles and team assignments.' },
+    { range: absencesRange, headers: ['ticketPreview', 'channelPreview', 'eventPreview', 'eventTitle', 'eventDate', 'eventLocation', 'team', 'playerPreview', 'playerName', 'attendanceStatus', 'reason', 'coachDecision', 'coachPreview', 'coachName', 'closedAt', 'createdAt', 'closedReason', 'ticketId', 'channelId', 'eventId', 'playerId', 'coachId'], description: 'Absence tickets and outcomes.' },
+    { range: playerCoachNotesRange, headers: ['notePreview', 'openNote', 'name', 'profileType', 'noteSummary', 'hidden', 'authorTag', 'createdAt', 'updatedAt', 'noteId', 'userId', 'authorId', 'note'], description: 'Player and coach notes with quick-open links.' }
+  ];
+
+  const sheetIdByTitle = await ensureSheetLayout(sheets, spreadsheetId, sections);
 
   await writeRange(sheets, spreadsheetId, fixturesRange, buildFixtureRows(db), options);
   await writeRange(sheets, spreadsheetId, mensFixturesRange, buildFixtureRowsForTeam(db, 'mens'), options);
@@ -515,9 +612,66 @@ async function syncAllToSheet(config = {}, db = {}, options = {}) {
   await writeRange(sheets, spreadsheetId, attendanceRange, buildAttendanceRows(db), options);
   await writeRange(sheets, spreadsheetId, configRange, flattenConfig(config), options);
   await writeRange(sheets, spreadsheetId, configIdsRange, await buildMergedConfigIdRows(sheets, spreadsheetId, config, configIdsRange), options);
-  await writeRange(sheets, spreadsheetId, playersRange, buildPlayerRows(db), options);
+  await writeRange(sheets, spreadsheetId, configBackupsRange, buildConfigBackupRows(config), options);
+  await writeRange(sheets, spreadsheetId, playersRange, buildPlayerRows(db, config), options);
   await writeRange(sheets, spreadsheetId, absencesRange, buildAbsenceRows(db), options);
-  await writeRange(sheets, spreadsheetId, playerCoachNotesRange, buildPlayerCoachNoteRows(db), options);
+  await writeRange(
+    sheets,
+    spreadsheetId,
+    playerCoachNotesRange,
+    buildPlayerCoachNoteRows(db, sheetIdByTitle.get(getSheetNameFromRange(playerCoachNotesRange))),
+    options
+  );
+  await writeRange(sheets, spreadsheetId, 'Home!A2:E', buildHomeRows(sections.slice(1), sheetIdByTitle), options);
+
+  const hiddenColumnsRequests = [];
+  const playersSheetId = sheetIdByTitle.get(getSheetNameFromRange(playersRange));
+  if (Number.isInteger(playersSheetId)) {
+    hiddenColumnsRequests.push({
+      updateDimensionProperties: {
+        range: { sheetId: playersSheetId, dimension: 'COLUMNS', startIndex: 9, endIndex: 10 },
+        properties: { hiddenByUser: true },
+        fields: 'hiddenByUser'
+      }
+    });
+  }
+  const absencesSheetId = sheetIdByTitle.get(getSheetNameFromRange(absencesRange));
+  if (Number.isInteger(absencesSheetId)) {
+    hiddenColumnsRequests.push({
+      updateDimensionProperties: {
+        range: { sheetId: absencesSheetId, dimension: 'COLUMNS', startIndex: 17, endIndex: 22 },
+        properties: { hiddenByUser: true },
+        fields: 'hiddenByUser'
+      }
+    });
+  }
+  const notesSheetId = sheetIdByTitle.get(getSheetNameFromRange(playerCoachNotesRange));
+  if (Number.isInteger(notesSheetId)) {
+    hiddenColumnsRequests.push({
+      updateDimensionProperties: {
+        range: { sheetId: notesSheetId, dimension: 'COLUMNS', startIndex: 9, endIndex: 13 },
+        properties: { hiddenByUser: true },
+        fields: 'hiddenByUser'
+      }
+    });
+  }
+  const configBackupsSheetId = sheetIdByTitle.get(getSheetNameFromRange(configBackupsRange));
+  if (Number.isInteger(configBackupsSheetId)) {
+    hiddenColumnsRequests.push({
+      updateDimensionProperties: {
+        range: { sheetId: configBackupsSheetId, dimension: 'COLUMNS', startIndex: 5, endIndex: 6 },
+        properties: { hiddenByUser: true },
+        fields: 'hiddenByUser'
+      }
+    });
+  }
+
+  if (hiddenColumnsRequests.length) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: { requests: hiddenColumnsRequests }
+    });
+  }
 
   return { ok: true, spreadsheetId };
 }
@@ -529,14 +683,17 @@ async function syncConfigOnlyToSheet(config = {}) {
   const sheets = await getSheetsClient(config);
   const configRange = config.googleSync?.configRange || 'Config!A2:C';
   const configIdsRange = config.googleSync?.configIdsRange || 'Config IDs!A2:C';
+  const configBackupsRange = config.googleSync?.configBackupsRange || 'Config Backups!A2:F';
 
   await ensureSheetLayout(sheets, spreadsheetId, [
     { range: configRange, headers: ['key', 'value', 'updatedAt'] },
-    { range: configIdsRange, headers: ['key', 'value', 'updatedAt'] }
+    { range: configIdsRange, headers: ['key', 'value', 'updatedAt'] },
+    { range: configBackupsRange, headers: ['backupOrder', 'timestamp', 'changedPath', 'reason', 'snapshotPreview', 'snapshot'] }
   ]);
 
   await writeRange(sheets, spreadsheetId, configRange, await buildMergedConfigRows(sheets, spreadsheetId, config, configRange));
   await writeRange(sheets, spreadsheetId, configIdsRange, await buildMergedConfigIdRows(sheets, spreadsheetId, config, configIdsRange));
+  await writeRange(sheets, spreadsheetId, configBackupsRange, buildConfigBackupRows(config));
 
   return { ok: true, spreadsheetId };
 }
