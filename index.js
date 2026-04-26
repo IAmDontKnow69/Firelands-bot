@@ -184,13 +184,21 @@ async function registerSlashCommands() {
   const rest = new REST({ version: '10' }).setToken(TOKEN);
 
   try {
+    const guildBody = [
+      attendanceCommand.data.toJSON(),
+      playerCommand.data.toJSON(),
+      coachCommand.data.toJSON(),
+      adminCommand.data.toJSON(),
+      confirmCommand.data.toJSON()
+    ];
     await rest.put(Routes.applicationGuildCommands(clientId, guildId), {
+      body: guildBody
+    });
+    await rest.put(Routes.applicationCommands(clientId), {
       body: [
-        attendanceCommand.data.toJSON(),
         playerCommand.data.toJSON(),
         coachCommand.data.toJSON(),
-        adminCommand.data.toJSON(),
-        confirmCommand.data.toJSON()
+        adminCommand.data.toJSON()
       ]
     });
     console.log('Slash commands registered.');
@@ -416,7 +424,7 @@ client.on('interactionCreate', async (interaction) => {
     if (await handleSetupInteraction(interaction)) return;
 
     if (interaction.isChatInputCommand()) {
-      if (['player', 'coach'].includes(interaction.commandName)) {
+      if (interaction.inGuild() && ['player', 'coach'].includes(interaction.commandName)) {
         const botCommandsChannelId = getConfig().channels?.botCommands;
         if (botCommandsChannelId && interaction.channelId !== botCommandsChannelId) {
           await interaction.reply({
@@ -427,7 +435,7 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
 
-      if (['player', 'coach', 'attendance'].includes(interaction.commandName)) {
+      if (interaction.inGuild() && ['player', 'coach', 'attendance'].includes(interaction.commandName)) {
         let mode = interaction.commandName === 'coach' ? 'coach' : 'player';
         if (interaction.commandName === 'attendance') {
           mode = interaction.options.getSubcommand(false) === 'report' ? 'coach' : 'player';

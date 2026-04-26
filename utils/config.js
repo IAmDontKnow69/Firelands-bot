@@ -5,6 +5,7 @@ const CONFIG_PATH = path.join(__dirname, '..', 'config.json');
 
 function defaultConfig() {
   return {
+    _configBackups: [],
     bot: {
       tokenReference: process.env.DISCORD_TOKEN || '',
       clientId: process.env.DISCORD_CLIENT_ID || '',
@@ -128,6 +129,7 @@ function ensureConfig() {
   const merged = {
     ...defaultConfig(),
     ...current,
+    _configBackups: Array.isArray(current._configBackups) ? current._configBackups.slice(0, 5) : [],
     bot: { ...base.bot, ...(current.bot || {}) },
     roles: mergedRoles,
     channels: {
@@ -173,6 +175,25 @@ function saveConfig(config) {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
 }
 
+function cloneWithoutBackups(config = {}) {
+  const cloned = JSON.parse(JSON.stringify(config || {}));
+  delete cloned._configBackups;
+  return cloned;
+}
+
+function pushConfigBackup(config = {}, meta = {}) {
+  const existingBackups = Array.isArray(config._configBackups) ? config._configBackups : [];
+  const snapshot = cloneWithoutBackups(config);
+  const entry = {
+    timestamp: new Date().toISOString(),
+    changedPath: meta.changedPath || '',
+    reason: meta.reason || 'update',
+    snapshot: JSON.stringify(snapshot)
+  };
+
+  return [entry, ...existingBackups].slice(0, 5);
+}
+
 function updateConfig(pathKey, value) {
   const config = loadConfig();
   const keys = pathKey.split('.');
@@ -184,9 +205,73 @@ function updateConfig(pathKey, value) {
     pointer = pointer[key];
   }
 
-  pointer[keys[keys.length - 1]] = value;
+  const finalKey = keys[keys.length - 1];
+  const currentValue = pointer?.[finalKey];
+  const hasChanged = JSON.stringify(currentValue) !== JSON.stringify(value);
+  if (hasChanged) {
+    config._configBackups = pushConfigBackup(config, { changedPath: pathKey, reason: 'field_update' });
+  }
+
+  pointer[finalKey] = value;
   saveConfig(config);
   return config;
+}
+
+function restoreConfigFromBackup(index = 0) {
+  const config = loadConfig();
+  const backups = Array.isArray(config._configBackups) ? config._configBackups : [];
+  const target = backups[index];
+  if (!target?.snapshot) return null;
+
+  let restored;
+  try {
+    restored = JSON.parse(target.snapshot);
+  } catch {
+    return null;
+  }
+
+  restored._configBackups = backups;
+  saveConfig(restored);
+  return restored;
+}
+
+function resetConfigFresh() {
+  const current = loadConfig();
+  const fresh = defaultConfig();
+  const allTeams = new Set([
+    ...Object.keys(current.teams || {}),
+    ...Object.keys(current.roles || {}),
+    ...Object.keys(current.channels?.teamChats || {}),
+    ...Object.keys(current.channels?.staffRooms || {}),
+    ...Object.keys(current.channels?.privateChatCategories || {})
+  ]);
+
+  fresh.teams = Object.fromEntries(
+    [...allTeams].map((team) => [team, {
+      emoji: '',
+      label: '',
+      gender: '',
+      captainRoleId: '',
+      captainEmoji: '',
+      eventNamePhrases: []
+    }])
+  );
+  fresh.roles = Object.fromEntries([...allTeams].map((team) => [team, { player: '', coach: '' }]));
+  fresh.channels.teamChats = Object.fromEntries([...allTeams].map((team) => [team, '']));
+  fresh.channels.staffRooms = Object.fromEntries([...allTeams].map((team) => [team, '']));
+  fresh.channels.privateChatCategories = Object.fromEntries([...allTeams].map((team) => [team, '']));
+  fresh.eventTypes = {
+    autoDetect: false,
+    practiceExactNames: [],
+    matchExactNames: [],
+    otherExactNames: [],
+    practiceKeywords: [],
+    matchKeywords: []
+  };
+  fresh._configBackups = pushConfigBackup(current, { reason: 'fresh_reset', changedPath: 'all' });
+
+  saveConfig(fresh);
+  return fresh;
 }
 
 module.exports = {
@@ -195,5 +280,7 @@ module.exports = {
   loadConfig,
   saveConfig,
   updateConfig,
-  defaultConfig
+  defaultConfig,
+  restoreConfigFromBackup,
+  resetConfigFresh
 };

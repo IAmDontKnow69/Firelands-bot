@@ -5,7 +5,8 @@ const { syncAllToSheet } = require('../utils/googleSheetsSync');
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('confirm')
-    .setDescription('Coach/staff: confirm an absence from inside a private attendance chat'),
+    .setDescription('Coach/staff: confirm an absence from inside a private attendance chat')
+    .setDMPermission(false),
 
   async execute(interaction, context) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });

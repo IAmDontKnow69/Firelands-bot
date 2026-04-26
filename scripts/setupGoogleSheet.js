@@ -18,12 +18,14 @@ function getCredentialsPath() {
 
 function requiredHeaders() {
   return {
+    Home: ['Tab', 'Purpose', 'Open', 'Previous', 'Next'],
     Fixtures: ['eventId', 'title', 'date', 'team', 'discordMessageId', 'updatedAt'],
     'Mens Fixtures': ['eventId', 'title', 'date', 'team', 'discordMessageId', 'updatedAt'],
     'Womens Fixtures': ['eventId', 'title', 'date', 'team', 'discordMessageId', 'updatedAt'],
     Attendance: ['eventId', 'userId', 'username', 'team', 'status', 'updatedAt'],
     Config: ['key', 'value', 'updatedAt'],
-    Players: ['userId', 'customName', 'shirtNumber', 'teams', 'roles', 'joinedDiscordAt', 'notes', 'updatedAt']
+    'Config Backups': ['backupOrder', 'timestamp', 'changedPath', 'reason', 'snapshotPreview', 'snapshot'],
+    Players: ['userIdPreview', 'customName', 'shirtNumber', 'teams', 'roles', 'joinedDiscordAt', 'notes', 'updatedAt', 'userId']
   };
 }
 
@@ -56,6 +58,12 @@ async function ensureSheetsExist(sheetsApi, spreadsheetId, sheetTitles) {
 }
 
 async function writeHeaders(sheetsApi, spreadsheetId, headersBySheet) {
+  const metadata = await sheetsApi.spreadsheets.get({ spreadsheetId });
+  const sheetIds = new Map(
+    (metadata.data.sheets || [])
+      .map((sheet) => [sheet.properties?.title, sheet.properties?.sheetId])
+      .filter(([title, sheetId]) => title && Number.isInteger(sheetId))
+  );
   const data = Object.entries(headersBySheet).map(([title, headers]) => ({
     range: `${title}!A1:${String.fromCharCode(64 + headers.length)}1`,
     majorDimension: 'ROWS',
@@ -70,15 +78,35 @@ async function writeHeaders(sheetsApi, spreadsheetId, headersBySheet) {
     }
   });
 
+  const requests = [
+    ...Object.keys(headersBySheet).map((title) => ({
+      updateSheetProperties: {
+        properties: { title, gridProperties: { frozenRowCount: 1 } },
+        fields: 'gridProperties.frozenRowCount'
+      }
+    })),
+    ...Object.entries(headersBySheet).flatMap(([title, headers]) => {
+      const sheetId = sheetIds.get(title);
+      if (!Number.isInteger(sheetId)) return [];
+      return [{
+        repeatCell: {
+          range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: headers.length },
+          cell: {
+            userEnteredFormat: {
+              textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } },
+              backgroundColor: { red: 0.18, green: 0.42, blue: 0.7 }
+            }
+          },
+          fields: 'userEnteredFormat(textFormat,backgroundColor)'
+        }
+      }];
+    })
+  ];
+
   await sheetsApi.spreadsheets.batchUpdate({
     spreadsheetId,
     requestBody: {
-      requests: Object.keys(headersBySheet).map((title) => ({
-        updateSheetProperties: {
-          properties: { title, gridProperties: { frozenRowCount: 1 } },
-          fields: 'gridProperties.frozenRowCount'
-        }
-      }))
+      requests
     }
   });
 }
