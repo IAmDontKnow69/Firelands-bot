@@ -71,6 +71,10 @@ function defaultConfig() {
       practiceKeywords: ['practice', 'training', 'session'],
       matchKeywords: ['match', 'game', 'fixture']
     },
+    coachRoles: [
+      { id: 'coach', label: 'Coach' }
+    ],
+    defaultCoachRoleId: 'coach',
     googleSync: {
       enabled: (process.env.GOOGLE_SYNC_ENABLED || 'false').toLowerCase() === 'true',
       spreadsheetId: process.env.GOOGLE_SPREADSHEET_ID || '',
@@ -81,7 +85,11 @@ function defaultConfig() {
       attendanceRange: process.env.GOOGLE_ATTENDANCE_RANGE || 'Attendance!A2:F',
       configRange: process.env.GOOGLE_CONFIG_RANGE || 'Config!A2:C',
       configIdsRange: process.env.GOOGLE_CONFIG_IDS_RANGE || 'Config IDs!A2:C',
-      playersRange: process.env.GOOGLE_PLAYERS_RANGE || 'Players!A2:I',
+      playersRange: process.env.GOOGLE_PLAYERS_RANGE || 'Player and Coach Management!A2:Q',
+      teamFixturesRanges: {
+        mens: process.env.GOOGLE_MENS_FIXTURES_RANGE || 'Mens Fixtures!A2:G',
+        womens: process.env.GOOGLE_WOMENS_FIXTURES_RANGE || 'Womens Fixtures!A2:G'
+      },
       autoFullSync: (process.env.GOOGLE_AUTO_FULL_SYNC || 'false').toLowerCase() === 'true'
     }
   };
@@ -153,9 +161,15 @@ function ensureConfig() {
       ...(base.eventTypes || {}),
       ...(current.eventTypes || {})
     },
+    coachRoles: Array.isArray(current.coachRoles) && current.coachRoles.length ? current.coachRoles : base.coachRoles,
+    defaultCoachRoleId: current.defaultCoachRoleId || base.defaultCoachRoleId,
     googleSync: {
       ...base.googleSync,
-      ...(current.googleSync || {})
+      ...(current.googleSync || {}),
+      teamFixturesRanges: {
+        ...(base.googleSync?.teamFixturesRanges || {}),
+        ...(current.googleSync?.teamFixturesRanges || {})
+      }
     }
   };
 

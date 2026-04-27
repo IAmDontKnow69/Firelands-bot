@@ -53,6 +53,14 @@ function getSheetNameFromRange(range = '') {
   return String(range).split('!')[0].trim();
 }
 
+function sanitizeSheetTitle(value = '') {
+  return String(value || '')
+    .replace(/[\\/?*\[\]:]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 95);
+}
+
 function getRangeStartRow(range = '') {
   const match = String(range).match(/![A-Z]+(\d+)/i);
   return match ? Number.parseInt(match[1], 10) : 2;
@@ -384,16 +392,27 @@ function buildPlayerRows(db = {}, config = {}) {
     .map(([userId, profile]) => ([
       truncateId(userId),
       compactText(profile.customName || '', 40),
+      compactText(profile.nickName || '', 40),
+      profile.gender || '',
       profile.shirtNumber || '',
+      profile.shirtNumbers && typeof profile.shirtNumbers === 'object'
+        ? Object.entries(profile.shirtNumbers).map(([team, shirt]) => `${team}:${shirt}`).join(', ')
+        : '',
       Array.isArray(profile.teams) ? profile.teams.join(',') : '',
+      Array.isArray(profile.coachTeams) ? profile.coachTeams.join(',') : '',
+      profile.coachPositions && typeof profile.coachPositions === 'object'
+        ? Object.entries(profile.coachPositions).map(([team, title]) => `${team}:${title}`).join(', ')
+        : '',
       Array.isArray(profile.roles)
         ? profile.roles.map((roleId) => roleNameMap.get(String(roleId)) || `Unknown (${truncateId(roleId)})`).join(', ')
         : '',
       profile.joinedDiscordAt || '',
       compactText(profile.notes || '', 80),
-      profile.facePngUrl || '',
+      profile.faceImageUrl || profile.facePngUrl || '',
+      Array.isArray(profile.notesLog) ? compactText(profile.notesLog.map((note) => `[${note.createdAt || ''}] ${note.authorTag || note.authorId || 'unknown'}: ${note.text || ''}`).join(' | '), 500) : '',
       profile.updatedAt || toIso(),
-      userId
+      userId,
+      compactText(JSON.stringify(profile || {}), 500)
     ]))
     .sort((a, b) => String(a[1] || a[0]).localeCompare(String(b[1] || b[0])));
 }
@@ -551,9 +570,32 @@ async function ensureSheetLayout(sheets, spreadsheetId, sections = []) {
   );
 
   const addRequests = [];
+  const renameRequests = [];
   for (const section of sections) {
     const title = getSheetNameFromRange(section.range);
-    if (!existingSheets.has(title)) addRequests.push({ addSheet: { properties: { title } } });
+    if (existingSheets.has(title)) continue;
+    const aliases = Array.isArray(section.aliases) ? section.aliases : [];
+    const aliasTitle = aliases.find((candidate) => candidate && existingSheets.has(candidate) && !existingSheets.has(title));
+    if (aliasTitle) {
+      const aliasSheetId = existingSheets.get(aliasTitle);
+      if (Number.isInteger(aliasSheetId)) {
+        renameRequests.push({
+          updateSheetProperties: {
+            properties: { sheetId: aliasSheetId, title },
+            fields: 'title'
+          }
+        });
+      }
+      continue;
+    }
+    addRequests.push({ addSheet: { properties: { title } } });
+  }
+
+  if (renameRequests.length) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: { requests: renameRequests }
+    });
   }
 
   if (addRequests.length) {
@@ -561,8 +603,11 @@ async function ensureSheetLayout(sheets, spreadsheetId, sections = []) {
       spreadsheetId,
       requestBody: { requests: addRequests }
     });
+  }
 
+  if (renameRequests.length || addRequests.length) {
     const refreshed = await sheets.spreadsheets.get({ spreadsheetId });
+    existingSheets.clear();
     for (const sheet of refreshed.data.sheets || []) {
       const title = sheet.properties?.title;
       const sheetId = sheet.properties?.sheetId;
@@ -599,7 +644,7 @@ async function ensureSheetLayout(sheets, spreadsheetId, sections = []) {
     Config: { red: 0.46, green: 0.46, blue: 0.46 },
     'Config IDs': { red: 0.3, green: 0.3, blue: 0.3 },
     'Config Backups': { red: 0.85, green: 0.56, blue: 0.2 },
-    Players: { red: 0.17, green: 0.67, blue: 0.67 },
+    'Player and Coach Management': { red: 0.17, green: 0.67, blue: 0.67 },
     Absences: { red: 0.9, green: 0.45, blue: 0.2 },
     'Player and Coach Notes': { red: 0.52, green: 0.42, blue: 0.73 },
     Backups: { red: 0.95, green: 0.71, blue: 0.12 }
@@ -928,6 +973,35 @@ async function restoreSpreadsheetFromBackupSnapshot(config = {}, snapshot = {}, 
   return { ok: true, restoredTabs: tabs.length };
 }
 
+async function renameSheetTabForRange(config = {}, fromRange = '', toRange = '') {
+  const spreadsheetId = getSpreadsheetId(config);
+  if (!spreadsheetId) return { ok: false, reason: 'missing_spreadsheet_id' };
+  const fromTitle = getSheetNameFromRange(fromRange);
+  const toTitle = getSheetNameFromRange(toRange);
+  if (!fromTitle || !toTitle || fromTitle === toTitle) return { ok: true, renamed: false };
+
+  const sheets = await getSheetsClient(config);
+  const metadata = await sheets.spreadsheets.get({ spreadsheetId });
+  const allSheets = metadata.data.sheets || [];
+  const source = allSheets.find((sheet) => sheet.properties?.title === fromTitle);
+  const target = allSheets.find((sheet) => sheet.properties?.title === toTitle);
+  if (!source?.properties?.sheetId || target) return { ok: true, renamed: false };
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: {
+      requests: [{
+        updateSheetProperties: {
+          properties: { sheetId: source.properties.sheetId, title: toTitle },
+          fields: 'title'
+        }
+      }]
+    }
+  });
+
+  return { ok: true, renamed: true };
+}
+
 async function syncAllToSheet(config = {}, db = {}, options = {}) {
   const spreadsheetId = getSpreadsheetId(config);
   if (!spreadsheetId) return { ok: false, reason: 'missing_spreadsheet_id' };
@@ -935,27 +1009,42 @@ async function syncAllToSheet(config = {}, db = {}, options = {}) {
   const sheets = await getSheetsClient(config);
   const fixturesRange = config.googleSync?.fixturesRange || 'Fixtures!A2:G';
   const commandLogRange = config.googleSync?.commandLogRange || 'Command Log!A2:I';
-  const mensFixturesRange = config.googleSync?.mensFixturesRange || 'Mens Fixtures!A2:G';
-  const womensFixturesRange = config.googleSync?.womensFixturesRange || 'Womens Fixtures!A2:G';
   const attendanceRange = config.googleSync?.attendanceRange || 'Attendance!A2:F';
   const configRange = config.googleSync?.configRange || 'Config!A2:C';
   const configIdsRange = config.googleSync?.configIdsRange || 'Config IDs!A2:C';
   const configBackupsRange = config.googleSync?.configBackupsRange || 'Config Backups!A2:F';
-  const playersRange = config.googleSync?.playersRange || 'Players!A2:I';
+  const playersRange = config.googleSync?.playersRange || 'Player and Coach Management!A2:Q';
   const absencesRange = config.googleSync?.absencesRange || 'Absences!A2:Q';
   const playerCoachNotesRange = config.googleSync?.playerCoachNotesRange || 'Player and Coach Notes!A2:I';
+  const fixtureHeaders = ['eventId', 'title', 'date', 'location', 'team', 'discordMessageId', 'updatedAt'];
+  const teamFixtureSections = Object.keys(config.teams || {}).map((teamKey) => {
+    const teamLabel = config.teams?.[teamKey]?.label || teamKey;
+    const tabTitle = sanitizeSheetTitle(`${teamLabel} Fixtures`) || `${teamKey} Fixtures`;
+    const mappedRange = config.googleSync?.teamFixturesRanges?.[teamKey] || '';
+    const aliases = [
+      mappedRange ? getSheetNameFromRange(mappedRange) : '',
+      teamKey === 'mens' ? getSheetNameFromRange(config.googleSync?.mensFixturesRange || 'Mens Fixtures!A2:G') : '',
+      teamKey === 'womens' ? getSheetNameFromRange(config.googleSync?.womensFixturesRange || 'Womens Fixtures!A2:G') : ''
+    ].filter(Boolean);
+    return {
+      range: `${tabTitle}!A2:G`,
+      headers: fixtureHeaders,
+      description: `${teamLabel} fixtures only.`,
+      teamKey,
+      aliases
+    };
+  });
 
   const sections = [
     { range: 'Home!A2:E', headers: ['Tab', 'Purpose', 'Open', 'Previous', 'Next'], description: 'Navigation hub for every tab.' },
-    { range: fixturesRange, headers: ['eventId', 'title', 'date', 'location', 'team', 'discordMessageId', 'updatedAt'], description: 'All fixtures synced from events.' },
+    { range: fixturesRange, headers: fixtureHeaders, description: 'All fixtures synced from events.' },
     { range: commandLogRange, headers: ['timestamp', 'source', 'command', 'subcommand', 'options', 'guildId', 'channelId', 'userId', 'username'], description: 'Slash command activity log.' },
-    { range: mensFixturesRange, headers: ['eventId', 'title', 'date', 'location', 'team', 'discordMessageId', 'updatedAt'], description: 'Mens fixtures only.' },
-    { range: womensFixturesRange, headers: ['eventId', 'title', 'date', 'location', 'team', 'discordMessageId', 'updatedAt'], description: 'Womens fixtures only.' },
+    ...teamFixtureSections,
     { range: attendanceRange, headers: ['eventId', 'userId', 'username', 'team', 'status', 'updatedAt'], description: 'Attendance responses by event.' },
     { range: configRange, headers: ['key', 'value', 'updatedAt'], description: 'Flattened runtime configuration.' },
     { range: configIdsRange, headers: ['key', 'value', 'updatedAt'], description: 'Role / channel / team identifiers.' },
     { range: configBackupsRange, headers: ['backupOrder', 'timestamp', 'changedPath', 'reason', 'snapshotPreview', 'snapshot'], description: 'Last 5 config states before changes.' },
-    { range: playersRange, headers: ['userIdPreview', 'customName', 'shirtNumber', 'teams', 'roles', 'joinedDiscordAt', 'notes', 'facePngUrl', 'updatedAt', 'userId'], description: 'Player profiles and team assignments.' },
+    { range: playersRange, headers: ['userIdPreview', 'customName', 'nickName', 'gender', 'shirtNumber', 'shirtNumbersByTeam', 'teams', 'coachTeams', 'coachPositionsByTeam', 'roles', 'joinedDiscordAt', 'notes', 'faceImageUrl', 'notesLog', 'updatedAt', 'userId', 'profileJson'], description: 'Player + coach management profiles, including team assignments, titles, and saved profile fields.' },
     { range: absencesRange, headers: ['ticketPreview', 'channelPreview', 'eventPreview', 'eventTitle', 'eventDate', 'eventLocation', 'team', 'playerPreview', 'playerName', 'attendanceStatus', 'reason', 'coachDecision', 'coachPreview', 'coachName', 'closedAt', 'createdAt', 'closedReason', 'ticketId', 'channelId', 'eventId', 'playerId', 'coachId'], description: 'Absence tickets and outcomes.' },
     { range: playerCoachNotesRange, headers: ['notePreview', 'openNote', 'name', 'profileType', 'noteSummary', 'hidden', 'authorTag', 'createdAt', 'updatedAt', 'noteId', 'userId', 'authorId', 'note'], description: 'Player and coach notes with quick-open links.' }
   ];
@@ -964,8 +1053,9 @@ async function syncAllToSheet(config = {}, db = {}, options = {}) {
   await writeTabNavigationRows(sheets, spreadsheetId, sections, sheetIdByTitle);
 
   await writeRange(sheets, spreadsheetId, fixturesRange, buildFixtureRows(db), options);
-  await writeRange(sheets, spreadsheetId, mensFixturesRange, buildFixtureRowsForTeam(db, 'mens'), options);
-  await writeRange(sheets, spreadsheetId, womensFixturesRange, buildFixtureRowsForTeam(db, 'womens'), options);
+  for (const teamSection of teamFixtureSections) {
+    await writeRange(sheets, spreadsheetId, teamSection.range, buildFixtureRowsForTeam(db, teamSection.teamKey), options);
+  }
   await writeRange(sheets, spreadsheetId, attendanceRange, buildAttendanceRows(db), options);
   await writeRange(sheets, spreadsheetId, configRange, flattenConfig(config), options);
   await writeRange(sheets, spreadsheetId, configIdsRange, await buildMergedConfigIdRows(sheets, spreadsheetId, config, configIdsRange), options);
@@ -986,7 +1076,7 @@ async function syncAllToSheet(config = {}, db = {}, options = {}) {
   if (Number.isInteger(playersSheetId)) {
     hiddenColumnsRequests.push({
       updateDimensionProperties: {
-        range: { sheetId: playersSheetId, dimension: 'COLUMNS', startIndex: 9, endIndex: 10 },
+        range: { sheetId: playersSheetId, dimension: 'COLUMNS', startIndex: 15, endIndex: 17 },
         properties: { hiddenByUser: true },
         fields: 'hiddenByUser'
       }
@@ -1083,6 +1173,7 @@ module.exports = {
   saveSheetBackupSlot,
   buildSpreadsheetBackupSnapshot,
   restoreSpreadsheetFromBackupSnapshot,
+  renameSheetTabForRange,
   syncAllToSheet,
   syncConfigOnlyToSheet
 };

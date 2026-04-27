@@ -37,7 +37,8 @@ const {
   saveSheetBackupSlot,
   buildSpreadsheetBackupSnapshot,
   restoreSpreadsheetFromBackupSnapshot,
-  loadConfigFromSheet
+  loadConfigFromSheet,
+  renameSheetTabForRange
 } = require('../utils/googleSheetsSync');
 const coachCommand = require('../commands/coach');
 const adminCommand = require('../commands/admin');
@@ -50,6 +51,40 @@ function getTeamMeta(config = {}, team = '') {
     label: teamConfig.label || team,
     emoji: teamConfig.emoji || '🔹'
   };
+}
+
+function getTeamFixturesRangeByLabel(label = '') {
+  const safeTitle = String(label || '')
+    .replace(/[\\/?*\[\]:]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 95) || 'Team';
+  return `${safeTitle} Fixtures!A2:G`;
+}
+
+function getCoachRoleDefinitions(config = {}) {
+  const rawRoles = Array.isArray(config.coachRoles) ? config.coachRoles : [];
+  const normalized = rawRoles
+    .map((role) => ({
+      id: String(role?.id || '').trim(),
+      label: String(role?.label || '').trim()
+    }))
+    .filter((role) => role.id && role.label);
+  if (!normalized.length) normalized.push({ id: 'coach', label: 'Coach' });
+  if (!normalized.find((role) => role.id === 'coach')) normalized.unshift({ id: 'coach', label: 'Coach' });
+  const deduped = [];
+  const seen = new Set();
+  for (const role of normalized) {
+    if (seen.has(role.id)) continue;
+    seen.add(role.id);
+    deduped.push(role);
+  }
+  return deduped;
+}
+
+function getDefaultCoachRoleId(config = {}) {
+  const roles = getCoachRoleDefinitions(config);
+  return roles.find((role) => role.id === config.defaultCoachRoleId)?.id || roles[0]?.id || 'coach';
 }
 
 
@@ -94,6 +129,7 @@ function getClubManagementSummary() {
     '• 🛎️ Set Admin Chat — choose the admin log + failure channel.',
     '• 💬 Set Bot Commands Chat — choose where /player and /coach should run.',
     '• 💾 Backups — save/restore sheet snapshots.',
+    '• 🎓 Coach Roles — manage coaching title names and defaults.',
     '• 🧭 Event Type Rules — manage event type detection rules.',
     '• ⬅️ Back — return to Admin home.'
   ].join('\n');
@@ -159,6 +195,32 @@ function createBackButtonRow(customId = 'admin_back_to_panel', label = '⬅️ B
   );
 }
 
+function getCoachRolesEditorSummary(config = loadConfig()) {
+  const roles = getCoachRoleDefinitions(config);
+  const defaultRoleId = getDefaultCoachRoleId(config);
+  const lines = roles.map((role) => `• ${role.id === defaultRoleId ? '🟢' : '🔴'} ${role.label} (\`${role.id}\`)`);
+  return [
+    '🎓 **Coach Roles**',
+    'Manage coaching title options used on coach profiles.',
+    '',
+    `Default role: **${roles.find((role) => role.id === defaultRoleId)?.label || 'Coach'}** (\`${defaultRoleId}\`)`,
+    '',
+    lines.length ? lines.join('\n') : 'No roles configured.'
+  ].join('\n');
+}
+
+function createCoachRolesEditorRows(config = loadConfig()) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('admin_coach_roles_action:add').setLabel('➕ Add').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('admin_coach_roles_action:edit').setLabel('✏️ Edit').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('admin_coach_roles_action:remove').setLabel('🗑️ Remove').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId('admin_coach_roles_action:set_default').setLabel('✅ Set Default').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('admin_back_club_management').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
+    )
+  ];
+}
+
 function createTeamManagementRow() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -183,6 +245,7 @@ function createClubManagementRow() {
 function createClubManagementRow2() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('admin_club_action:backups').setLabel('💾 Backups').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_club_action:coach_roles').setLabel('🎓 Coach Roles').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('admin_club_action:event_type_rules').setLabel('🧭 Event Type Rules').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('admin_back_to_panel').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
   );
@@ -813,7 +876,9 @@ function createCoachManagementRow(config, guild) {
       const roleId = config.roles?.[teamKey]?.coach;
       return roleId && roleId !== 'ROLE_ID' && member?.roles?.cache?.has(roleId);
     });
-    const primaryTitle = coachedTeams.length ? getCoachPositionLabel(getCoachPositionForTeam(profile, coachedTeams[0])) : 'Coach';
+    const primaryTitle = coachedTeams.length
+      ? getCoachPositionLabel(getCoachPositionForTeam(profile, coachedTeams[0], config), config)
+      : getCoachPositionLabel(getDefaultCoachRoleId(config), config);
     return {
       label: `${primaryTitle} ${member?.displayName || member?.user?.username || userId}`.slice(0, 100),
       value: userId,
@@ -837,7 +902,6 @@ function createPlayerProfileActionRow(userId, mode = 'player') {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`admin_player_action:set_name:${userId}:${mode}`).setLabel('🪪 Name').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(`admin_player_action:set_nickname:${userId}:${mode}`).setLabel('🤿 Nickname').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`admin_player_action:set_face:${userId}:${mode}`).setLabel('📸 Photo').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(`admin_player_action:set_shirt:${userId}:${mode}`).setLabel('👕 Shirt by Team').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(`admin_player_action:set_notes:${userId}:${mode}`).setLabel('🗒️ Notes').setStyle(ButtonStyle.Secondary)
   );
@@ -928,6 +992,37 @@ function createPlayerRoleAssignRow(userId, mode = 'player') {
   );
 }
 
+function createCoachTeamButtons(config, userId, mode = 'coach', coachTeams = []) {
+  const buttons = coachTeams.slice(0, 20).map((team) => new ButtonBuilder()
+    .setCustomId(`admin_coach_position_team_button:${userId}:${mode}:${team}`)
+    .setLabel(getTeamMeta(config, team).label.slice(0, 80))
+    .setStyle(ButtonStyle.Primary));
+  const rows = [];
+  for (let i = 0; i < buttons.length; i += 5) {
+    rows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
+  }
+  rows.push(createBackButtonRow(`admin_player_back_to_profile:${userId}:${mode}`, '⬅️ Back to Profile'));
+  return rows;
+}
+
+function createCoachRoleButtons(config, userId, mode = 'coach', team = '', currentValue = '') {
+  const roles = getCoachRoleDefinitions(config);
+  const chosen = currentValue || getDefaultCoachRoleId(config);
+  const buttons = roles.slice(0, 20).map((role) => new ButtonBuilder()
+    .setCustomId(`admin_coach_position_set:${userId}:${mode}:${team}:${role.id}`)
+    .setLabel(role.label.slice(0, 80))
+    .setStyle(role.id === chosen ? ButtonStyle.Success : ButtonStyle.Danger));
+  const rows = [];
+  for (let i = 0; i < buttons.length; i += 5) {
+    rows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
+  }
+  rows.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`admin_player_action:set_coach_positions:${userId}:${mode}`).setLabel('⬅️ Back to Teams').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_player_back_to_profile:${userId}:${mode}`).setLabel('👤 Back to Profile').setStyle(ButtonStyle.Secondary)
+  ));
+  return rows;
+}
+
 function createGenderButtonsRow(userId, mode = 'player') {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`admin_player_set_gender:${userId}:${mode}:male`).setLabel('Male').setStyle(ButtonStyle.Primary),
@@ -964,15 +1059,13 @@ function getShirtForTeam(profile = {}, team = '') {
   return profile.shirtNumber || '';
 }
 
-function getCoachPositionForTeam(profile = {}, team = '') {
-  return profile.coachPositions?.[team] || '';
+function getCoachPositionForTeam(profile = {}, team = '', config = loadConfig()) {
+  return profile.coachPositions?.[team] || getDefaultCoachRoleId(config);
 }
 
-function getCoachPositionLabel(value = '') {
-  if (value === 'head_coach') return 'Head Coach';
-  if (value === 'assistant_coach') return 'Assistant Coach';
-  if (value === 'goalkeeping_coach') return 'Goal Keeping Coach';
-  return 'Coach';
+function getCoachPositionLabel(value = '', config = loadConfig()) {
+  const roles = getCoachRoleDefinitions(config);
+  return roles.find((role) => role.id === value)?.label || roles.find((role) => role.id === 'coach')?.label || 'Coach';
 }
 
 async function handleAdminPlayerAction(interaction, selectedAction, userId, mode = 'player') {
@@ -1059,17 +1152,11 @@ async function handleAdminPlayerAction(interaction, selectedAction, userId, mode
       });
       return true;
     }
-    const row = new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId(`admin_coach_position_team:${userId}:${mode}`)
-        .setPlaceholder('Pick team to set coach position')
-        .addOptions(coachTeams.slice(0, 25).map((team) => ({
-          label: `${getTeamMeta(latestConfig, team).label}`.slice(0, 100),
-          value: team,
-          description: `${getCoachPositionForTeam(mergedProfile, team) || 'Not set'}`.slice(0, 100)
-        })))
-    );
-    await interaction.update({ content: 'Choose the coached team to set position.', embeds: [], components: [row, createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')] });
+    await interaction.update({
+      content: 'Select a team button, then pick a coaching title.',
+      embeds: [],
+      components: createCoachTeamButtons(latestConfig, userId, mode, coachTeams)
+    });
     return true;
   }
 
@@ -1141,7 +1228,7 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
       return `${getTeamMeta(config, team).label}${shirt ? ` (#${shirt})` : ''}`;
     }).join(', ')
     : 'Does not play for a team';
-  const coachTeamLabels = coachingTeams.map((team) => `${getTeamMeta(config, team).label} (${getCoachPositionLabel(getCoachPositionForTeam(profile, team))})`).join(', ');
+  const coachTeamLabels = coachingTeams.map((team) => `${getTeamMeta(config, team).label} (${getCoachPositionLabel(getCoachPositionForTeam(profile, team, config), config)})`).join(', ');
   const captainTeams = playingTeams.filter((team) => {
     const captainRoleId = config.teams?.[team]?.captainRoleId;
     return captainRoleId && member?.roles?.cache?.has(captainRoleId);
@@ -1151,10 +1238,6 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
     : 'Not captain';
   const roles = (profile.roles || []).map((roleId) => formatConfigRef(guild, 'role', roleId)).join(', ') || 'not set';
   const joined = profile.joinedDiscordAt || (member?.joinedAt ? member.joinedAt.toISOString().slice(0, 10) : 'unknown');
-  const faceImageUrl = profile.faceImageUrl || profile.facePngUrl || '';
-  const hasImage = Boolean(faceImageUrl);
-  const canRenderImage = /^https?:\/\/\S+\.(png|webp|jpe?g)(?:\?\S*)?$/i.test(faceImageUrl);
-  const faceImageLabel = !hasImage ? 'No image set' : canRenderImage ? 'Image shown below' : 'Error cannot view set image';
   const notes = getProfileNotes(profile);
   const visibleNotes = notes.filter((note) => !note.hidden);
   const hiddenCount = notes.length - visibleNotes.length;
@@ -1165,7 +1248,14 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
       .join('\n')
     : '  - none';
 
-  const managerLabel = mode === 'coach' ? 'Managing manager (coach profile)' : 'Managing player';
+  const displayName = nickname || realName;
+  const primaryCoachTeam = coachingTeams[0];
+  const coachTitle = primaryCoachTeam ? getCoachPositionLabel(getCoachPositionForTeam(profile, primaryCoachTeam, config), config) : getCoachPositionLabel(getDefaultCoachRoleId(config), config);
+  const managerLabel = (mode === 'coach' && playingTeams.length)
+    ? `Managing "Player/${coachTitle}" ${displayName}`
+    : mode === 'coach'
+      ? `Managing "${coachTitle}" ${displayName}`
+      : `Managing player ${displayName}`;
   const attendanceSummary = buildAttendanceStatsMessage(user?.id || profile.userId, config).split('\n').slice(1).join('\n');
   const absenceLines = buildDetailedAttendanceMessage(user?.id || profile.userId, config, 'all')
     .split('\n')
@@ -1175,7 +1265,6 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
   return [
     `${managerLabel}: <@${user?.id || profile.userId}>`,
     '',
-    `🖼️ Face image: ${faceImageLabel}`,
     `🪪 Name: ${realName}`,
     '',
     '**Profile**',
@@ -1183,7 +1272,6 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
     `• Real name: ${realName}`,
     `• Gender: ${profile.gender || 'not set'}`,
     `• Nickname: ${nickname || 'not set'}`,
-    `• Face image: ${faceImageLabel}`,
     `• Joined discord server: ${joined}`,
     '',
     '**Teams**',
@@ -1631,6 +1719,15 @@ module.exports = {
           await interaction.update({ content: `💾 Sheet Backups (max 5 slots)\nStores every non-Backups tab and every row/cell.\n${lines.join('\n')}`, embeds: [], components: [row] });
           return;
         }
+        if (action === 'coach_roles') {
+          const latestConfig = loadConfig();
+          await interaction.update({
+            content: getCoachRolesEditorSummary(latestConfig),
+            embeds: [],
+            components: createCoachRolesEditorRows(latestConfig)
+          });
+          return;
+        }
       }
       if (interaction.customId.startsWith('admin_google_action:')) {
         const action = interaction.customId.split(':')[1];
@@ -1874,6 +1971,55 @@ module.exports = {
           content: getCoachManagementSummary(),
           embeds: [],
           components: [createCoachManagementRow(loadConfig(), interaction.guild), createAdminBackButtonRow()]
+        });
+        return;
+      }
+      if (interaction.customId.startsWith('admin_coach_roles_action:')) {
+        const action = interaction.customId.split(':')[1];
+        const latestConfig = loadConfig();
+        const roles = getCoachRoleDefinitions(latestConfig);
+        if (action === 'add') {
+          const modal = new ModalBuilder().setCustomId('admin_coach_roles_modal:add').setTitle('Add Coach Role');
+          modal.addComponents(new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId('role_label').setLabel('Role title').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80)
+          ));
+          await interaction.showModal(modal);
+          return;
+        }
+        if (['edit', 'remove', 'set_default'].includes(action)) {
+          const row = new ActionRowBuilder().addComponents(
+            new StringSelectMenuBuilder()
+              .setCustomId(`admin_coach_roles_pick:${action}`)
+              .setPlaceholder(`Select a role to ${action.replace('_', ' ')}`)
+              .setMinValues(1)
+              .setMaxValues(1)
+              .addOptions(roles.map((role) => ({ label: role.label.slice(0, 100), value: role.id })))
+          );
+          await interaction.update({ content: `Choose a role to ${action.replace('_', ' ')}.`, embeds: [], components: [row, ...createCoachRolesEditorRows(latestConfig)] });
+          return;
+        }
+      }
+      if (interaction.customId.startsWith('admin_coach_position_team_button:')) {
+        const [, userId, mode = 'coach', team] = interaction.customId.split(':');
+        const latestConfig = loadConfig();
+        const profile = getPlayerProfile(userId) || {};
+        await interaction.update({
+          content: `Set coaching title for **${getTeamMeta(latestConfig, team).label}**.`,
+          embeds: [],
+          components: createCoachRoleButtons(latestConfig, userId, mode, team, getCoachPositionForTeam(profile, team, latestConfig))
+        });
+        return;
+      }
+      if (interaction.customId.startsWith('admin_coach_position_set:')) {
+        const [, userId, mode = 'coach', team, roleId] = interaction.customId.split(':');
+        const profile = getPlayerProfile(userId) || {};
+        const coachPositions = { ...(profile.coachPositions || {}), [team]: roleId };
+        upsertPlayerProfile(userId, { coachPositions });
+        const latestConfig = loadConfig();
+        await interaction.update({
+          content: `Updated **${getTeamMeta(latestConfig, team).label}** coaching title to **${getCoachPositionLabel(roleId, latestConfig)}**.`,
+          embeds: [],
+          components: createCoachRoleButtons(latestConfig, userId, mode, team, roleId)
         });
         return;
       }
@@ -3410,8 +3556,18 @@ module.exports = {
           return;
         }
       }
+      const existingCoachPositions = { ...(existingProfile.coachPositions || {}) };
+      if (mode === 'coach') {
+        const defaultCoachRoleId = getDefaultCoachRoleId(loadConfig());
+        for (const teamKey of selectedTeams) {
+          if (!existingCoachPositions[teamKey]) existingCoachPositions[teamKey] = defaultCoachRoleId;
+        }
+        for (const teamKey of Object.keys(existingCoachPositions)) {
+          if (!selectedTeams.includes(teamKey)) delete existingCoachPositions[teamKey];
+        }
+      }
       const profile = upsertPlayerProfile(userId, mode === 'coach'
-        ? { coachTeams: selectedTeams }
+        ? { coachTeams: selectedTeams, coachPositions: existingCoachPositions }
         : { teams: selectedTeams });
       const targetMember = await interaction.guild.members.fetch(userId).catch(() => null);
       const targetUser = targetMember?.user || await interaction.client.users.fetch(userId).catch(() => null);
@@ -3458,35 +3614,81 @@ module.exports = {
       }
 
       if (interaction.customId.startsWith('admin_coach_position_team:')) {
-        const [, userId, mode = 'player'] = interaction.customId.split(':');
+        const [, userId, mode = 'coach'] = interaction.customId.split(':');
         const team = interaction.values[0];
-        const row = new ActionRowBuilder().addComponents(
-          new StringSelectMenuBuilder()
-            .setCustomId(`admin_coach_position_value:${userId}:${mode}:${team}`)
-            .setPlaceholder(`Set ${getTeamMeta(loadConfig(), team).label} coach position`)
-            .addOptions([
-              { label: 'Head Coach', value: 'head_coach', description: 'Displayed as Head Coach Name' },
-              { label: 'Assistant Coach', value: 'assistant_coach', description: 'Displayed as Assistant Coach Name' },
-              { label: 'Goal Keeping Coach', value: 'goalkeeping_coach', description: 'Displayed as Goal Keeping Coach Name' },
-              { label: 'Coach', value: 'coach', description: 'Displayed as Coach Name' }
-            ])
-        );
-        await interaction.update({ content: 'Choose coach position for this team.', embeds: [], components: [row, createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')] });
+        const latestConfig = loadConfig();
+        const profile = getPlayerProfile(userId) || {};
+        const current = getCoachPositionForTeam(profile, team, latestConfig);
+        await interaction.update({
+          content: `Set coaching title for **${getTeamMeta(latestConfig, team).label}**.`,
+          embeds: [],
+          components: createCoachRoleButtons(latestConfig, userId, mode, team, current)
+        });
         return;
       }
 
-      if (interaction.customId.startsWith('admin_coach_position_value:')) {
-        const [, userId, mode = 'player', team] = interaction.customId.split(':');
-        const value = interaction.values[0];
-        const profile = getPlayerProfile(userId) || {};
-        const coachPositions = { ...(profile.coachPositions || {}), [team]: value };
-        const updated = upsertPlayerProfile(userId, { coachPositions });
-        await interaction.update({
-          content: getCoachManagementSummary(),
-          embeds: [],
-          components: [createCoachManagementRow(loadConfig(), interaction.guild), createAdminBackButtonRow()]
-        });
-        return;
+      if (interaction.customId.startsWith('admin_coach_roles_pick:')) {
+        const [, action] = interaction.customId.split(':');
+        const selectedRoleId = interaction.values[0];
+        const latestConfig = loadConfig();
+        const roles = getCoachRoleDefinitions(latestConfig);
+        const selectedRole = roles.find((role) => role.id === selectedRoleId);
+        if (!selectedRole) {
+          await interaction.update({ content: 'Coach role no longer exists. Refresh and try again.', embeds: [], components: createCoachRolesEditorRows(latestConfig) });
+          return;
+        }
+
+        if (action === 'edit') {
+          const modal = new ModalBuilder().setCustomId(`admin_coach_roles_modal:edit:${selectedRole.id}`).setTitle('Edit Coach Role');
+          modal.addComponents(new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId('role_label').setLabel('Role title').setStyle(TextInputStyle.Short).setRequired(true).setValue(selectedRole.label).setMaxLength(80)
+          ));
+          await interaction.showModal(modal);
+          return;
+        }
+
+        if (action === 'remove') {
+          const defaultRoleId = getDefaultCoachRoleId(latestConfig);
+          const fallbackRoleId = selectedRole.id === defaultRoleId
+            ? roles.find((role) => role.id !== selectedRole.id)?.id || 'coach'
+            : defaultRoleId;
+          const updatedRoles = roles.filter((role) => role.id !== selectedRole.id);
+          const db = loadDb();
+          const affected = [];
+          for (const [userId, profile] of Object.entries(db.players || {})) {
+            const coachPositions = { ...(profile.coachPositions || {}) };
+            let changed = false;
+            for (const teamKey of Object.keys(coachPositions)) {
+              if (coachPositions[teamKey] === selectedRole.id) {
+                coachPositions[teamKey] = fallbackRoleId;
+                changed = true;
+              }
+            }
+            if (changed) {
+              db.players[userId] = { ...profile, coachPositions, updatedAt: new Date().toISOString() };
+              affected.push(userId);
+            }
+          }
+          saveDb(db);
+          updateConfig('coachRoles', updatedRoles);
+          if (selectedRole.id === defaultRoleId) updateConfig('defaultCoachRoleId', fallbackRoleId);
+          const refreshed = loadConfig();
+          await interaction.update({
+            content: [
+              `✅ Removed role **${selectedRole.label}**.`,
+              affected.length ? `Affected coaches moved to default role: ${affected.map((id) => `<@${id}>`).join(', ')}` : 'No coaches were using that role.'
+            ].join('\n'),
+            embeds: [],
+            components: createCoachRolesEditorRows(refreshed)
+          });
+          return;
+        }
+
+        if (action === 'set_default') {
+          updateConfig('defaultCoachRoleId', selectedRole.id);
+          await interaction.update({ content: getCoachRolesEditorSummary(loadConfig()), embeds: [], components: createCoachRolesEditorRows(loadConfig()) });
+          return;
+        }
       }
 
       if (interaction.customId.startsWith('admin_player_set_gender:')) {
@@ -4007,6 +4209,40 @@ module.exports = {
       return;
     }
 
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('admin_coach_roles_modal:')) {
+      if (!hasAdminAccess(interaction.member, config)) {
+        await denyAdminAccess();
+        return;
+      }
+      const [, action, roleId = ''] = interaction.customId.split(':');
+      const roleLabel = interaction.fields.getTextInputValue('role_label').trim();
+      if (!roleLabel) {
+        await interaction.reply({ content: 'Coach role title cannot be empty.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const latestConfig = loadConfig();
+      const roles = getCoachRoleDefinitions(latestConfig);
+      if (action === 'add') {
+        const slug = roleLabel.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || `role_${Date.now()}`;
+        let nextId = slug;
+        let attempt = 2;
+        while (roles.find((role) => role.id === nextId)) {
+          nextId = `${slug}_${attempt}`;
+          attempt += 1;
+        }
+        updateConfig('coachRoles', [...roles, { id: nextId, label: roleLabel }]);
+      } else if (action === 'edit') {
+        updateConfig('coachRoles', roles.map((role) => (role.id === roleId ? { ...role, label: roleLabel } : role)));
+      }
+      await interaction.reply({
+        content: getCoachRolesEditorSummary(loadConfig()),
+        embeds: [],
+        components: createCoachRolesEditorRows(loadConfig()),
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
     if (interaction.isModalSubmit() && interaction.customId.startsWith('admin_player_note_modal:add:')) {
       const [, , userId, mode = 'player'] = interaction.customId.split(':');
       const noteText = interaction.fields.getTextInputValue('note_text').trim();
@@ -4300,13 +4536,19 @@ module.exports = {
 
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await interaction.editReply({ content: renderProgressMessage(0, 'Updating team name...') });
+      const oldTeamLabel = config.teams?.[team]?.label || team;
+      const oldRange = config.googleSync?.teamFixturesRanges?.[team] || getTeamFixturesRangeByLabel(oldTeamLabel);
+      const newRange = getTeamFixturesRangeByLabel(teamName);
       updateConfig(`teams.${team}.label`, teamName);
+      updateConfig(`googleSync.teamFixturesRanges.${team}`, newRange);
       await interaction.editReply({ content: renderProgressMessage(40, 'Saving team label...') });
       await logAdminUiAction(interaction, 'admin', 'set-team-name', { team, teamName });
 
       try {
         await interaction.editReply({ content: renderProgressMessage(70, 'Syncing configuration...') });
+        await renameSheetTabForRange(loadConfig(), oldRange, newRange).catch(() => null);
         await syncConfigSnapshotIfEnabled();
+        await triggerGoogleSync(context);
       } catch (error) {
         await interaction.editReply({ content: `✅ Team name updated. ⚠️ Sync warning: ${error.message}` });
         return;
@@ -4385,6 +4627,7 @@ module.exports = {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       await interaction.editReply({ content: renderProgressMessage(0, 'Creating new team...') });
       updateConfig(`teams.${teamKey}`, { emoji: teamEmoji, label: teamLabel, gender: teamGender, eventNamePhrases: [] });
+      updateConfig(`googleSync.teamFixturesRanges.${teamKey}`, getTeamFixturesRangeByLabel(teamLabel));
       updateConfig(`roles.${teamKey}`, { player: 'ROLE_ID', coach: 'ROLE_ID' });
       updateConfig(`channels.teamChats.${teamKey}`, '');
       updateConfig(`channels.staffRooms.${teamKey}`, '');
@@ -4395,6 +4638,7 @@ module.exports = {
       try {
         await interaction.editReply({ content: renderProgressMessage(70, 'Syncing configuration...') });
         await syncConfigSnapshotIfEnabled();
+        await triggerGoogleSync(context);
       } catch (error) {
         await interaction.editReply({
           content: `✅ Team created: **${teamLabel}** (\`${teamKey}\`). Configure roles/chats from Admin panel. ⚠️ Sync warning: ${error.message}`
