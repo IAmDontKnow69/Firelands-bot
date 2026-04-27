@@ -72,6 +72,48 @@ function getGoogleToolsSummary(config = {}) {
   ].join('\n');
 }
 
+function getTeamManagementSummary() {
+  return [
+    '🛠️ **Team Management**',
+    'Choose a team button to open its setup panel.',
+    '',
+    'Buttons in this menu:',
+    '• Team button — open that team settings page.',
+    '• ➕ Create Team — add a new team key and label to config.',
+    '• ⬅️ Back — return to the Admin home menu.'
+  ].join('\n');
+}
+
+function getClubManagementSummary() {
+  return [
+    '🏟️ **Club Management**',
+    'Configure club-wide settings and integrations.',
+    '',
+    'Buttons in this menu:',
+    '• 📗 Google — open Google tools (calendar/sheets/addresses).',
+    '• 🛎️ Set Admin Chat — choose the admin log + failure channel.',
+    '• 💬 Set Bot Commands Chat — choose where /player and /coach should run.',
+    '• 💾 Backups — save/restore sheet snapshots.',
+    '• 🧭 Event Type Rules — manage event type detection rules.',
+    '• ⬅️ Back — return to Admin home.'
+  ].join('\n');
+}
+
+function getPlayerManagementSummary() {
+  return [
+    '👕 **Player Management**',
+    'Select a player from the menu to edit profile details, teams, notes, roles, and attendance.'
+  ].join('\n');
+}
+
+function getCoachManagementSummary() {
+  return [
+    '🧢 **Coach Management**',
+    'Only users with configured coach roles are listed.',
+    'Select a coach to edit profile details and coaching assignments.'
+  ].join('\n');
+}
+
 function teamAllowsGender(teamGender = '', playerGender = '') {
   const teamValue = String(teamGender || '').toLowerCase();
   const playerValue = String(playerGender || '').toLowerCase();
@@ -163,9 +205,13 @@ function createGoogleToolsRow2() {
   );
 }
 
-function createEventTypeRulesRow() {
+function createEventTypeRulesRow(config = loadConfig()) {
+  const autoDetectEnabled = getEventTypeConfig(config).autoDetect;
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('admin_event_type_rule:disable_auto_detect').setLabel('🛑 Turn OFF Auto Detect').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId('admin_event_type_rule:toggle_auto_detect')
+      .setLabel(autoDetectEnabled ? '🛑 Turn OFF Auto Detect' : '✅ Turn ON Auto Detect')
+      .setStyle(autoDetectEnabled ? ButtonStyle.Danger : ButtonStyle.Success),
     new ButtonBuilder().setCustomId('admin_event_type_rule:set_practice_exact').setLabel('📝 Practice Exact Names').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('admin_event_type_rule:set_match_exact').setLabel('🏁 Match Exact Names').setStyle(ButtonStyle.Secondary)
   );
@@ -1379,7 +1425,7 @@ module.exports = {
       if (interaction.customId === 'admin_back_team_management') {
         const latestConfig = loadConfig();
         await interaction.update({
-          content: '🛠️ Team Management: choose a team button, create a team, or go back.',
+          content: getTeamManagementSummary(),
           embeds: [],
           components: [...createTeamButtonsRows(latestConfig), createTeamManagementRow()]
         });
@@ -1387,7 +1433,7 @@ module.exports = {
       }
       if (interaction.customId === 'admin_back_club_management') {
         await interaction.update({
-          content: '🏟️ Club Management:',
+          content: getClubManagementSummary(),
           embeds: [],
           components: [createClubManagementRow(), createClubManagementRow2()]
         });
@@ -1404,7 +1450,7 @@ module.exports = {
       if (interaction.customId === 'admin_back_player_management') {
         await interaction.guild?.members.fetch().catch(() => null);
         await interaction.update({
-          content: '👕 Player Management: select a player to edit profile details.',
+          content: getPlayerManagementSummary(),
           embeds: [],
           components: [...createPlayerManagementRows('player', interaction.guild, 0), createAdminBackButtonRow()]
         });
@@ -1447,27 +1493,27 @@ module.exports = {
         if (action === 'team_management') {
           const latestConfig = loadConfig();
           await interaction.update({
-            content: '🛠️ Team Management: choose a team button, create a team, or go back.',
+            content: getTeamManagementSummary(),
             embeds: [],
             components: [...createTeamButtonsRows(latestConfig), createTeamManagementRow()]
           });
           return;
         }
         if (action === 'club_management') {
-          await interaction.update({ content: '🏟️ Club Management:', embeds: [], components: [createClubManagementRow(), createClubManagementRow2()] });
+          await interaction.update({ content: getClubManagementSummary(), embeds: [], components: [createClubManagementRow(), createClubManagementRow2()] });
           return;
         }
         if (action === 'player_management') {
           await interaction.guild?.members.fetch().catch(() => null);
           await interaction.update({
-            content: '👕 Player Management: select a player to edit profile details.',
+            content: getPlayerManagementSummary(),
             embeds: [],
             components: [...createPlayerManagementRows('player', interaction.guild, 0), createAdminBackButtonRow()]
           });
           return;
         }
         if (action === 'coach_management') {
-          await interaction.update({ content: 'Coach Management: only users with coach roles are shown here.', embeds: [], components: [createCoachManagementRow(loadConfig(), interaction.guild), createAdminBackButtonRow()] });
+          await interaction.update({ content: getCoachManagementSummary(), embeds: [], components: [createCoachManagementRow(loadConfig(), interaction.guild), createAdminBackButtonRow()] });
           return;
         }
         if (action === 'club_report') {
@@ -1500,14 +1546,21 @@ module.exports = {
           const rules = getEventTypeConfig(loadConfig());
           await interaction.update({
             content: [
-              'Event type rules:',
+              '🧭 **Event Type Rules**',
+              'Control how fixtures are classified as practice/match/other.',
+              '',
+              'Buttons in this menu:',
+              '• Auto Detect toggle — switch title-based auto classification ON/OFF.',
+              '• Practice/Match/Other Exact Names — save exact title matches per type.',
+              '• Manual Event Type — change a specific event type manually.',
+              '',
               `• Auto Detect: **${rules.autoDetect ? 'ON' : 'OFF'}**`,
               `• Practice Exact Names: ${rules.practiceExactNames.join(', ') || 'none'}`,
               `• Match Exact Names: ${rules.matchExactNames.join(', ') || 'none'}`,
               `• Other Exact Names: ${rules.otherExactNames.join(', ') || 'none'}`
             ].join('\n'),
             embeds: [],
-            components: [createEventTypeRulesRow(), createEventTypeRulesRow2()]
+            components: [createEventTypeRulesRow(loadConfig()), createEventTypeRulesRow2()]
           });
           return;
         }
@@ -1670,8 +1723,8 @@ module.exports = {
         const selected = interaction.customId.split(':')[1];
         const latestConfig = loadConfig();
 
-        if (selected === 'disable_auto_detect') {
-          updateConfig('eventTypes.autoDetect', false);
+        if (selected === 'toggle_auto_detect') {
+          updateConfig('eventTypes.autoDetect', !latestConfig.eventTypes?.autoDetect);
           const updated = getEventTypeConfig(loadConfig());
           await interaction.update({
             content: `✅ Auto detect is now **${updated.autoDetect ? 'ON' : 'OFF'}**.`,
@@ -1758,7 +1811,7 @@ module.exports = {
         const page = Number.parseInt(interaction.customId.split(':')[1] || '0', 10);
         await interaction.guild?.members.fetch().catch(() => null);
         await interaction.update({
-          content: '👕 Player Management: select a player to edit profile details.',
+          content: getPlayerManagementSummary(),
           embeds: [],
           components: [...createPlayerManagementRows('player', interaction.guild, Number.isNaN(page) ? 0 : page), createAdminBackButtonRow()]
         });
@@ -1766,7 +1819,7 @@ module.exports = {
       }
       if (interaction.customId === 'admin_back_coach_management') {
         await interaction.update({
-          content: '🧢 Coach Management: select a coach to edit profile details.',
+          content: getCoachManagementSummary(),
           embeds: [],
           components: [createCoachManagementRow(loadConfig(), interaction.guild), createAdminBackButtonRow()]
         });

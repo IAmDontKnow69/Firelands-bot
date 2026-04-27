@@ -38,11 +38,13 @@ function buildAdminPanelEmbed(config = {}) {
     .setTitle('🔥 Firelands Bot Admin UI')
     .setDescription([
       'Use this panel to run admin actions directly (no copy/paste commands needed).',
-      '• Team Management: Configure each team, IDs, fixtures, names and emojis.',
-      '• Player Management: Open and edit player profiles and attendance.',
-      '• Coach Management: Open and edit coach profiles and permissions.',
-      '• Club Management: Google sync, calendar, admin chat and command channel setup.',
-      '• Club Report: Team-by-team attendance summary.',
+      '',
+      '**Main menu buttons:**',
+      '• 🛠️ Team Management — create teams and configure roles/channels/fixtures per team.',
+      '• 👕 Player Management — find a player and edit profile, teams, notes, and attendance data.',
+      '• 🧢 Coach Management — manage coach profiles and coach-team assignments.',
+      '• 🏟️ Club Management — Google tools, admin chat, command channel, and backups.',
+      '• 📊 Club Report — team-by-team attendance summary snapshot.',
       '',
       `Current teams: ${teamLabels || 'No teams configured'}`
     ].join('\n'));
