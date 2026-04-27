@@ -808,8 +808,14 @@ function createCoachManagementRow(config, guild) {
 
   const options = Array.from(coachIds).slice(0, 25).map((userId) => {
     const member = guild.members.cache.get(userId);
+    const profile = getPlayerProfile(userId) || {};
+    const coachedTeams = Object.keys(config.teams || {}).filter((teamKey) => {
+      const roleId = config.roles?.[teamKey]?.coach;
+      return roleId && roleId !== 'ROLE_ID' && member?.roles?.cache?.has(roleId);
+    });
+    const primaryTitle = coachedTeams.length ? getCoachPositionLabel(getCoachPositionForTeam(profile, coachedTeams[0])) : 'Coach';
     return {
-      label: (member?.displayName || member?.user?.username || userId).slice(0, 100),
+      label: `${primaryTitle} ${member?.displayName || member?.user?.username || userId}`.slice(0, 100),
       value: userId,
       description: `Manage coach ${member?.user?.tag || userId}`.slice(0, 100)
     };
@@ -838,12 +844,18 @@ function createPlayerProfileActionRow(userId, mode = 'player') {
 }
 
 function createPlayerProfileActionRow2(userId, mode = 'player') {
-  return new ActionRowBuilder().addComponents(
+  const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`admin_player_action:set_teams:${userId}:${mode}`).setLabel('🧩 Teams').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`admin_player_action:set_gender:${userId}:${mode}`).setLabel('⚧️ Gender').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`admin_player_action:assign_roles:${userId}:${mode}`).setLabel('🎭 Assign Roles').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`admin_player_view_attendance:${userId}:${mode}`).setLabel('📈 Attendance').setStyle(ButtonStyle.Success)
   );
+  if (mode === 'coach') {
+    row.addComponents(
+      new ButtonBuilder().setCustomId(`admin_player_action:set_coach_positions:${userId}:${mode}`).setLabel('🎓 Coaching Title').setStyle(ButtonStyle.Primary)
+    );
+  }
+  return row;
 }
 
 function getProfileNotes(profile = {}) {
@@ -910,9 +922,17 @@ function createPlayerRoleAssignRow(userId, mode = 'player') {
   return new ActionRowBuilder().addComponents(
     new RoleSelectMenuBuilder()
       .setCustomId(`admin_player_assign_roles:${userId}:${mode}`)
-      .setPlaceholder('Select roles to add')
+      .setPlaceholder('Select role(s) to toggle (add/remove)')
       .setMinValues(1)
-      .setMaxValues(10)
+      .setMaxValues(25)
+  );
+}
+
+function createGenderButtonsRow(userId, mode = 'player') {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`admin_player_set_gender:${userId}:${mode}:male`).setLabel('Male').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`admin_player_set_gender:${userId}:${mode}:female`).setLabel('Female').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`admin_player_set_gender:${userId}:${mode}:clear`).setLabel('Not set').setStyle(ButtonStyle.Secondary)
   );
 }
 
@@ -946,6 +966,13 @@ function getShirtForTeam(profile = {}, team = '') {
 
 function getCoachPositionForTeam(profile = {}, team = '') {
   return profile.coachPositions?.[team] || '';
+}
+
+function getCoachPositionLabel(value = '') {
+  if (value === 'head_coach') return 'Head Coach';
+  if (value === 'assistant_coach') return 'Assistant Coach';
+  if (value === 'goalkeeping_coach') return 'Goal Keeping Coach';
+  return 'Coach';
 }
 
 async function handleAdminPlayerAction(interaction, selectedAction, userId, mode = 'player') {
@@ -982,9 +1009,18 @@ async function handleAdminPlayerAction(interaction, selectedAction, userId, mode
 
   if (selectedAction === 'assign_roles') {
     await interaction.update({
-      content: 'Select roles to add to this player.',
+      content: 'Select role(s) to toggle. Existing selected role(s) will be removed on Discord; missing role(s) will be added.',
       embeds: [],
       components: [createPlayerRoleAssignRow(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')]
+    });
+    return true;
+  }
+
+  if (selectedAction === 'set_gender') {
+    await interaction.update({
+      content: 'Set gender using the buttons below.',
+      embeds: [],
+      components: [createGenderButtonsRow(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')]
     });
     return true;
   }
@@ -1105,11 +1141,7 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
       return `${getTeamMeta(config, team).label}${shirt ? ` (#${shirt})` : ''}`;
     }).join(', ')
     : 'Does not play for a team';
-  const coachTeamLabels = coachingTeams.map((team) => {
-    const pos = getCoachPositionForTeam(profile, team);
-    const label = pos === 'assistant_coach' ? 'Assistant Coach' : pos === 'head_coach' ? 'Head Coach' : 'Coach';
-    return `${getTeamMeta(config, team).label} (${label})`;
-  }).join(', ');
+  const coachTeamLabels = coachingTeams.map((team) => `${getTeamMeta(config, team).label} (${getCoachPositionLabel(getCoachPositionForTeam(profile, team))})`).join(', ');
   const captainTeams = playingTeams.filter((team) => {
     const captainRoleId = config.teams?.[team]?.captainRoleId;
     return captainRoleId && member?.roles?.cache?.has(captainRoleId);
@@ -1119,7 +1151,10 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
     : 'Not captain';
   const roles = (profile.roles || []).map((roleId) => formatConfigRef(guild, 'role', roleId)).join(', ') || 'not set';
   const joined = profile.joinedDiscordAt || (member?.joinedAt ? member.joinedAt.toISOString().slice(0, 10) : 'unknown');
-  const faceImageUrl = profile.faceImageUrl || profile.facePngUrl || 'not set';
+  const faceImageUrl = profile.faceImageUrl || profile.facePngUrl || '';
+  const hasImage = Boolean(faceImageUrl);
+  const canRenderImage = /^https?:\/\/\S+\.(png|webp|jpe?g)(?:\?\S*)?$/i.test(faceImageUrl);
+  const faceImageLabel = !hasImage ? 'No image set' : canRenderImage ? 'Image shown below' : 'Error cannot view set image';
   const notes = getProfileNotes(profile);
   const visibleNotes = notes.filter((note) => !note.hidden);
   const hiddenCount = notes.length - visibleNotes.length;
@@ -1140,7 +1175,7 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
   return [
     `${managerLabel}: <@${user?.id || profile.userId}>`,
     '',
-    `🖼️ Face image: ${faceImageUrl}`,
+    `🖼️ Face image: ${faceImageLabel}`,
     `🪪 Name: ${realName}`,
     '',
     '**Profile**',
@@ -1148,7 +1183,7 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
     `• Real name: ${realName}`,
     `• Gender: ${profile.gender || 'not set'}`,
     `• Nickname: ${nickname || 'not set'}`,
-    `• Face image: ${faceImageUrl}`,
+    `• Face image: ${faceImageLabel}`,
     `• Joined discord server: ${joined}`,
     '',
     '**Teams**',
@@ -1165,6 +1200,23 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
     '',
     `• Roles: ${roles}`
   ].join('\n');
+}
+
+function buildPlayerProfileEmbeds(user, profile = {}, mode = 'player') {
+  const faceImageUrl = profile.faceImageUrl || profile.facePngUrl || '';
+  const canRenderImage = /^https?:\/\/\S+\.(png|webp|jpe?g)(?:\?\S*)?$/i.test(faceImageUrl);
+  if (!canRenderImage) return [];
+  return [new EmbedBuilder()
+    .setTitle(mode === 'coach' ? `Coach Face — ${user?.username || profile.userId}` : `Player Face — ${user?.username || profile.userId}`)
+    .setImage(faceImageUrl)
+    .setColor(0x3498db)];
+}
+
+function buildPlayerProfileView(config, guild, user, member, profile = {}, mode = 'player') {
+  return {
+    content: buildPlayerProfileSummary(config, guild, user, member, profile, mode),
+    embeds: buildPlayerProfileEmbeds(user, profile, mode)
+  };
 }
 
 function buildAttendanceStatsForUser(userId, config) {
@@ -2236,8 +2288,7 @@ module.exports = {
         const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
         const profile = upsertPlayerProfile(userId, { userId });
         await interaction.update({
-          content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, profile, mode),
-          embeds: [],
+          ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, profile, mode),
           components: [createPlayerProfileActionRow(userId, mode), createPlayerProfileActionRow2(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')]
         });
         return;
@@ -2251,7 +2302,7 @@ module.exports = {
         const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
         const profile = upsertPlayerProfile(userId, { userId });
         await interaction.reply({
-          content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, profile, mode === 'admin' ? 'player' : 'coach'),
+          ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, profile, mode === 'admin' ? 'player' : 'coach'),
           flags: MessageFlags.Ephemeral
         });
         return;
@@ -2633,8 +2684,7 @@ module.exports = {
         const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
         const profile = upsertPlayerProfile(userId, { userId });
         await interaction.update({
-          content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, profile, 'player'),
-          embeds: [],
+          ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, profile, 'player'),
           components: [createAttendanceOnlyRow(userId)]
         });
         return;
@@ -2659,8 +2709,7 @@ module.exports = {
           coachTeams: Array.from(new Set([...(existing.coachTeams || []), ...inferredCoachTeams]))
         });
         await interaction.update({
-          content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, seeded, 'coach'),
-          embeds: [],
+          ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, seeded, 'coach'),
           components: [createPlayerProfileActionRow(userId, 'coach'), createPlayerProfileActionRow2(userId, 'coach'), createBackButtonRow('admin_back_coach_management')]
         });
         return;
@@ -2697,8 +2746,7 @@ module.exports = {
         });
 
         await interaction.update({
-          content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, seeded, 'player'),
-          embeds: [],
+          ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, seeded, 'player'),
           components: [createPlayerProfileActionRow(userId, 'player'), createPlayerProfileActionRow2(userId, 'player'), createBackButtonRow('admin_back_player_management')]
         });
         await triggerGoogleSync(context);
@@ -3367,9 +3415,21 @@ module.exports = {
         : { teams: selectedTeams });
       const targetMember = await interaction.guild.members.fetch(userId).catch(() => null);
       const targetUser = targetMember?.user || await interaction.client.users.fetch(userId).catch(() => null);
+      if (targetMember) {
+        const latestConfig = loadConfig();
+        const allTeams = Object.keys(latestConfig.teams || {});
+        const configuredRoleIds = allTeams
+          .map((teamKey) => mode === 'coach' ? latestConfig.roles?.[teamKey]?.coach : latestConfig.roles?.[teamKey]?.player)
+          .filter((roleId) => roleId && roleId !== 'ROLE_ID');
+        for (const roleId of configuredRoleIds) {
+          const teamForRole = allTeams.find((teamKey) => (mode === 'coach' ? latestConfig.roles?.[teamKey]?.coach : latestConfig.roles?.[teamKey]?.player) === roleId);
+          const shouldHave = teamForRole && selectedTeams.includes(teamForRole);
+          if (shouldHave && !targetMember.roles.cache.has(roleId)) await targetMember.roles.add(roleId).catch(() => null);
+          if (!shouldHave && targetMember.roles.cache.has(roleId)) await targetMember.roles.remove(roleId).catch(() => null);
+        }
+      }
       await interaction.update({
-        content: buildPlayerProfileSummary(loadConfig(), interaction.guild, targetUser, targetMember, profile, mode),
-        embeds: [],
+        ...buildPlayerProfileView(loadConfig(), interaction.guild, targetUser, targetMember, profile, mode),
         components: [createPlayerProfileActionRow(userId, mode), createPlayerProfileActionRow2(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')]
       });
       await triggerGoogleSync(context);
@@ -3405,8 +3465,10 @@ module.exports = {
             .setCustomId(`admin_coach_position_value:${userId}:${mode}:${team}`)
             .setPlaceholder(`Set ${getTeamMeta(loadConfig(), team).label} coach position`)
             .addOptions([
-              { label: 'Head Coach', value: 'head_coach', description: 'Displayed as Coach Name' },
-              { label: 'Assistant Coach', value: 'assistant_coach', description: 'Displayed as Assistant Coach Name' }
+              { label: 'Head Coach', value: 'head_coach', description: 'Displayed as Head Coach Name' },
+              { label: 'Assistant Coach', value: 'assistant_coach', description: 'Displayed as Assistant Coach Name' },
+              { label: 'Goal Keeping Coach', value: 'goalkeeping_coach', description: 'Displayed as Goal Keeping Coach Name' },
+              { label: 'Coach', value: 'coach', description: 'Displayed as Coach Name' }
             ])
         );
         await interaction.update({ content: 'Choose coach position for this team.', embeds: [], components: [row, createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')] });
@@ -3419,11 +3481,22 @@ module.exports = {
         const profile = getPlayerProfile(userId) || {};
         const coachPositions = { ...(profile.coachPositions || {}), [team]: value };
         const updated = upsertPlayerProfile(userId, { coachPositions });
+        await interaction.update({
+          content: getCoachManagementSummary(),
+          embeds: [],
+          components: [createCoachManagementRow(loadConfig(), interaction.guild), createAdminBackButtonRow()]
+        });
+        return;
+      }
+
+      if (interaction.customId.startsWith('admin_player_set_gender:')) {
+        const [, userId, mode = 'player', selected] = interaction.customId.split(':');
+        const genderValue = selected === 'clear' ? '' : selected;
+        const updated = upsertPlayerProfile(userId, { gender: genderValue });
         const member = await interaction.guild.members.fetch(userId).catch(() => null);
         const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
         await interaction.update({
-          content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, updated, mode),
-          embeds: [],
+          ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, updated, mode),
           components: [createPlayerProfileActionRow(userId, mode), createPlayerProfileActionRow2(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')]
         });
         return;
@@ -3598,8 +3671,7 @@ module.exports = {
       });
 
       await interaction.update({
-        content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, seeded, mode),
-        embeds: [],
+        ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, seeded, mode),
         components: [createPlayerProfileActionRow(userId, mode), createPlayerProfileActionRow2(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')]
       });
       await triggerGoogleSync(context);
@@ -3615,12 +3687,14 @@ module.exports = {
       const mode = interaction.customId.split(':')[2] || 'player';
       const member = await interaction.guild.members.fetch(userId).catch(() => null);
       if (member) {
-        await member.roles.add(interaction.values).catch(() => null);
+        for (const roleId of interaction.values) {
+          if (member.roles.cache.has(roleId)) await member.roles.remove(roleId).catch(() => null);
+          else await member.roles.add(roleId).catch(() => null);
+        }
       }
-      const profile = upsertPlayerProfile(userId, { roles: interaction.values });
+      const profile = upsertPlayerProfile(userId, { roles: member ? Array.from(member.roles.cache.keys()).filter((id) => id !== interaction.guild.id) : interaction.values });
       await interaction.update({
-        content: buildPlayerProfileSummary(loadConfig(), interaction.guild, member?.user, member, profile, mode),
-        embeds: [],
+        ...buildPlayerProfileView(loadConfig(), interaction.guild, member?.user, member, profile, mode),
         components: [createPlayerProfileActionRow(userId, mode), createPlayerProfileActionRow2(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')]
       });
       await triggerGoogleSync(context);
@@ -3983,10 +4057,12 @@ module.exports = {
       if (shirtNumber) shirtNumbers[team] = shirtNumber;
       else delete shirtNumbers[team];
       const updated = upsertPlayerProfile(userId, { shirtNumbers });
-      const member = await interaction.guild.members.fetch(userId).catch(() => null);
-      const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
       await interaction.reply({
-        content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, updated, mode),
+        content: mode === 'coach' ? getCoachManagementSummary() : getPlayerManagementSummary(),
+        embeds: [],
+        components: mode === 'coach'
+          ? [createCoachManagementRow(loadConfig(), interaction.guild), createAdminBackButtonRow()]
+          : [...createPlayerManagementRows('player', interaction.guild, 0), createAdminBackButtonRow()],
         flags: MessageFlags.Ephemeral
       });
       return;
@@ -4034,7 +4110,7 @@ module.exports = {
       await triggerGoogleSync(context);
 
       await interaction.editReply({
-        content: buildPlayerProfileSummary(loadConfig(), interaction.guild, user, member, profile, mode),
+        ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, profile, mode),
         components: [createPlayerProfileActionRow(userId, mode), createPlayerProfileActionRow2(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')],
       });
       return;
