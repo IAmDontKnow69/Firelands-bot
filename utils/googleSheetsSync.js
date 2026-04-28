@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { determineEventType } = require('./eventType');
 
-const REQUIRED_SETUP_TABS = ['Fixtures', 'Players and Coaches', 'Attendance', 'Absences', 'Config', 'Command Logs', 'Backups'];
+const REQUIRED_SETUP_TABS = ['Fixtures', 'Player and Coach Management', 'Attendance', 'Absences', 'Player and Coach Notes', 'Config', 'Command Logs', 'Backups'];
 
 function isTeamFixturesTab(title = '') {
   return /\sfixtures$/i.test(String(title || '').trim()) && String(title || '').trim().toLowerCase() !== 'fixtures';
@@ -1078,7 +1078,7 @@ async function syncAllToSheet(config = {}, db = {}, options = {}) {
   const configRange = normalizeA1Range(config.googleSync?.configRange, 'Config!A2:C');
   const configBackupsRange = normalizeA1Range(config.googleSync?.configBackupsRange, 'Config Backups!A2:F');
   const playersRange = options.setupFreshWipe
-    ? 'Players and Coaches!A2:Q'
+    ? 'Player and Coach Management!A2:Q'
     : normalizeA1Range(config.googleSync?.playersRange, 'Player and Coach Management!A2:Q');
   const absencesRange = normalizeA1Range(config.googleSync?.absencesRange, 'Absences!A2:Q');
   const playerCoachNotesRange = normalizeA1Range(config.googleSync?.playerCoachNotesRange, 'Player and Coach Notes!A2:I');

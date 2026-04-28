@@ -31,9 +31,6 @@ function detectTeamFromTitle(title = '', teamMatchers = {}) {
       return teamKey;
     }
   }
-
-  if (titleMatchesPhrase(normalized, "women's") || titleMatchesPhrase(normalized, 'womens') || titleMatchesPhrase(normalized, 'fu women')) return 'womens';
-  if (titleMatchesPhrase(normalized, "men's") || titleMatchesPhrase(normalized, 'mens') || titleMatchesPhrase(normalized, 'fu men')) return 'mens';
   return null;
 }
 
