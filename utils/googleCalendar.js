@@ -34,6 +34,30 @@ function detectTeamFromTitle(title = '', teamMatchers = {}) {
   return null;
 }
 
+
+function normalizeCalendarId(rawValue = '') {
+  const input = String(rawValue || '').trim();
+  if (!input) return '';
+
+  if (input.includes('@') && !input.includes('calendar.google.com')) {
+    return input;
+  }
+
+  try {
+    const url = new URL(input);
+    const src = url.searchParams.get('src') || url.searchParams.get('cid');
+    if (src) return decodeURIComponent(src).trim();
+
+
+    const icalMatch = url.pathname.match(/\/calendar\/ical\/([^/]+)\//i);
+    if (icalMatch?.[1]) return decodeURIComponent(icalMatch[1]).trim();
+  } catch (_) {
+    // Not a URL: continue with raw fallback.
+  }
+
+  return input;
+}
+
 function getEventStartIso(event) {
   return event?.start?.dateTime || event?.start?.date || null;
 }
@@ -43,6 +67,7 @@ async function fetchUpcomingEvents({ calendarId, daysAhead = 14, credentialsPath
 }
 
 async function fetchCalendarEvents({ calendarId, daysAhead = 14, credentialsPath = '', teamMatchers = {} }) {
+  const normalizedCalendarId = normalizeCalendarId(calendarId);
   const now = new Date();
   const hasDaysAheadLimit = typeof daysAhead === 'number' && Number.isFinite(daysAhead) && daysAhead > 0;
   const max = hasDaysAheadLimit ? new Date(now.getTime() + daysAhead * 24 * 60 * 60 * 1000) : null;
@@ -58,7 +83,7 @@ async function fetchCalendarEvents({ calendarId, daysAhead = 14, credentialsPath
 
     const calendar = google.calendar({ version: 'v3', auth });
     const response = await calendar.events.list({
-      calendarId,
+      calendarId: normalizedCalendarId,
       timeMin: now.toISOString(),
       ...(max ? { timeMax: max.toISOString() } : {}),
       singleEvents: true,
@@ -69,7 +94,7 @@ async function fetchCalendarEvents({ calendarId, daysAhead = 14, credentialsPath
     items = response.data.items || [];
   } catch (error) {
     try {
-      items = await fetchPublicCalendarEvents({ calendarId, now, max });
+      items = await fetchPublicCalendarEvents({ calendarId: normalizedCalendarId, now, max });
       if (!items.length) throw error;
     } catch (publicError) {
       throw new Error(`Unable to load Google Calendar with service credentials or public ICS feed: ${publicError.message}`);
@@ -193,6 +218,7 @@ module.exports = {
   fetchCalendarEvents,
   fetchUpcomingEvents,
   resolveCredentialsPath,
+  normalizeCalendarId,
   detectTeamFromTitle,
   getEventStartIso,
   titleMatchesPhrase
