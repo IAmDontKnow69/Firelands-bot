@@ -29,7 +29,7 @@ const {
 } = require('../utils/database');
 const { loadConfig, updateConfig, restoreConfigFromBackup, resetConfigFresh, saveConfig } = require('../utils/config');
 const { getTeamSetupProgress } = require('../utils/teamSetup');
-const { fetchCalendarEvents, titleMatchesPhrase } = require('../utils/googleCalendar');
+const { fetchCalendarEvents, titleMatchesPhrase, normalizeCalendarId } = require('../utils/googleCalendar');
 const {
   syncAllToSheet,
   syncConfigOnlyToSheet,
@@ -117,8 +117,17 @@ function renderGoogleToolsContent(config = {}, statusMessage = '') {
 function getGoogleCalendarViewUrl(config = {}) {
   const input = String(config.bot?.calendarId || '').trim();
   if (!input) return '';
-  if (input.includes('calendar.google.com/calendar')) return input;
-  return `https://calendar.google.com/calendar/u/0/r?cid=${encodeURIComponent(input)}`;
+  if (input.includes('calendar.google.com/calendar')) {
+    try {
+      const parsed = new URL(input);
+      const src = parsed.searchParams.get('src') || parsed.searchParams.get('cid');
+      if (src) return `https://calendar.google.com/calendar/u/0/r?cid=${encodeURIComponent(src)}`;
+    } catch (_) {
+      // keep fallback behavior below
+    }
+  }
+  const normalizedId = normalizeCalendarId(input);
+  return normalizedId ? `https://calendar.google.com/calendar/u/0/r?cid=${encodeURIComponent(normalizedId)}` : '';
 }
 
 function getTeamManagementSummary() {

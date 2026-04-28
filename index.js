@@ -105,10 +105,11 @@ function buildSetupSummary(config) {
     `• Admin logs channel: ${adminChannel}`,
     `• Google Calendar ID: \`${calendarId}\``,
     `• Google Sheet ID: \`${spreadsheetId}\``,
+    `• Share your Google Calendar (read-only) with: \`${serviceAccountEmail}\``,
     `• Share your Google Sheet as **Editor** with: \`${serviceAccountEmail}\``,
     ...(statusNotice ? ['', statusNotice] : []),
     '',
-    'Click **Check Google connections** to verify the bot can read the calendar and write to the sheet.',
+    'Click **Check Google connections** to verify read-only calendar access and sheet write access (no fixtures are saved during this check).',
     'After checks pass, choose initialization mode:',
     '• **Fresh Config + Empty Sheets** = wipe data, rebuild all tabs with headings only.',
     '• **Load Backup Slot** = restore every synced tab from one saved backup line in the Backups sheet (max 5 slots).'
