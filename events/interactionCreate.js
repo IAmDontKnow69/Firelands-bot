@@ -166,7 +166,6 @@ function getFixtureSettingsSummary() {
     'Buttons in this menu:',
     '• 🧭 Event Type Rules — control auto-detection and exact-name mappings.',
     '• 📍 Event Addresses — list captured event addresses.',
-    '• 🏷️ Set Address Nickname — map addresses to short labels.',
     '• ⬅️ Back — return to Club Management.'
   ].join('\n');
 }
@@ -319,7 +318,6 @@ function createFixtureSettingsRow() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('admin_fixture_action:event_type_rules').setLabel('🧭 Event Type Rules').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('admin_fixture_action:view_event_locations').setLabel('📍 Event Addresses').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('admin_fixture_action:set_location_nickname').setLabel('🏷️ Set Address Nickname').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId('admin_back_club_management').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
   );
 }
@@ -2011,41 +2009,10 @@ module.exports = {
         }
         if (action === 'view_event_locations') {
           const db = loadDb();
-          const grouped = buildLocationGroupsFromEvents(Object.values(db.events || {}), config);
-          if (!grouped.length) {
-            await interaction.update({
-              content: 'No event addresses found yet. Sync calendar fixtures first.',
-              embeds: [],
-              components: [createFixtureSettingsRow()]
-            });
-            return;
-          }
-          const lines = grouped.map((entry) => {
-            const label = `(${eventTypeLabel(entry.eventType)})`;
-            return `• ${label} [${entry.location}](${getMapsLink(entry.location)}) — ${entry.count} event(s)`;
-          });
-          const chunks = chunkLines(lines, 15);
-          const embeds = chunks.map((chunk, idx) => new EmbedBuilder()
-            .setTitle(`Event Addresses (${grouped.length})`)
-            .setDescription(chunk.join('\n\n'))
-            .setColor(0x3498db)
-            .setFooter({ text: `Page ${idx + 1} of ${chunks.length}` }));
-          await interaction.update({
-            content: '📍 Grouped event addresses:',
-            embeds: [embeds[0]],
-            components: [createFixtureSettingsRow()]
-          });
-          for (let i = 1; i < embeds.length; i += 1) {
-            await interaction.followUp({ embeds: [embeds[i]], flags: MessageFlags.Ephemeral });
-          }
-          return;
-        }
-        if (action === 'set_location_nickname') {
-          const db = loadDb();
           const grouped = buildLocationGroupsFromEvents(Object.values(db.events || {}), config).slice(0, 25);
           if (!grouped.length) {
             await interaction.update({
-              content: 'No event addresses found yet. Sync calendar fixtures first.',
+              content: 'No event addresses found yet in synced fixtures. Run **Sync Calendar → Fixtures** first.',
               embeds: [],
               components: [createFixtureSettingsRow()]
             });
@@ -2054,24 +2021,37 @@ module.exports = {
 
           const token = Math.random().toString(36).slice(2, 12);
           pendingLocationAliasSelections.set(token, grouped);
-          const row = new ActionRowBuilder().addComponents(
-            new StringSelectMenuBuilder()
-              .setCustomId(`admin_location_alias_pick:${token}`)
-              .setPlaceholder('Pick address + type to nickname')
-              .addOptions(grouped.map((entry, idx) => {
-                const nickname = getLocationNickname(config, entry.eventType, entry.location);
-                return {
-                  label: `(${eventTypeLabel(entry.eventType)}) ${entry.location}`.slice(0, 100),
-                  value: String(idx),
-                  description: `${entry.count} event(s)${nickname ? ` • Nickname: ${nickname}` : ''}`.slice(0, 100)
-                };
-              }))
-          );
-          await interaction.update({
-            content: 'Select an address group to set a nickname.',
-            embeds: [],
-            components: [row, createBackButtonRow('admin_back_fixture_settings')]
+          const lines = grouped.map((entry, idx) => {
+            const label = `(${eventTypeLabel(entry.eventType)})`;
+            const nickname = getLocationNickname(config, entry.eventType, entry.location);
+            return `**${idx + 1}.** ${label} [${entry.location}](${getMapsLink(entry.location)}) — ${entry.count} event(s)${nickname ? ` • Nickname: ${nickname}` : ''}`;
           });
+          const chunks = chunkLines(lines, 10);
+          const embeds = chunks.map((chunk, idx) => new EmbedBuilder()
+            .setTitle(`Event Addresses (${grouped.length})`)
+            .setDescription(chunk.join('\n\n'))
+            .setColor(0x3498db)
+            .setFooter({ text: `Page ${idx + 1} of ${chunks.length}` }));
+          const buttonRows = [];
+          for (let i = 0; i < grouped.length; i += 5) {
+            buttonRows.push(new ActionRowBuilder().addComponents(
+              grouped.slice(i, i + 5).map((_, offset) => {
+                const index = i + offset;
+                return new ButtonBuilder()
+                  .setCustomId(`admin_location_alias_pick:${token}:${index}`)
+                  .setLabel(String(index + 1))
+                  .setStyle(ButtonStyle.Secondary);
+              })
+            ));
+          }
+          await interaction.update({
+            content: '📍 Select a numbered address button to set its nickname.',
+            embeds: [embeds[0]],
+            components: [...buttonRows, createBackButtonRow('admin_back_fixture_settings')]
+          });
+          for (let i = 1; i < embeds.length; i += 1) {
+            await interaction.followUp({ embeds: [embeds[i]], flags: MessageFlags.Ephemeral });
+          }
           return;
         }
       }
@@ -2633,9 +2613,9 @@ module.exports = {
       }
 
       if (interaction.customId.startsWith('admin_location_alias_pick:')) {
-        const token = interaction.customId.split(':')[1];
+        const [, token, index] = interaction.customId.split(':');
         const options = pendingLocationAliasSelections.get(token) || [];
-        const picked = options[Number(interaction.values[0])];
+        const picked = options[Number(index)];
         if (!picked) {
           await interaction.update({
             content: 'That address option expired. Please reopen Set Address Nickname.',
