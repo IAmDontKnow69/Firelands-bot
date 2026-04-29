@@ -23,7 +23,8 @@ const FIELD_MAP = {
   mens_private_chat_category_id: 'channels.privateChatCategories.mens',
   womens_private_chat_category_id: 'channels.privateChatCategories.womens',
   google_sync_enabled: 'googleSync.enabled',
-  google_spreadsheet_id: 'googleSync.spreadsheetId'
+  google_spreadsheet_id: 'googleSync.spreadsheetId',
+  google_calendar_id: 'bot.calendarId'
 };
 
 function isSnowflake(value) {
@@ -34,6 +35,7 @@ function validateField(field, value) {
   if (field === 'bot_token_reference') return value.length >= 10;
   if (field === 'google_sync_enabled') return ['true', 'false'].includes(String(value).toLowerCase());
   if (field === 'google_spreadsheet_id') return String(value).trim().length > 10;
+  if (field === 'google_calendar_id') return String(value).trim().length > 5;
   return isSnowflake(value);
 }
 
@@ -89,6 +91,7 @@ module.exports = {
       `Womens Label Emoji: ${config.teams?.womens?.emoji || 'not set'}`,
       `Google Sync Enabled: ${config.googleSync?.enabled ? 'true' : 'false'}`,
       `Google Spreadsheet: ${config.googleSync?.spreadsheetId || 'not set'}`,
+      `Google Calendar ID/URL: ${config.bot?.calendarId || 'not set'}`,
       '',
       '_Note: Bot token changes are stored for restart/reference and do not hot-swap runtime auth._'
     ].join('\n');
@@ -132,7 +135,8 @@ module.exports = {
               { name: 'Mens absence chat category ID', value: 'mens_private_chat_category_id' },
               { name: 'Womens absence chat category ID', value: 'womens_private_chat_category_id' },
               { name: 'Google sync enabled (true/false)', value: 'google_sync_enabled' },
-              { name: 'Google spreadsheet ID/URL', value: 'google_spreadsheet_id' }
+              { name: 'Google spreadsheet ID/URL', value: 'google_spreadsheet_id' },
+              { name: 'Google calendar ID/URL', value: 'google_calendar_id' }
             )
         )
         .addStringOption((opt) =>
@@ -247,6 +251,14 @@ module.exports = {
       if (!validateField(field, value)) {
         await interaction.reply({
           content: 'Please select a valid role using the `role` option or provide a valid role ID/name.',
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+    } else if (field === 'google_calendar_id') {
+      if (!value || !validateField(field, value)) {
+        await interaction.reply({
+          content: 'Please provide a valid Google Calendar ID or URL in the `value` option.',
           flags: MessageFlags.Ephemeral
         });
         return;
