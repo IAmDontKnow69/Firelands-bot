@@ -26,7 +26,7 @@ const coachCommand = require('./commands/coach');
 const adminCommand = require('./commands/admin');
 const confirmCommand = require('./commands/confirm');
 const interactionHandler = require('./events/interactionCreate');
-const { fetchUpcomingEvents } = require('./utils/googleCalendar');
+const { fetchUpcomingEvents, fetchCalendarEvents, normalizeCalendarId } = require('./utils/googleCalendar');
 const { loadDb, saveDb, upsertEvent, setEventMessageId } = require('./utils/database');
 const { startReminderJobs } = require('./utils/reminders');
 const { ensureConfig, loadConfig, saveConfig, updateConfig, resetConfigFresh } = require('./utils/config');
@@ -41,7 +41,6 @@ const {
 } = require('./utils/googleSheetsSync');
 const { version: BOT_BUILD_VERSION = '0.0.0' } = require('./package.json');
 const { getTeamSetupProgress, getIncompleteTeamsForMember, buildIncompleteTeamMessage } = require('./utils/teamSetup');
-const { fetchCalendarEvents } = require('./utils/googleCalendar');
 
 ensureConfig();
 
@@ -367,20 +366,53 @@ function getConfig() {
 function parseCalendarId(input = '') {
   const raw = String(input || '').trim();
   if (!raw) return '';
-  if (!/^https?:\/\//i.test(raw)) return raw;
+  return normalizeCalendarId(raw);
+}
 
-  try {
-    const url = new URL(raw);
-    const cid = url.searchParams.get('cid');
-    if (cid) return decodeURIComponent(cid).trim();
-
-    const src = url.searchParams.get('src');
-    if (src) return decodeURIComponent(src).trim();
-  } catch (_) {
-    return raw;
+function shouldSendAdminErrorReport(interaction) {
+  if (!interaction) return false;
+  if (interaction.isChatInputCommand?.()) {
+    return ['admin', 'player', 'coach'].includes(interaction.commandName);
   }
+  const customId = String(interaction.customId || '');
+  return customId.startsWith('admin_') || customId.startsWith('player_') || customId.startsWith('coach_');
+}
 
-  return raw;
+function buildAdminErrorReport(error, interaction) {
+  const lines = [
+    `timestamp: ${new Date().toISOString()}`,
+    `error: ${String(error?.message || error || 'Unknown error')}`,
+    `stack: ${String(error?.stack || 'n/a')}`,
+    `interactionType: ${interaction?.type ?? 'unknown'}`,
+    `commandName: ${interaction?.commandName || ''}`,
+    `customId: ${interaction?.customId || ''}`,
+    `guildId: ${interaction?.guildId || ''}`,
+    `channelId: ${interaction?.channelId || ''}`,
+    `userId: ${interaction?.user?.id || ''}`,
+    '',
+    'context:',
+    summarizeInteractionContext(interaction)
+  ];
+  return lines.join('\n');
+}
+
+async function sendAdminErrorReport(error, interaction) {
+  const config = getConfig();
+  const adminChannelId = config.channels?.admin || config.channels?.logs || interaction?.channelId || '';
+  if (!adminChannelId) return;
+  const reportText = buildAdminErrorReport(error, interaction);
+  const fileName = `ui-error-${Date.now()}.log`;
+  const summary = `🧾 UI error report generated.\nError: \`${String(error?.message || error || 'Unknown error')}\``;
+  try {
+    const channel = await client.channels.fetch(adminChannelId);
+    if (!channel || !channel.isTextBased()) return;
+    await channel.send({
+      content: `${summary}\nPlease post this log file into Codex for diagnosis.`,
+      files: [{ attachment: Buffer.from(reportText, 'utf8'), name: fileName }]
+    });
+  } catch (sendError) {
+    console.error('Failed to send admin error report:', sendError.message);
+  }
 }
 
 function getSetupDraft(guildId = '') {
@@ -1333,6 +1365,9 @@ client.on('interactionCreate', async (interaction) => {
   } catch (error) {
     console.error('Interaction handling failed:', formatInteractionError(error));
     const isAlreadyAcknowledged = error?.code === 40060 || /already been acknowledged/i.test(String(error?.message || ''));
+    if (shouldSendAdminErrorReport(interaction)) {
+      await sendAdminErrorReport(error, interaction);
+    }
     if (!isAlreadyAcknowledged) {
       await sendLog(`❌ Interaction failed: ${error.message}\n${summarizeInteractionContext(interaction)}`, interaction?.channelId);
     }
