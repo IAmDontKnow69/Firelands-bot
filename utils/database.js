@@ -7,7 +7,7 @@ function ensureDb() {
   if (!fs.existsSync(DB_PATH)) {
     fs.writeFileSync(
       DB_PATH,
-      JSON.stringify({ events: {}, futureAvailability: {}, absenceTickets: {}, players: {}, meta: { postEventCoachReminders: {}, setupWizard: {} } }, null, 2)
+      JSON.stringify({ events: {}, futureAvailability: {}, absenceTickets: {}, vacations: {}, players: {}, meta: { postEventCoachReminders: {}, setupWizard: {} } }, null, 2)
     );
   }
 }
@@ -22,6 +22,7 @@ function loadDb() {
     if (!parsed.events) parsed.events = {};
     if (!parsed.futureAvailability) parsed.futureAvailability = {};
     if (!parsed.absenceTickets) parsed.absenceTickets = {};
+    if (!parsed.vacations) parsed.vacations = {};
     if (!parsed.players) parsed.players = {};
     if (!parsed.meta) parsed.meta = {};
     if (!parsed.meta.postEventCoachReminders) parsed.meta.postEventCoachReminders = {};
@@ -30,7 +31,7 @@ function loadDb() {
     return parsed;
   } catch (error) {
     console.error('Failed to load database:', error);
-    return { events: {}, futureAvailability: {}, absenceTickets: {}, players: {}, meta: { postEventCoachReminders: {}, setupWizard: {} } };
+    return { events: {}, futureAvailability: {}, absenceTickets: {}, vacations: {}, players: {}, meta: { postEventCoachReminders: {}, setupWizard: {} } };
   }
 }
 
@@ -126,6 +127,30 @@ function deleteAbsenceTicket(channelId) {
   return true;
 }
 
+
+function upsertVacation(userId, vacationId, payload) {
+  const db = loadDb();
+  if (!db.vacations[userId]) db.vacations[userId] = {};
+  db.vacations[userId][vacationId] = {
+    ...(db.vacations[userId][vacationId] || {}),
+    ...payload,
+    vacationId,
+    userId,
+    updatedAt: new Date().toISOString()
+  };
+  saveDb(db);
+  return db.vacations[userId][vacationId];
+}
+
+function getActiveVacationsForUser(userId, nowIso = new Date().toISOString().slice(0, 10)) {
+  const db = loadDb();
+  const list = Object.values(db.vacations?.[userId] || {});
+  return list.filter((vac) => {
+    if (vac.status === 'withdrawn' || vac.status === 'declined') return false;
+    return vac.startDate <= nowIso && vac.endDate >= nowIso;
+  });
+}
+
 function upsertPlayerProfile(userId, payload = {}) {
   const db = loadDb();
   const current = db.players[userId] || {};
@@ -159,6 +184,8 @@ module.exports = {
   setFutureAvailability,
   setAbsenceTicket,
   deleteAbsenceTicket,
+  upsertVacation,
+  getActiveVacationsForUser,
   upsertPlayerProfile,
   getPlayerProfile,
   getPlayerDisplayName
