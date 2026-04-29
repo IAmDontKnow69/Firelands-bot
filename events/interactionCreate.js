@@ -1023,6 +1023,7 @@ function createPlayerProfileActionRow(userId, mode = 'player') {
   );
   if (mode === 'coach') row.addComponents(new ButtonBuilder().setCustomId(`admin_player_action:set_coaching_initials:${userId}:${mode}`).setLabel('🔤 Coaching Initials').setStyle(ButtonStyle.Primary));
   else row.addComponents(new ButtonBuilder().setCustomId(`admin_player_action:set_shirt:${userId}:${mode}`).setLabel('👕 Shirt Number for Teams').setStyle(ButtonStyle.Primary));
+  row.addComponents(new ButtonBuilder().setCustomId(`admin_player_action:set_face:${userId}:${mode}`).setLabel('🖼️ Face URL').setStyle(ButtonStyle.Secondary));
   return row;
 }
 
@@ -1815,6 +1816,9 @@ module.exports = {
       await interaction.reply({ content: adminAccessMessage(config), flags: MessageFlags.Ephemeral });
     };
 
+    const hasCoachRoleAccess = () => Object.values(config.roles || {}).some((roles) => roles?.coach && interaction.member?.roles?.cache?.has(roles.coach));
+    const canManagePlayerProfiles = () => hasAdminAccess(interaction.member, config) || hasCoachRoleAccess();
+
     if (interaction.isButton()) {
       if (interaction.customId === 'admin_back_to_panel') {
         const latestConfig = loadConfig();
@@ -2603,7 +2607,7 @@ module.exports = {
       }
 
       if (interaction.customId.startsWith('admin_player_action:')) {
-        if (!hasAdminAccess(interaction.member, config)) {
+        if (!canManagePlayerProfiles()) {
           await denyAdminAccess();
           return;
         }
@@ -2645,7 +2649,7 @@ module.exports = {
         return;
       }
       if (interaction.customId.startsWith('admin_player_note_add:')) {
-        if (!hasAdminAccess(interaction.member, config) && !Object.values(config.roles || {}).some((r) => r?.coach && interaction.member?.roles?.cache?.has(r.coach))) {
+        if (!canManagePlayerProfiles()) {
           await denyAdminAccess();
           return;
         }
@@ -2923,6 +2927,21 @@ module.exports = {
       const parsed = parseCustomId(interaction.customId);
       const db = loadDb();
       let event = db.events[parsed.eventId];
+
+      if (!event && interaction.message?.id) {
+        const recoveredEntry = Object.entries(db.events || {}).find(([, value]) => value?.discordMessageId === interaction.message.id);
+        if (recoveredEntry) {
+          const [recoveredEventId, recoveredEvent] = recoveredEntry;
+          db.events[parsed.eventId] = {
+            ...recoveredEvent,
+            id: parsed.eventId,
+            updatedAt: new Date().toISOString()
+          };
+          saveDb(db);
+          event = db.events[parsed.eventId];
+          await context.sendLog(`ℹ️ Recovered missing event mapping ${parsed.eventId} using message ${interaction.message.id} (source event ${recoveredEventId}).`);
+        }
+      }
 
       if (!event) {
         try {
@@ -3835,19 +3854,11 @@ module.exports = {
         if (current.has(position)) current.delete(position);
         else current.add(position);
         const updated = upsertPlayerProfile(userId, { positions: Array.from(current) });
-        const active = getSortedPositions(updated);
-        const buttons = PLAYER_POSITION_ORDER.map((key) => new ButtonBuilder()
-          .setCustomId(`admin_player_position_toggle:${userId}:${mode}:${key}`)
-          .setLabel(`${active.includes(key) ? '🟢' : '⚪'} ${normalizePositionLabel(key)}`)
-          .setStyle(active.includes(key) ? ButtonStyle.Success : ButtonStyle.Secondary));
+        const member = await interaction.guild.members.fetch(userId).catch(() => null);
+        const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
         await interaction.update({
-          content: 'Toggle active positions for this player.',
-          embeds: [],
-          components: [
-            new ActionRowBuilder().addComponents(buttons.slice(0, 2)),
-            new ActionRowBuilder().addComponents(buttons.slice(2, 4)),
-            createBackButtonRow(`admin_player_back_to_profile:${userId}:${mode}`, mode === 'coach' ? '⬅️ Back to Coach' : '⬅️ Back to Player')
-          ]
+          ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, updated, mode),
+          components: [createPlayerProfileActionRow(userId, mode), createPlayerProfileActionRow2(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')]
         });
         return;
       }
@@ -4200,7 +4211,7 @@ module.exports = {
     }
 
     if (interaction.isUserSelectMenu() && ['admin_player_select', 'admin_coach_select'].includes(interaction.customId)) {
-      if (!hasAdminAccess(interaction.member, config)) {
+      if (!canManagePlayerProfiles()) {
         await denyAdminAccess();
         return;
       }
@@ -4675,7 +4686,7 @@ module.exports = {
     }
 
     if (interaction.isModalSubmit() && interaction.customId.startsWith('admin_player_profile_modal:')) {
-      if (!hasAdminAccess(interaction.member, config)) {
+      if (!canManagePlayerProfiles()) {
         await denyAdminAccess();
         return;
       }
