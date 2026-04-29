@@ -507,8 +507,40 @@ function buildAbsenceRows(db = {}) {
       channelId,
       ticket.eventId || '',
       ticket.playerId || '',
-      ticket.coachId || ''
+      ticket.coachId || '',
+      'absence'
     ]);
+  }
+
+  const vacations = db.vacations || {};
+  for (const [userId, userVacations] of Object.entries(vacations)) {
+    for (const [vacationId, vacation] of Object.entries(userVacations || {})) {
+      rows.push([
+        truncateId(vacationId),
+        '',
+        '',
+        vacation.title || 'Vacation',
+        `${vacation.startDate || ''} to ${vacation.endDate || ''}`,
+        '',
+        vacation.team || '',
+        truncateId(userId),
+        vacation.playerName || '',
+        vacation.status || 'pending',
+        vacation.reason || vacation.title || '',
+        vacation.coachDecision || '',
+        truncateId(vacation.coachId || ''),
+        vacation.coachName || '',
+        vacation.closedAt || '',
+        vacation.createdAt || '',
+        vacation.closedReason || '',
+        vacationId,
+        '',
+        '',
+        userId,
+        vacation.coachId || '',
+        'vacation'
+      ]);
+    }
   }
 
   return rows.sort((a, b) => new Date(a[15] || 0).getTime() - new Date(b[15] || 0).getTime());
@@ -1080,7 +1112,7 @@ async function syncAllToSheet(config = {}, db = {}, options = {}) {
   const playersRange = options.setupFreshWipe
     ? 'Player and Coach Management!A2:Q'
     : normalizeA1Range(config.googleSync?.playersRange, 'Player and Coach Management!A2:Q');
-  const absencesRange = normalizeA1Range(config.googleSync?.absencesRange, 'Absences!A2:Q');
+  const absencesRange = normalizeA1Range(config.googleSync?.absencesRange, 'Absences!A2:X');
   const playerCoachNotesRange = normalizeA1Range(config.googleSync?.playerCoachNotesRange, 'Player and Coach Notes!A2:I');
   const fixtureHeaders = buildFixtureHeaders(config);
   const teamFixtureSections = options.setupFreshWipe ? [] : Object.keys(config.teams || {}).map((teamKey) => {
@@ -1110,7 +1142,7 @@ async function syncAllToSheet(config = {}, db = {}, options = {}) {
         { range: fixturesRange, headers: fixtureHeaders, description: 'All events imported from Google Calendar plus address nicknames.' },
         { range: playersRange, headers: ['userIdPreview', 'customName', 'nickName', 'gender', 'shirtNumber', 'shirtNumbersByTeam', 'teams', 'coachTeams', 'coachPositionsByTeam', 'roles', 'joinedDiscordAt', 'notes', 'faceImageUrl', 'notesLog', 'updatedAt', 'userId', 'profileJson'], description: 'All player and coach data, including notes.' },
         { range: attendanceRange, headers: ['eventId', 'userId', 'username', 'team', 'status', 'updatedAt'], description: 'Attendance record of attending/not attending responses.' },
-        { range: absencesRange, headers: ['ticketPreview', 'channelPreview', 'eventPreview', 'eventTitle', 'eventDate', 'eventLocation', 'team', 'playerPreview', 'playerName', 'attendanceStatus', 'reason', 'coachDecision', 'coachPreview', 'coachName', 'closedAt', 'createdAt', 'closedReason', 'ticketId', 'channelId', 'eventId', 'playerId', 'coachId'], description: 'Logs for not-attending reasons and coach outcomes.' },
+        { range: absencesRange, headers: ['ticketPreview', 'channelPreview', 'eventPreview', 'eventTitle', 'eventDate', 'eventLocation', 'team', 'playerPreview', 'playerName', 'attendanceStatus', 'reason', 'coachDecision', 'coachPreview', 'coachName', 'closedAt', 'createdAt', 'closedReason', 'ticketId', 'channelId', 'eventId', 'playerId', 'coachId', 'recordType'], description: 'Logs for not-attending reasons and coach outcomes.' },
         { range: configRange, headers: ['key', 'value', 'updatedAt'], description: 'Bot configuration values.' },
         { range: commandLogRange, headers: ['timestamp', 'source', 'command', 'subcommand', 'options', 'guildId', 'channelId', 'userId', 'username'], description: 'Log of all commands used in the bot.' },
         { range: 'Backups!A2:F', headers: ['slot', 'name', 'createdAt', 'createdBy', 'summary', 'snapshot'], description: 'Manual snapshot backups.' }
@@ -1124,7 +1156,7 @@ async function syncAllToSheet(config = {}, db = {}, options = {}) {
         { range: configRange, headers: ['key', 'value', 'updatedAt'], description: 'Flattened runtime configuration.' },
         { range: configBackupsRange, headers: ['backupOrder', 'timestamp', 'changedPath', 'reason', 'snapshotPreview', 'snapshot'], description: 'Last 5 config states before changes.' },
         { range: playersRange, headers: ['userIdPreview', 'customName', 'nickName', 'gender', 'shirtNumber', 'shirtNumbersByTeam', 'teams', 'coachTeams', 'coachPositionsByTeam', 'roles', 'joinedDiscordAt', 'notes', 'faceImageUrl', 'notesLog', 'updatedAt', 'userId', 'profileJson'], description: 'Player + coach management profiles, including team assignments, titles, and saved profile fields.' },
-        { range: absencesRange, headers: ['ticketPreview', 'channelPreview', 'eventPreview', 'eventTitle', 'eventDate', 'eventLocation', 'team', 'playerPreview', 'playerName', 'attendanceStatus', 'reason', 'coachDecision', 'coachPreview', 'coachName', 'closedAt', 'createdAt', 'closedReason', 'ticketId', 'channelId', 'eventId', 'playerId', 'coachId'], description: 'Absence tickets and outcomes.' },
+        { range: absencesRange, headers: ['ticketPreview', 'channelPreview', 'eventPreview', 'eventTitle', 'eventDate', 'eventLocation', 'team', 'playerPreview', 'playerName', 'attendanceStatus', 'reason', 'coachDecision', 'coachPreview', 'coachName', 'closedAt', 'createdAt', 'closedReason', 'ticketId', 'channelId', 'eventId', 'playerId', 'coachId', 'recordType'], description: 'Absence tickets and outcomes.' },
         { range: playerCoachNotesRange, headers: ['notePreview', 'openNote', 'name', 'profileType', 'noteSummary', 'hidden', 'authorTag', 'createdAt', 'updatedAt', 'noteId', 'userId', 'authorId', 'note'], description: 'Player and coach notes with quick-open links.' }
       ];
 

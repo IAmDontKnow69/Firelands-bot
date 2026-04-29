@@ -1,167 +1,126 @@
 # 🔥 Firelands Bot
 
-Professional Discord operations bot for football clubs — built for **Firelands United**.
-
-It helps your staff run fixtures, attendance, player/coach management, absence workflows, and Google integrations from one admin UI.
-
----
-
-## ✨ What the bot does
-
-- 📅 Syncs fixtures from **Google Calendar**.
-- 📣 Posts and manages fixture attendance prompts in Discord.
-- ✅ Tracks player/coach responses (attending / not attending).
-- 🎟️ Runs absence ticket flow with coach confirmation.
-- 🧑‍💼 Provides an in-Discord **Admin Panel** for setup and management.
-- 📊 Supports **Google Sheets** sync for fixtures, attendance, config, backups, and logs.
+**Firelands Bot** is a professional Discord operations assistant for football clubs. ⚽️
+It centralizes fixtures, attendance, absences, vacations, player profiles, coach workflows, and Google integrations into one polished command flow.
 
 ---
 
-## 🧱 Tech stack
+## 🚀 Core Features
 
-- **Node.js** (CommonJS)
-- `discord.js`
-- `googleapis`
-- `node-cron`
+- 📅 **Google Calendar → Discord Fixtures**
+  - Pulls events from your selected Google Calendar.
+  - Classifies event types and keeps fixture timelines organized.
 
----
+- 📣 **Attendance Automation**
+  - Posts event attendance prompts.
+  - Tracks player/coach responses in real time.
+  - Supports coach confirmation flow for non-attendance.
 
-## 📁 Project structure
+- 🌴 **Vacation + Absence Tracking**
+  - Supports structured vacation periods and standard absences.
+  - Vacation data is visible in UI and attendance reporting.
+  - Exports both absences and vacations to Sheets with a clear `recordType` marker.
 
-- `index.js` — bot bootstrap, setup wizard, startup flows.
-- `events/interactionCreate.js` — button/select/modal handlers and admin UI actions.
-- `commands/` — slash commands (`/admin`, `/player`, `/coach`, `/attendance`, `/confirm`).
-- `utils/` — config, database, Google Calendar + Sheets sync utilities.
-- `scripts/setupGoogleSheet.js` — helper script to initialize required sheet tabs and headers.
-- `docs/GOOGLE_DRIVE_INTEGRATION.md` — deep dive on Google integration behavior.
+- 🧑‍💼 **Professional Admin/Coach/Player Panels**
+  - `/admin` for full operations control.
+  - `/coach` for next-games attendance + management actions.
+  - `/player` for personal attendance, next 5 games, and vacation visibility.
 
----
-
-## ✅ Prerequisites
-
-Before setup, ensure you have:
-
-- Node.js **18+**
-- A Discord server where you have **Manage Server** permissions
-- A Discord application + bot token
-- (Optional but recommended) Google service account credentials JSON for Calendar/Sheets features
+- 📊 **Google Sheets Sync Hub**
+  - Syncs fixtures, attendance, absences/vacations, player/coach management, config snapshots, and command logs.
+  - Includes tab creation/maintenance behavior so the bot can operate with your chosen spreadsheet.
 
 ---
 
-## 🤖 Add the bot to your Discord server
+## 🧭 Discord Setup Flow (Recommended)
 
-1. Go to the [Discord Developer Portal](https://discord.com/developers/applications).
-2. Create (or open) your application.
-3. In **Bot**, create/reset token and keep it secure.
-4. In **OAuth2 → URL Generator**:
-   - Scopes: `bot`, `applications.commands`
-   - Bot permissions (recommended):
-     - Send Messages
-     - Embed Links
-     - Read Message History
-     - Manage Channels (for absence ticket flow)
-     - Manage Roles (if your setup requires role updates)
-5. Open the generated URL and invite the bot to your target server.
+> This project is designed to be configured from inside Discord with guided bot UI flows. ✅
 
----
-
-## ⚙️ Local installation
-
-```bash
-npm install
-```
-
-Create environment variables (minimum viable setup):
-
-```bash
-DISCORD_TOKEN=your_bot_token
-DISCORD_CLIENT_ID=your_discord_app_client_id
-DISCORD_GUILD_ID=your_discord_server_id
-
-CALENDAR_ID=your_google_calendar_id
-CALENDAR_CREDENTIALS_PATH=./credentials.json
-```
-
-Start the bot:
-
-```bash
-npm start
-```
+1. 🤖 **Invite the bot** to your server with required permissions.
+2. 🛠️ Run **`/admin`** and open the admin panel.
+3. 🏟️ Configure **Club Management** basics:
+   - Admin logs channel
+   - Bot command channel
+   - Team role/channel mappings
+4. 📗 Open **Google Tools** and connect:
+   - your Calendar source
+   - your target Google Sheet
+5. 🔄 Run sync actions to populate fixtures and operational tabs.
+6. 👕 Validate `/player` and `/coach` views with a real upcoming fixture.
+7. ✅ Confirm absence/vacation workflows and coach moderation behavior.
 
 ---
 
-## 🧭 Firelands Bot setup flow (inside Discord)
+## 🔗 Google Calendar + Google Sheets Flexibility
 
-After the bot starts:
+Firelands Bot is intentionally designed to work with **any supported Google Calendar** and **any Google Sheet** you choose. 🧠
 
-1. Run `/admin panel` (or use your setup entrypoint message).
-2. Open **🏟️ Club Management**.
-3. Open **📗 Google** tools.
-4. Configure essentials:
-   - 🛎️ Admin chat channel
-   - 💬 Bot commands channel
-   - Google Calendar / Sheet settings
-5. Run **🔄 Sync Calendar → Fixtures** to push events into the `Fixtures` tab.
-6. Use team management to map:
-   - player role IDs
-   - coach role IDs
-   - team chats / staff rooms / absence categories
-7. Test with one fixture:
-   - attendance prompt
-   - player response
-   - absence handling
+### What this means in practice
 
-✅ Once this works for one team, repeat for all teams.
+- 🗓️ You can point the bot at a different Calendar and it will calibrate to that event source.
+- 📄 You can point the bot at a different Spreadsheet and it will sync operational data to that destination.
+- 🧩 The bot manages/uses its own operational tabs/ranges so the system remains structured and reliable.
+- 🔄 You can re-sync at any time from Discord tools when fixtures or structures change.
+
+### Typical Google-connected data flows
+
+- Fixtures from Calendar → `Fixtures` + team fixture tabs.
+- Attendance decisions → `Attendance`.
+- Absence + vacation records → `Absences` (`recordType` identifies row type).
+- Profiles/management notes → player/coach management tabs.
+- Command activity + config backups → logging and recovery tabs.
 
 ---
 
-## 📗 Google Sheets (optional but recommended)
+## 🧑‍💻 Command Experience
 
-Enable with env vars:
+- `/admin` 🧰
+  - Full operations panel.
+  - Team setup, Google tools, backups, management, and diagnostics.
 
-```bash
-GOOGLE_SYNC_ENABLED=true
-GOOGLE_SPREADSHEET_ID=<spreadsheet_id_or_url>
-GOOGLE_COMMAND_LOG_RANGE='Command Logs'!A2:I
-GOOGLE_FIXTURES_RANGE=Fixtures!A2:G
-GOOGLE_ATTENDANCE_RANGE=Attendance!A2:F
-```
+- `/coach` 🧢
+  - Team attendance snapshot for upcoming games.
+  - Vacation-aware visibility.
+  - Quick actions for player management and team checks.
 
-Then share the spreadsheet with your service account as **Editor**.
+- `/player` 👟
+  - Personal attendance summary.
+  - Upcoming vacation visibility.
+  - Next 5 games with team + location context.
 
-### Quick sheet bootstrap
+- `/attendance` 📋
+  - Attendance report and availability workflows.
 
-```bash
-CALENDAR_CREDENTIALS_PATH=/path/to/service-account.json \
-node scripts/setupGoogleSheet.js "https://docs.google.com/spreadsheets/d/<SPREADSHEET_ID>/edit"
-```
+- `/confirm` ✅
+  - Coach/staff confirmation tool for attendance ticket flow.
 
 ---
 
-## 🗃️ Runtime data
+## 🗂️ Data & Operations
 
-- `config.json` — active runtime configuration and saved backups.
-- `data.json` — fixtures, attendance state, profiles, tickets, and operational bot data.
+- `config.json` ⚙️ — runtime configuration and backup state.
+- `data.json` 💾 — events, responses, profiles, absences, vacations, and internal workflow data.
 
 ---
 
 ## 🩺 Troubleshooting
 
-- ❌ **No fixtures found** → verify `CALENDAR_ID` and calendar permissions.
-- ❌ **Google auth errors** → verify `CALENDAR_CREDENTIALS_PATH` points to a valid JSON key.
-- ❌ **Sheet write errors** → ensure spreadsheet is shared as Editor with service account email.
-- ⚠️ **Wrong ranges/tab names** → confirm A1 ranges use exact sheet tab names.
+- ❌ **No fixtures appear**
+  - Verify the selected calendar source and sharing permissions.
+- ❌ **Sheet sync fails**
+  - Verify spreadsheet access permissions and configured sheet target.
+- ⚠️ **Wrong tab/range behavior**
+  - Re-open Google tools in Discord and validate current mapping/ranges.
 
-For full details, read `docs/GOOGLE_DRIVE_INTEGRATION.md`.
+For deeper implementation details, see: `docs/GOOGLE_DRIVE_INTEGRATION.md`. 📘
 
 ---
 
 ## 🤝 Contributing
 
-1. Create a branch
-2. Make focused changes
-3. Validate locally
-4. Open PR with summary + testing notes
+- Keep changes scoped and production-safe. 🛡️
+- Include clear testing notes with every PR. 🧪
+- Prefer Discord flow consistency and operator UX clarity. 🎯
 
 ---
 

@@ -1,5 +1,5 @@
-const { SlashCommandBuilder, EmbedBuilder, MessageFlags } = require('discord.js');
-const { loadDb } = require('../utils/database');
+const { SlashCommandBuilder, EmbedBuilder, MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { loadDb, getPlayerProfile, getActiveVacationsForUser } = require('../utils/database');
 const { determineEventType, eventTypeLabel } = require('../utils/eventType');
 
 function getPlayerTeams(member, teamRoles) {
@@ -22,7 +22,7 @@ async function resolveGuildMember(interaction, config) {
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('player')
-    .setDescription('Open the player UI for upcoming training, matches, and events')
+    .setDescription('Open the player UI for profile, fixtures, attendance, and vacation status')
     .setDMPermission(true),
 
   async execute(interaction, context) {
@@ -37,23 +37,65 @@ module.exports = {
 
     const db = loadDb();
     const now = Date.now();
-    const events = Object.values(db.events)
+    const userId = interaction.user.id;
+
+    const events = Object.entries(db.events)
+      .map(([eventId, event]) => ({ eventId, ...event }))
       .filter((event) => playerTeams.includes(event.team))
       .filter((event) => new Date(event.date).getTime() >= now - 2 * 60 * 60 * 1000)
       .sort((a, b) => new Date(a.date) - new Date(b.date))
-      .slice(0, 12);
+      .slice(0, 5);
 
-    const lines = events.length
-      ? events.map((event) => `• **${eventTypeLabel(determineEventType(event, config))}** — ${event.title} (${event.team})\n  ${new Date(event.date).toLocaleString()}`)
-      : ['No upcoming sessions found for your teams.'];
+    const attendanceTotals = Object.values(db.events)
+      .filter((event) => playerTeams.includes(event.team))
+      .reduce((acc, event) => {
+        const status = event.responses?.[userId]?.status;
+        if (status === 'yes') acc.yes += 1;
+        else if (['pending_no', 'confirmed_no'].includes(status)) acc.no += 1;
+        else acc.noResponse += 1;
+        return acc;
+      }, { yes: 0, no: 0, noResponse: 0 });
+
+    const profile = getPlayerProfile(userId) || {};
+    const activeVacations = getActiveVacationsForUser(userId);
+
+    const nextGames = events.length
+      ? events.map((event, index) => {
+        const when = new Date(event.date).toLocaleString();
+        const location = event.location || 'Location not set';
+        return `${index + 1}. **${event.title}**\n   Team: **${config.teams?.[event.team]?.label || event.team}** · ${eventTypeLabel(determineEventType(event, config))}\n   When: ${when}\n   Where: ${location}`;
+      }).join('\n\n')
+      : 'No upcoming games/events found for your teams.';
 
     const teamLabels = playerTeams.map((team) => config.teams?.[team]?.label || team);
     const embed = new EmbedBuilder()
-      .setTitle('Player UI')
-      .setDescription(`Teams playing for: **${teamLabels.join(', ')}**\n\n${lines.join('\n')}`)
+      .setTitle('Player Menu')
+      .setDescription([
+        `Hi **${profile.customName || interaction.member?.displayName || interaction.user.username}** 👋`,
+        `Teams: **${teamLabels.join(', ')}**`,
+        '',
+        '### Attendance Summary',
+        `✅ Attending: **${attendanceTotals.yes}**`,
+        `🔴 Not Attending: **${attendanceTotals.no}**`,
+        `❓ No Response: **${attendanceTotals.noResponse}**`,
+        '',
+        '### Upcoming Vacation Times',
+        activeVacations.length
+          ? activeVacations.map((vac) => `• **${vac.title}** (${vac.team}) ${vac.startDate} → ${vac.endDate} — ${vac.status}`).join('\n')
+          : 'No active vacations.',
+        '',
+        '### Next 5 Games',
+        nextGames
+      ].join('\n'))
       .setColor(0x2ecc71)
-      .setFooter({ text: 'Use event attendance buttons in team channels to confirm status.' });
+      .setFooter({ text: 'Use attendance/vacation controls below. Profile editor is available in admin player management currently.' });
 
-    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('player_next_event_address').setLabel('📍 Send Me Next Event Address').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('player_vacation_open').setLabel('🌴 Vacation').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('player_profile_editor_info').setLabel('🪪 Profile Editor').setStyle(ButtonStyle.Secondary)
+    );
+
+    await interaction.reply({ embeds: [embed], components: [row], flags: MessageFlags.Ephemeral });
   }
 };
