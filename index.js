@@ -39,6 +39,7 @@ const {
   getSpreadsheetId,
   getSheetsClient
 } = require('./utils/googleSheetsSync');
+const { version: BOT_BUILD_VERSION = '0.0.0' } = require('./package.json');
 const { getTeamSetupProgress, getIncompleteTeamsForMember, buildIncompleteTeamMessage } = require('./utils/teamSetup');
 const { fetchCalendarEvents } = require('./utils/googleCalendar');
 
@@ -69,6 +70,7 @@ client.commands.set(adminCommand.data.name, adminCommand);
 client.commands.set(confirmCommand.data.name, confirmCommand);
 const missingAttendanceConfigWarnings = new Set();
 const REQUIRED_SETUP_TABS = ['Fixtures', 'Players and Coaches', 'Attendance', 'Absences', 'Config', 'Command Logs', 'Backups'];
+const setupRestoreDrafts = new Map();
 
 function buildSetupWelcome() {
   return [
@@ -202,13 +204,25 @@ function createSetupFinishRow() {
 
 function createSetupBackupRows(backups = []) {
   const bySlot = new Map(backups.map((entry) => [entry.slot, entry]));
+  const describeVersionRisk = (backupVersion = '') => {
+    if (!backupVersion || backupVersion === BOT_BUILD_VERSION) {
+      return { emoji: '🟢', label: `Build ${backupVersion || 'unknown'} (safe)` };
+    }
+    const [majorA = 0, minorA = 0] = String(BOT_BUILD_VERSION).split('.').map((v) => Number.parseInt(v, 10) || 0);
+    const [majorB = 0, minorB = 0] = String(backupVersion).split('.').map((v) => Number.parseInt(v, 10) || 0);
+    if (majorA !== majorB) return { emoji: '🔴', label: `Build ${backupVersion} (high risk)` };
+    if (minorA !== minorB) return { emoji: '🟡', label: `Build ${backupVersion} (medium risk)` };
+    return { emoji: '🟢', label: `Build ${backupVersion} (safe)` };
+  };
+
   const slotOptions = Array.from({ length: 5 }, (_, idx) => {
     const slot = idx + 1;
     const entry = bySlot.get(slot);
+    const risk = describeVersionRisk(entry?.buildVersion || '');
     return {
       label: `Slot ${slot} • ${entry?.name || (entry ? `Backup ${slot}` : 'Empty slot')}`.slice(0, 100),
       value: String(slot),
-      description: (entry?.createdAt || 'No backup saved').slice(0, 100)
+      description: entry ? `${risk.emoji} ${risk.label}`.slice(0, 100) : (entry?.createdAt || 'No backup saved').slice(0, 100)
     };
   });
 
@@ -229,6 +243,28 @@ function createSetupBackupRows(backups = []) {
   );
 
   return [backupPickerRow, backRow];
+}
+
+function createSetupYellowImportRows(candidateTabs = []) {
+  const options = candidateTabs.slice(0, 25).map((tab) => ({
+    label: tab.slice(0, 100),
+    value: tab,
+    description: `Import ${tab}`.slice(0, 100)
+  }));
+  return [
+    new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId('setup_restore_pick_tabs')
+        .setPlaceholder('Select tabs to import from backup')
+        .setMinValues(1)
+        .setMaxValues(Math.max(1, Math.min(options.length, 25)))
+        .addOptions(options)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('setup_restore_yellow_back').setLabel('Back').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('setup_restore_yellow_import').setLabel('Import Selected Tabs').setStyle(ButtonStyle.Success)
+    )
+  ];
 }
 
 async function updateSetupMessageFromModal(interaction, sourceMessageId) {
@@ -275,12 +311,12 @@ async function inspectSetupSheetState(config = {}) {
   if (backupsTitle) {
     const backupsRows = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${toA1SheetName(backupsTitle)}!A2:F`
+      range: `${toA1SheetName(backupsTitle)}!A2:G`
     }).catch(() => ({ data: { values: [] } }));
     const rows = backupsRows.data.values || [];
     hasBackupSnapshots = rows.some((row = []) => {
       const slot = Number.parseInt(String(row[0] || ''), 10);
-      const snapshot = String(row[5] || '').trim();
+      const snapshot = String(row[6] || '').trim();
       return Number.isInteger(slot) && slot >= 1 && slot <= 5 && Boolean(snapshot);
     });
   }
@@ -676,6 +712,15 @@ async function handleSetupInteraction(interaction) {
     }).catch(() => null);
     return true;
   }
+  if (interaction.customId === 'setup_restore_yellow_back' && interaction.isButton()) {
+    const backups = (await loadSheetBackups(getConfig()).catch(() => [])).sort((a, b) => a.slot - b.slot);
+    setupRestoreDrafts.delete(interaction.guildId || interaction.user?.id || 'default');
+    await interaction.update({
+      content: 'Pick a backup slot to restore. You can press **Back** to choose Fresh Config instead.',
+      components: createSetupBackupRows(backups)
+    }).catch(() => null);
+    return true;
+  }
   if (interaction.customId === 'setup_set_calendar_id' && interaction.isButton()) {
     const draft = getSetupDraft(interaction.guildId);
     const modal = new ModalBuilder().setCustomId(`setup_set_calendar_id_modal:${interaction.message?.id || ''}`).setTitle('Set Google Calendar ID');
@@ -928,6 +973,30 @@ async function handleSetupInteraction(interaction) {
       const progressState = { percent: 0, etaMs: 0, currentTab: '', tabs: [] };
       let lastProgressEdit = 0;
       await interaction.message?.edit({ content: buildSetupRestoreProgressText(slot, progressState), components: [] }).catch(() => null);
+      const backupBuild = picked.buildVersion || parsed?.buildVersion || '';
+      const sameBuild = backupBuild && backupBuild === BOT_BUILD_VERSION;
+      const [majorA = 0, minorA = 0] = String(BOT_BUILD_VERSION).split('.').map((v) => Number.parseInt(v, 10) || 0);
+      const [majorB = 0, minorB = 0] = String(backupBuild).split('.').map((v) => Number.parseInt(v, 10) || 0);
+      const riskEmoji = !backupBuild || sameBuild ? '🟢' : (majorA !== majorB ? '🔴' : (minorA !== minorB ? '🟡' : '🟢'));
+      const configOnly = Boolean(backupBuild && !sameBuild);
+      const yellowRisk = !sameBuild && majorA === majorB;
+      if (yellowRisk) {
+        const snapshotTabs = Array.isArray(parsed?.tabs) ? parsed.tabs.map((tab) => String(tab?.title || '')).filter(Boolean) : [];
+        const sheets = await getSheetsClient(config);
+        const metadata = await sheets.spreadsheets.get({ spreadsheetId: getSpreadsheetId(config) });
+        const existingTabs = new Set((metadata.data.sheets || []).map((entry) => String(entry.properties?.title || '')).filter(Boolean));
+        const candidateTabs = snapshotTabs.filter((title) => existingTabs.has(title));
+        setupRestoreDrafts.set(interaction.guildId || interaction.user?.id || 'default', { parsed, slot, backupBuild, riskEmoji, candidateTabs, selectedTabs: candidateTabs });
+        await interaction.message?.edit({
+          content: `🟡 Backup build: \`${backupBuild || 'unknown'}\` • Current build: \`${BOT_BUILD_VERSION}\`\nSelect the tabs you want to import. Only matching existing tabs can be replaced.`,
+          components: candidateTabs.length ? createSetupYellowImportRows(candidateTabs) : [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('setup_restore_yellow_back').setLabel('Back').setStyle(ButtonStyle.Secondary))]
+        }).catch(() => null);
+        return true;
+      }
+      await interaction.message?.edit({
+        content: `${riskEmoji} Backup build: \`${backupBuild || 'unknown'}\` • Current build: \`${BOT_BUILD_VERSION}\`${configOnly ? '\n⚠️ Build mismatch detected: restoring Config tab only to reduce database break risk.' : '\n✅ Build match detected: restoring all tabs.'}`,
+        components: []
+      }).catch(() => null);
       await restoreSpreadsheetFromBackupSnapshot(config, parsed, (progress) => {
         progressState.percent = progress.percent;
         progressState.etaMs = progress.etaMs;
@@ -936,9 +1005,12 @@ async function handleSetupInteraction(interaction) {
         const now = Date.now();
         if (now - lastProgressEdit >= 1500) {
           lastProgressEdit = now;
-          interaction.message?.edit({ content: buildSetupRestoreProgressText(slot, progressState), components: [] }).catch(() => null);
+          interaction.message?.edit({
+            content: `${riskEmoji} Backup build: \`${backupBuild || 'unknown'}\` • Current build: \`${BOT_BUILD_VERSION}\`\n${buildSetupRestoreProgressText(slot, progressState)}${configOnly ? '\n⚠️ Config-only restore mode is active.' : ''}`,
+            components: []
+          }).catch(() => null);
         }
-      });
+      }, { configOnly });
       const restoredConfig = await loadConfigFromSheet(config).catch(() => null);
       if (restoredConfig) saveConfig(restoredConfig);
       progressState.percent = 100;
@@ -950,6 +1022,35 @@ async function handleSetupInteraction(interaction) {
       await sendSetupErrorReport(interaction, error, 'setup_restore_slot');
       await interaction.message?.edit({ content: `❌ Failed to restore slot ${slot}: ${error.message}`, components: createSetupRows() }).catch(() => null);
     }
+    return true;
+  }
+  if (interaction.customId === 'setup_restore_pick_tabs' && interaction.isStringSelectMenu()) {
+    await interaction.deferUpdate();
+    const key = interaction.guildId || interaction.user?.id || 'default';
+    const draft = setupRestoreDrafts.get(key);
+    if (!draft) return true;
+    draft.selectedTabs = interaction.values || [];
+    setupRestoreDrafts.set(key, draft);
+    return true;
+  }
+  if (interaction.customId === 'setup_restore_yellow_import' && interaction.isButton()) {
+    await interaction.deferUpdate();
+    const key = interaction.guildId || interaction.user?.id || 'default';
+    const draft = setupRestoreDrafts.get(key);
+    if (!draft?.parsed) {
+      await interaction.message?.edit({ content: 'No yellow-risk restore draft found. Please pick a backup slot again.', components: createSetupRows() }).catch(() => null);
+      return true;
+    }
+    const selectedTabs = Array.isArray(draft.selectedTabs) && draft.selectedTabs.length ? draft.selectedTabs : draft.candidateTabs;
+    const progressState = { percent: 0, etaMs: 0, currentTab: '', tabs: [] };
+    await interaction.message?.edit({ content: `🟡 Starting selected-tab import from slot ${draft.slot}...`, components: [] }).catch(() => null);
+    await restoreSpreadsheetFromBackupSnapshot(getConfig(), draft.parsed, (progress) => {
+      progressState.percent = progress.percent;
+      progressState.currentTab = progress.currentTab;
+      interaction.message?.edit({ content: `🟡 Importing selected tabs...\n${buildSetupRestoreProgressText(draft.slot, progressState)}\nTabs: ${selectedTabs.join(', ')}`, components: [] }).catch(() => null);
+    }, { allowedTabs: selectedTabs });
+    setupRestoreDrafts.delete(key);
+    await interaction.message?.edit({ content: '✅ Selected tab import completed.', components: createSetupFinishRow() }).catch(() => null);
     return true;
   }
   if ((interaction.customId === 'setup_fresh_sync_yes' || interaction.customId === 'setup_fresh_sync_no') && interaction.isButton()) {

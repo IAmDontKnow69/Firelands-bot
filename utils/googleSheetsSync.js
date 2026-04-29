@@ -1,4 +1,5 @@
 const { google } = require('googleapis');
+const { version: BOT_BUILD_VERSION = '0.0.0' } = require('../package.json');
 const fs = require('fs');
 const path = require('path');
 const { determineEventType } = require('./eventType');
@@ -879,11 +880,11 @@ async function loadSheetBackups(config = {}) {
   const spreadsheetId = getSpreadsheetId(config);
   if (!spreadsheetId) return [];
   const sheets = await getSheetsClient(config);
-  const backupsRange = config.googleSync?.sheetBackupsRange || 'Backups!A2:F';
+  const backupsRange = config.googleSync?.sheetBackupsRange || 'Backups!A2:G';
   const title = getSheetNameFromRange(backupsRange);
 
   await ensureSheetLayout(sheets, spreadsheetId, [
-    { range: backupsRange, headers: ['slot', 'name', 'createdAt', 'createdBy', 'summary', 'snapshot'] }
+    { range: backupsRange, headers: ['slot', 'name', 'createdAt', 'createdBy', 'summary', 'buildVersion', 'snapshot'] }
   ]);
 
   const response = await sheets.spreadsheets.values.get({ spreadsheetId, range: `${toA1SheetName(title)}!A2:ZZ` }).catch(() => ({ data: { values: [] } }));
@@ -895,7 +896,8 @@ async function loadSheetBackups(config = {}) {
       createdAt: row[2] || '',
       createdBy: row[3] || '',
       summary: row[4] || '',
-      snapshot: row.slice(5).join('')
+      buildVersion: row[5] || '',
+      snapshot: row.slice(6).join('')
     }))
     .filter((entry) => Number.isInteger(entry.slot) && entry.slot >= 1 && entry.slot <= 5);
 }
@@ -904,17 +906,17 @@ async function saveSheetBackupSlot(config = {}, { slot = 1, name = '', createdBy
   const spreadsheetId = getSpreadsheetId(config);
   if (!spreadsheetId) return { ok: false, reason: 'missing_spreadsheet_id' };
   const sheets = await getSheetsClient(config);
-  const backupsRange = config.googleSync?.sheetBackupsRange || 'Backups!A2:F';
+  const backupsRange = config.googleSync?.sheetBackupsRange || 'Backups!A2:G';
   const title = getSheetNameFromRange(backupsRange);
   const row = Number(slot);
   if (!Number.isInteger(row) || row < 1 || row > 5) return { ok: false, reason: 'invalid_slot' };
 
   await ensureSheetLayout(sheets, spreadsheetId, [
-    { range: backupsRange, headers: ['slot', 'name', 'createdAt', 'createdBy', 'summary', 'snapshot'] }
+    { range: backupsRange, headers: ['slot', 'name', 'createdAt', 'createdBy', 'summary', 'buildVersion', 'snapshot'] }
   ]);
 
   const snapshotChunks = splitIntoCellChunks(snapshot);
-  const rowValues = [row, name, toIso(), createdBy, summary, ...snapshotChunks];
+  const rowValues = [row, name, toIso(), createdBy, summary, BOT_BUILD_VERSION, ...snapshotChunks];
   const endCol = toColumnLabel(rowValues.length);
 
   await sheets.spreadsheets.values.clear({
@@ -939,7 +941,7 @@ async function saveSheetBackupSlot(config = {}, { slot = 1, name = '', createdBy
       requestBody: {
         requests: [{
           updateDimensionProperties: {
-            range: { sheetId: backupSheetId, dimension: 'COLUMNS', startIndex: 5, endIndex: 6 },
+            range: { sheetId: backupSheetId, dimension: 'COLUMNS', startIndex: 6, endIndex: 7 },
             properties: { hiddenByUser: true },
             fields: 'hiddenByUser'
           }
@@ -956,14 +958,14 @@ async function buildSpreadsheetBackupSnapshot(config = {}, onProgress) {
   if (!spreadsheetId) return { ok: false, reason: 'missing_spreadsheet_id' };
 
   const sheets = await getSheetsClient(config);
-  const backupsRange = config.googleSync?.sheetBackupsRange || 'Backups!A2:F';
+  const backupsRange = config.googleSync?.sheetBackupsRange || 'Backups!A2:G';
   const backupsTabTitle = getSheetNameFromRange(backupsRange);
   const metadata = await sheets.spreadsheets.get({ spreadsheetId });
   const targetSheets = (metadata.data.sheets || [])
     .map((entry) => entry.properties?.title)
     .filter((title) => title && title !== backupsTabTitle && (REQUIRED_SETUP_TABS.includes(title) || isTeamFixturesTab(title)));
 
-  const snapshot = { version: 1, createdAt: toIso(), tabs: [] };
+  const snapshot = { version: 1, buildVersion: BOT_BUILD_VERSION, createdAt: toIso(), tabs: [] };
   const startedAt = Date.now();
 
   for (let i = 0; i < targetSheets.length; i += 1) {
@@ -995,14 +997,19 @@ async function buildSpreadsheetBackupSnapshot(config = {}, onProgress) {
   return { ok: true, snapshot };
 }
 
-async function restoreSpreadsheetFromBackupSnapshot(config = {}, snapshot = {}, onProgress) {
+async function restoreSpreadsheetFromBackupSnapshot(config = {}, snapshot = {}, onProgress, options = {}) {
   const spreadsheetId = getSpreadsheetId(config);
   if (!spreadsheetId) return { ok: false, reason: 'missing_spreadsheet_id' };
   const tabs = Array.isArray(snapshot?.tabs) ? snapshot.tabs : [];
-  if (!tabs.length) return { ok: false, reason: 'empty_snapshot' };
+  const configOnly = Boolean(options?.configOnly);
+  const allowedTabs = Array.isArray(options?.allowedTabs) ? options.allowedTabs.filter(Boolean) : [];
+  const tabsToRestore = configOnly
+    ? tabs.filter((tab) => tab?.title === 'Config')
+    : (allowedTabs.length ? tabs.filter((tab) => allowedTabs.includes(tab?.title)) : tabs);
+  if (!tabsToRestore.length) return { ok: false, reason: 'empty_snapshot' };
 
   const sheets = await getSheetsClient(config);
-  const backupsRange = config.googleSync?.sheetBackupsRange || 'Backups!A2:F';
+  const backupsRange = config.googleSync?.sheetBackupsRange || 'Backups!A2:G';
   const backupsTabTitle = getSheetNameFromRange(backupsRange);
 
   const metadata = await sheets.spreadsheets.get({ spreadsheetId });
@@ -1011,7 +1018,7 @@ async function restoreSpreadsheetFromBackupSnapshot(config = {}, snapshot = {}, 
     .filter(Boolean);
   const existingSet = new Set(existingTitles);
 
-  const addRequests = tabs
+  const addRequests = tabsToRestore
     .filter((tab) => tab.title && !existingSet.has(tab.title))
     .map((tab) => ({ addSheet: { properties: { title: tab.title } } }));
 
@@ -1022,7 +1029,7 @@ async function restoreSpreadsheetFromBackupSnapshot(config = {}, snapshot = {}, 
   const refreshedMetadata = await sheets.spreadsheets.get({ spreadsheetId });
   const allNonBackupTitles = (refreshedMetadata.data.sheets || [])
     .map((entry) => entry.properties?.title)
-    .filter((title) => title && title !== backupsTabTitle);
+    .filter((title) => title && title !== backupsTabTitle && (!configOnly || title === 'Config'));
 
   if (allNonBackupTitles.length) {
     await sheets.spreadsheets.values.batchClear({
@@ -1034,8 +1041,8 @@ async function restoreSpreadsheetFromBackupSnapshot(config = {}, snapshot = {}, 
   }
 
   const startedAt = Date.now();
-  for (let i = 0; i < tabs.length; i += 1) {
-    const tab = tabs[i];
+  for (let i = 0; i < tabsToRestore.length; i += 1) {
+    const tab = tabsToRestore[i];
     const values = Array.isArray(tab.values) ? tab.values : [];
     const escaped = String(tab.title || '').replace(/'/g, "''");
     if (values.length) {
@@ -1050,20 +1057,20 @@ async function restoreSpreadsheetFromBackupSnapshot(config = {}, snapshot = {}, 
     if (typeof onProgress === 'function') {
       const completed = i + 1;
       const elapsedMs = Math.max(1, Date.now() - startedAt);
-      const etaMs = Math.max(0, Math.round((elapsedMs / completed) * (tabs.length - completed)));
+      const etaMs = Math.max(0, Math.round((elapsedMs / completed) * (tabsToRestore.length - completed)));
       onProgress({
         phase: 'restore',
         currentTab: tab.title,
         completed,
-        total: tabs.length,
-        percent: Math.min(100, Math.round((completed / Math.max(tabs.length, 1)) * 100)),
+        total: tabsToRestore.length,
+        percent: Math.min(100, Math.round((completed / Math.max(tabsToRestore.length, 1)) * 100)),
         etaMs,
-        tabs: tabs.map((entry) => entry.title)
+        tabs: tabsToRestore.map((entry) => entry.title)
       });
     }
   }
 
-  return { ok: true, restoredTabs: tabs.length };
+  return { ok: true, restoredTabs: tabsToRestore.length, configOnly };
 }
 
 async function renameSheetTabForRange(config = {}, fromRange = '', toRange = '') {
@@ -1145,7 +1152,7 @@ async function syncAllToSheet(config = {}, db = {}, options = {}) {
         { range: absencesRange, headers: ['ticketPreview', 'channelPreview', 'eventPreview', 'eventTitle', 'eventDate', 'eventLocation', 'team', 'playerPreview', 'playerName', 'attendanceStatus', 'reason', 'coachDecision', 'coachPreview', 'coachName', 'closedAt', 'createdAt', 'closedReason', 'ticketId', 'channelId', 'eventId', 'playerId', 'coachId', 'recordType'], description: 'Logs for not-attending reasons and coach outcomes.' },
         { range: configRange, headers: ['key', 'value', 'updatedAt'], description: 'Bot configuration values.' },
         { range: commandLogRange, headers: ['timestamp', 'source', 'command', 'subcommand', 'options', 'guildId', 'channelId', 'userId', 'username'], description: 'Log of all commands used in the bot.' },
-        { range: 'Backups!A2:F', headers: ['slot', 'name', 'createdAt', 'createdBy', 'summary', 'snapshot'], description: 'Manual snapshot backups.' }
+        { range: 'Backups!A2:G', headers: ['slot', 'name', 'createdAt', 'createdBy', 'summary', 'buildVersion', 'snapshot'], description: 'Manual snapshot backups.' }
       ]
       : [
         { range: 'Home!A2:E', headers: ['Tab', 'Purpose', 'Open', 'Previous', 'Next'], description: 'Navigation hub for every tab.' },
