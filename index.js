@@ -1300,13 +1300,32 @@ async function postEventMessage(event) {
 
   const row = new ActionRowBuilder().addComponents(attendingButton, notAttendingButton);
 
+  const teamRole = channel.guild.roles.cache.get(teamRoleId);
+  const members = Array.from(teamRole?.members?.values() || []);
+  const db = loadDb();
+  const dmUsers = [];
+  const teamChatUsers = [];
+  for (const member of members) {
+    const mode = db.players?.[member.id]?.attendanceDeliveryMode === 'team_chat' ? 'team_chat' : 'dm';
+    if (mode === 'dm') dmUsers.push(member);
+    else teamChatUsers.push(member);
+  }
+
+  for (const member of dmUsers) {
+    await member.send({
+      content: ['Only you can see this.', getEventAnnouncementContent(event, '')].join('\n'),
+      components: [row]
+    }).catch(() => null);
+  }
+
+  const mentionLine = teamChatUsers.length ? teamChatUsers.map((member) => `<@${member.id}>`).join(' ') : `<@&${teamRoleId}>`;
   const message = await channel.send({
-    content: getEventAnnouncementContent(event, teamRoleId),
+    content: [mentionLine, getEventAnnouncementContent(event, '')].join('\n'),
     components: [row]
   });
 
   setEventMessageId(event.id, message.id);
-  await sendLog(`📌 Posted event: **${event.title}** (${event.team})`);
+  await sendLog(`📌 Posted event: **${event.title}** (${event.team}) • DM: ${dmUsers.length}, Team chat: ${teamChatUsers.length}`);
 }
 
 async function updatePostedEventMessage(eventId, event) {
