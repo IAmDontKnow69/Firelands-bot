@@ -121,7 +121,8 @@ module.exports = {
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`coach_manage_players:${team}`).setLabel('👥 Player Manager').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`coach_manage_attendance:${team}`).setLabel('📋 Next Games Attendance').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`coach_manage_vacation:${team}`).setLabel('🌴 Vacation').setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId(`coach_manage_vacation:${team}`).setLabel('🌴 Vacation').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`coach_set_team_badge:${team}`).setLabel('🛡️ Team Badge').setStyle(ButtonStyle.Secondary)
     );
 
     await interaction.reply({ embeds: [embed], components: [row], flags: MessageFlags.Ephemeral });

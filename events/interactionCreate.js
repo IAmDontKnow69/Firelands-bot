@@ -366,7 +366,8 @@ function createTeamConfigActionRow(config, team) {
     new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:id_settings`).setLabel('🪪 ID Settings').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:fixtures_settings`).setLabel('📅 Fixture Settings').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:team_name`).setLabel('🏷️ Set Team Name').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:team_emojis`).setLabel('😀 Set Team/Captain Emojis').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:team_emojis`).setLabel('😀 Set Team/Captain Emojis').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:team_badge`).setLabel('🛡️ Set Team Badge').setStyle(ButtonStyle.Secondary)
   );
 }
 
@@ -561,6 +562,7 @@ function getTeamConfigSummary(config, guild, team) {
     `• 😀 Team Emoji: ${meta.emoji}`,
     `• 🫡 Captain Role: ${formatConfigRef(guild, 'role', config.teams?.[team]?.captainRoleId)}`,
     `• 🅒 Captain Emoji: ${config.teams?.[team]?.captainEmoji || 'not set'}`,
+    `• 🛡️ Team Badge: ${config.teams?.[team]?.badgeUrl || 'not set'}`,
     `• 📝 Event Name Phrases (exact): ${(config.teams?.[team]?.eventNamePhrases || []).join(', ') || 'not set'}`,
     '',
     '**ID Setup Progress**',
@@ -2298,6 +2300,27 @@ module.exports = {
         });
         return;
       }
+      if (interaction.customId.startsWith('coach_set_team_badge:')) {
+        const team = interaction.customId.split(':')[1];
+        const latestConfig = loadConfig();
+        const coachRoleId = latestConfig.roles?.[team]?.coach;
+        if (!coachRoleId || !interaction.member?.roles?.cache?.has(coachRoleId)) {
+          await interaction.reply({ content: 'Only coaches assigned to this team can update the team badge.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const teamLabel = getTeamMeta(latestConfig, team).label || team;
+        const modal = new ModalBuilder().setCustomId(`coach_set_team_badge_modal:${team}`).setTitle(`Set ${teamLabel} Badge`);
+        const badgeUrlInput = new TextInputBuilder()
+          .setCustomId('badge_url')
+          .setLabel('Badge URL or Discord attachment URL')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setValue(latestConfig.teams?.[team]?.badgeUrl || '')
+          .setMaxLength(500);
+        modal.addComponents(new ActionRowBuilder().addComponents(badgeUrlInput));
+        await interaction.showModal(modal);
+        return;
+      }
       if (interaction.customId === 'admin_back_coach_management') {
         await interaction.update({
           content: getCoachManagementSummary(),
@@ -2438,6 +2461,19 @@ module.exports = {
           const emojiInput = new TextInputBuilder().setCustomId('emoji').setLabel('Team emoji, e.g. 🔵').setStyle(TextInputStyle.Short).setRequired(true).setValue(getTeamMeta(latestConfig, team).emoji).setMaxLength(40);
           const captainEmojiInput = new TextInputBuilder().setCustomId('captain_emoji').setLabel('Captain emoji, e.g. 🅒').setStyle(TextInputStyle.Short).setRequired(true).setValue(latestConfig.teams?.[team]?.captainEmoji || '🅒').setMaxLength(40);
           modal.addComponents(new ActionRowBuilder().addComponents(emojiInput), new ActionRowBuilder().addComponents(captainEmojiInput));
+          await interaction.showModal(modal);
+          return;
+        }
+        if (selectedAction === 'team_badge') {
+          const modal = new ModalBuilder().setCustomId(`admin_set_team_badge_modal:${team}`).setTitle(`Set ${teamLabel} Badge`);
+          const badgeUrlInput = new TextInputBuilder()
+            .setCustomId('badge_url')
+            .setLabel('Badge URL or Discord attachment URL')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setValue(latestConfig.teams?.[team]?.badgeUrl || '')
+            .setMaxLength(500);
+          modal.addComponents(new ActionRowBuilder().addComponents(badgeUrlInput));
           await interaction.showModal(modal);
           return;
         }
@@ -3163,8 +3199,10 @@ module.exports = {
           .setTitle(`Coach UI — ${selectedTeam}`)
           .setDescription(report)
           .setColor(0x3498db);
-
-        await interaction.update({ content: 'Coach report loaded.', embeds: [embed], components: [] });
+        const coachRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`coach_set_team_badge:${selectedTeam}`).setLabel('🛡️ Team Badge').setStyle(ButtonStyle.Secondary)
+        );
+        await interaction.update({ content: 'Coach report loaded.', embeds: [embed], components: [coachRow] });
         return;
       }
 
@@ -3707,6 +3745,19 @@ module.exports = {
             .setMaxLength(40);
 
           modal.addComponents(new ActionRowBuilder().addComponents(emojiInput), new ActionRowBuilder().addComponents(captainEmojiInput));
+          await interaction.showModal(modal);
+          return;
+        }
+        if (selectedAction === 'team_badge') {
+          const modal = new ModalBuilder().setCustomId(`admin_set_team_badge_modal:${team}`).setTitle(`Set ${teamLabel} Badge`);
+          const badgeUrlInput = new TextInputBuilder()
+            .setCustomId('badge_url')
+            .setLabel('Badge URL or Discord attachment URL')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setValue(config.teams?.[team]?.badgeUrl || '')
+            .setMaxLength(500);
+          modal.addComponents(new ActionRowBuilder().addComponents(badgeUrlInput));
           await interaction.showModal(modal);
           return;
         }
@@ -4798,6 +4849,42 @@ module.exports = {
         return;
       }
       await interaction.editReply({ content: renderProgressMessage(100, `Team/captain emojis updated for **${getTeamMeta(loadConfig(), team).label}**.`) });
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('admin_set_team_badge_modal:')) {
+      if (!hasAdminAccess(interaction.member, config)) {
+        await denyAdminAccess();
+        return;
+      }
+      const team = interaction.customId.split(':')[1];
+      const badgeUrl = interaction.fields.getTextInputValue('badge_url').trim();
+      if (!/^https?:\/\/\S+$/i.test(badgeUrl)) {
+        await interaction.reply({ content: 'Badge URL must start with http:// or https://', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      updateConfig(`teams.${team}.badgeUrl`, badgeUrl);
+      await syncConfigSnapshotIfEnabled().catch(() => null);
+      await interaction.reply({ content: `✅ Team badge updated for **${getTeamMeta(loadConfig(), team).label}**.\n${badgeUrl}`, flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('coach_set_team_badge_modal:')) {
+      const team = interaction.customId.split(':')[1];
+      const latestConfig = loadConfig();
+      const coachRoleId = latestConfig.roles?.[team]?.coach;
+      if (!coachRoleId || !interaction.member?.roles?.cache?.has(coachRoleId)) {
+        await interaction.reply({ content: 'Only coaches assigned to this team can update the team badge.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const badgeUrl = interaction.fields.getTextInputValue('badge_url').trim();
+      if (!/^https?:\/\/\S+$/i.test(badgeUrl)) {
+        await interaction.reply({ content: 'Badge URL must start with http:// or https://', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      updateConfig(`teams.${team}.badgeUrl`, badgeUrl);
+      await syncConfigSnapshotIfEnabled().catch(() => null);
+      await interaction.reply({ content: `✅ Team badge updated for **${getTeamMeta(loadConfig(), team).label}**.\n${badgeUrl}`, flags: MessageFlags.Ephemeral });
       return;
     }
 
