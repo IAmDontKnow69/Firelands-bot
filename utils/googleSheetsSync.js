@@ -5,6 +5,8 @@ const path = require('path');
 const { determineEventType, eventTypeLabel } = require('./eventType');
 
 const REQUIRED_SETUP_TABS = ['Fixtures', 'Player and Coach Management', 'Attendance', 'Absences', 'Player and Coach Notes', 'Config', 'Command Logs', 'Backups'];
+const FIRELANDS_ORANGE = { red: 0.941, green: 0.518, blue: 0.075 };
+const FIRELANDS_DARK = { red: 0.149, green: 0.176, blue: 0.251 };
 
 function isTeamFixturesTab(title = '') {
   return /\sfixtures$/i.test(String(title || '').trim()) && String(title || '').trim().toLowerCase() !== 'fixtures';
@@ -742,29 +744,14 @@ async function ensureSheetLayout(sheets, spreadsheetId, sections = []) {
     }
   });
 
-  const tabColors = {
-    Home: { red: 0.2, green: 0.55, blue: 0.95 },
-    Fixtures: { red: 0.22, green: 0.62, blue: 0.3 },
-    'Mens Fixtures': { red: 0.18, green: 0.4, blue: 0.85 },
-    'Womens Fixtures': { red: 0.82, green: 0.28, blue: 0.36 },
-    Attendance: { red: 0.56, green: 0.37, blue: 0.78 },
-    Config: { red: 0.46, green: 0.46, blue: 0.46 },
-    'Config IDs': { red: 0.3, green: 0.3, blue: 0.3 },
-    'Config Backups': { red: 0.85, green: 0.56, blue: 0.2 },
-    'Player and Coach Management': { red: 0.17, green: 0.67, blue: 0.67 },
-    Absences: { red: 0.9, green: 0.45, blue: 0.2 },
-    'Player and Coach Notes': { red: 0.52, green: 0.42, blue: 0.73 },
-    Backups: { red: 0.95, green: 0.71, blue: 0.12 }
-  };
-
   const formatRequests = sections
-    .map((section) => {
+    .map((section, index) => {
       const title = getSheetNameFromRange(section.range);
       const sheetId = existingSheets.get(title);
       if (!Number.isInteger(sheetId)) return null;
       const headerCount = (section.headers || []).length;
       const startRow = Math.max(1, getRangeStartRow(section.range) - 1);
-      const tabColor = tabColors[title];
+      const tabColor = index % 2 === 0 ? FIRELANDS_ORANGE : FIRELANDS_DARK;
       return [
         {
           updateSheetProperties: {
@@ -787,8 +774,8 @@ async function ensureSheetLayout(sheets, spreadsheetId, sections = []) {
             },
             cell: {
               userEnteredFormat: {
-                textFormat: { bold: true },
-                backgroundColor: { red: 0.9, green: 0.93, blue: 0.97 }
+                textFormat: { bold: true, foregroundColor: FIRELANDS_DARK },
+                backgroundColor: FIRELANDS_ORANGE
               }
             },
             fields: 'userEnteredFormat(textFormat,backgroundColor)'
@@ -813,6 +800,22 @@ async function ensureSheetLayout(sheets, spreadsheetId, sections = []) {
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId,
       requestBody: { requests: formatRequests }
+    });
+  }
+
+  const orderedSheetIds = sections
+    .map((section) => existingSheets.get(getSheetNameFromRange(section.range)))
+    .filter((sheetId) => Number.isInteger(sheetId));
+  const sortRequests = orderedSheetIds.map((sheetId, index) => ({
+    updateSheetProperties: {
+      properties: { sheetId, index },
+      fields: 'index'
+    }
+  }));
+  if (sortRequests.length) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: { requests: sortRequests }
     });
   }
 

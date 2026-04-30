@@ -16,9 +16,12 @@ const {
   REST,
   Routes,
   MessageFlags,
-  PermissionFlagsBits
+  PermissionFlagsBits,
+  EmbedBuilder
 } = require('discord.js');
 const cron = require('node-cron');
+const fs = require('fs');
+const path = require('path');
 
 const attendanceCommand = require('./commands/attendance');
 const playerCommand = require('./commands/player');
@@ -71,23 +74,37 @@ client.commands.set(confirmCommand.data.name, confirmCommand);
 const missingAttendanceConfigWarnings = new Set();
 const REQUIRED_SETUP_TABS = ['Fixtures', 'Players and Coaches', 'Attendance', 'Absences', 'Config', 'Command Logs', 'Backups'];
 const setupRestoreDrafts = new Map();
+const SETUP_LOGO_PATH = path.join(__dirname, 'assets', 'firelands-logo-transparent.png');
 
 function buildSetupWelcome() {
   return [
     '👋 **Welcome to Firelands Bot**',
     '',
-    'This setup will guide you through the essentials and get your club ready quickly.',
+    '⚙️ This setup will guide you through the essentials and get your club ready quickly.',
     '',
-    '**Core features:**',
-    '• Attendance tracking and fixture notifications.',
-    '• Admin controls for team and channel configuration.',
-    '• Google Sheets sync plus full-sheet backups (up to 5 slots).',
-    '• Backup restore to repopulate all synced tabs from one saved snapshot.',
+    '🏟️ **About Firelands United FC**',
+    '• We are building players, community, and elite football habits every week.',
+    '• Check out our **free content** on YouTube and visit our website for more updates.',
+    '',
+    '🧰 **Core features:**',
+    '• ✅ Attendance tracking and fixture notifications.',
+    '• 🧑‍💼 Admin controls for team and channel configuration.',
+    '• 📊 Google Sheets sync plus full-sheet backups (up to 5 slots).',
+    '• ♻️ Backup restore to repopulate all synced tabs from one saved snapshot.',
     '',
     'Made by **George Villiers** and published by **Grev**.',
     '',
-    'Press **Get Started** to open the setup wizard.'
+    '🚀 Press **Get Started** to open the setup wizard.'
   ].join('\n');
+}
+
+function buildSetupWelcomeEmbed() {
+  const embed = new EmbedBuilder()
+    .setColor(0xf08413)
+    .setTitle('🔥 Firelands United')
+    .setDescription('Professional setup flow for calendar, teams, and Google Sheets sync.')
+    .setImage('attachment://firelands-logo-transparent.png');
+  return embed;
 }
 
 function buildSetupSummary(config) {
@@ -185,8 +202,18 @@ function createSetupWelcomeRows() {
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId('setup_get_started')
-        .setLabel('Get Started')
+        .setLabel('🚀 Get Started')
         .setStyle(ButtonStyle.Success)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setLabel('🔴 YouTube Channel')
+        .setStyle(ButtonStyle.Link)
+        .setURL('https://www.youtube.com/@FirelandsUnited'),
+      new ButtonBuilder()
+        .setLabel('🟧 Firelands Website')
+        .setStyle(ButtonStyle.Link)
+        .setURL('https://firelandsunited.com/home/')
     )
   ];
 }
@@ -731,9 +758,16 @@ async function postSetupWizardToGuild(guild) {
   if (hasCompletedSetupWizard(guild.id)) return;
   const setupChannel = findGuildSetupChannel(guild);
   if (!setupChannel) return;
+  const hasLogo = fs.existsSync(SETUP_LOGO_PATH);
   await setupChannel.send({
     content: buildSetupWelcome(),
-    components: createSetupWelcomeRows()
+    components: createSetupWelcomeRows(),
+    ...(hasLogo
+      ? {
+          embeds: [buildSetupWelcomeEmbed()],
+          files: [{ attachment: SETUP_LOGO_PATH, name: 'firelands-logo-transparent.png' }]
+        }
+      : {})
   }).catch(() => null);
 }
 
