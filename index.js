@@ -32,6 +32,7 @@ const { startReminderJobs } = require('./utils/reminders');
 const { ensureConfig, loadConfig, saveConfig, updateConfig, resetConfigFresh } = require('./utils/config');
 const {
   syncAllToSheet,
+  syncConfigOnlyToSheet,
   appendCommandLogRow,
   loadSheetBackups,
   restoreSpreadsheetFromBackupSnapshot,
@@ -455,6 +456,34 @@ function applySetupDraftToConfig(draft = {}) {
   if (draft.adminChannelId) updateConfig('channels.admin', draft.adminChannelId);
   if (draft.calendarId) updateConfig('bot.calendarId', draft.calendarId);
   if (draft.spreadsheetId) updateConfig('googleSync.spreadsheetId', draft.spreadsheetId);
+}
+
+async function syncSetupConfigToSheetIfEnabled() {
+  const config = getConfig();
+  if (!config.googleSync?.enabled) return;
+  if (!getSpreadsheetId(config)) return;
+  await syncConfigOnlyToSheet(config);
+}
+
+async function clearSetupSpreadsheetTabsExceptBackups(config = {}) {
+  const spreadsheetId = getSpreadsheetId(config);
+  if (!spreadsheetId) return;
+  const sheets = await getSheetsClient(config);
+  const metadata = await sheets.spreadsheets.get({ spreadsheetId });
+  const existingSheets = Array.isArray(metadata.data?.sheets) ? metadata.data.sheets : [];
+  const deleteRequests = existingSheets
+    .map((sheet) => ({
+      title: String(sheet?.properties?.title || ''),
+      sheetId: sheet?.properties?.sheetId
+    }))
+    .filter((sheet) => Number.isInteger(sheet.sheetId))
+    .filter((sheet) => sheet.title !== 'Backups')
+    .map((sheet) => ({ deleteSheet: { sheetId: sheet.sheetId } }));
+  if (!deleteRequests.length) return;
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId,
+    requestBody: { requests: deleteRequests }
+  });
 }
 
 function toOptionSummary(interaction) {
@@ -899,10 +928,14 @@ async function handleSetupInteraction(interaction) {
   if (interaction.customId.startsWith('setup_set_calendar_id_modal') && interaction.isModalSubmit()) {
     const calendarInput = interaction.fields.getTextInputValue('calendar_id').trim();
     const calendarId = parseCalendarId(calendarInput);
+    if (calendarId) {
+      updateConfig('bot.calendarId', calendarId);
+    }
     saveSetupDraft({
       calendarId,
       statusNotice: '✅ Google Calendar ID saved. Setup wizard updated in-place.'
     }, interaction.guildId);
+    await syncSetupConfigToSheetIfEnabled().catch(() => null);
     const sourceMessageId = interaction.customId.split(':')[1] || '';
     const updated = await updateSetupMessageFromModal(interaction, sourceMessageId);
     if (updated) {
@@ -922,10 +955,15 @@ async function handleSetupInteraction(interaction) {
   }
   if (interaction.customId.startsWith('setup_set_sheet_url_modal') && interaction.isModalSubmit()) {
     const input = interaction.fields.getTextInputValue('sheet_input').trim();
+    const spreadsheetId = getSpreadsheetId({ googleSync: { spreadsheetId: input } }) || input;
+    if (spreadsheetId) {
+      updateConfig('googleSync.spreadsheetId', spreadsheetId);
+    }
     saveSetupDraft({
-      spreadsheetId: getSpreadsheetId({ googleSync: { spreadsheetId: input } }) || input,
+      spreadsheetId,
       statusNotice: '✅ Google Sheet URL/ID saved. Setup wizard updated in-place.'
     }, interaction.guildId);
+    await syncSetupConfigToSheetIfEnabled().catch(() => null);
     const sourceMessageId = interaction.customId.split(':')[1] || '';
     const updated = await updateSetupMessageFromModal(interaction, sourceMessageId);
     if (updated) {
@@ -954,8 +992,9 @@ async function handleSetupInteraction(interaction) {
       if (interaction.values[0] === 'fresh_config') {
         resetConfigFresh();
         saveDb({ events: {}, futureAvailability: {}, absenceTickets: {}, players: {}, meta: { postEventCoachReminders: {}, setupWizard: {} } });
-        const freshConfig = getConfig();
         applySetupDraftToConfig(setupDraft);
+        const freshConfig = getConfig();
+        await clearSetupSpreadsheetTabsExceptBackups(freshConfig);
         const result = await syncAllToSheet(freshConfig, loadDb(), { wipe: true, setupFreshWipe: true });
         const sheetConfig = await loadConfigFromSheet(getConfig()).catch(() => null);
         if (sheetConfig) saveConfig(sheetConfig);
@@ -1119,7 +1158,9 @@ async function handleSetupInteraction(interaction) {
   const config = getConfig();
   if (interaction.customId === 'setup_role_admin') {
     const roleId = interaction.values[0];
+    if (roleId) updateConfig('bot.adminRoleId', roleId);
     saveSetupDraft({ adminRoleId: roleId }, interaction.guildId);
+    await syncSetupConfigToSheetIfEnabled().catch(() => null);
   }
   if (interaction.customId === 'setup_channel_admin') {
     const channelId = interaction.values[0];
