@@ -2,7 +2,7 @@ const { google } = require('googleapis');
 const { version: BOT_BUILD_VERSION = '0.0.0' } = require('../package.json');
 const fs = require('fs');
 const path = require('path');
-const { determineEventType } = require('./eventType');
+const { determineEventType, eventTypeLabel } = require('./eventType');
 
 const REQUIRED_SETUP_TABS = ['Fixtures', 'Player and Coach Management', 'Attendance', 'Absences', 'Player and Coach Notes', 'Config', 'Command Logs', 'Backups'];
 
@@ -53,8 +53,16 @@ function resolveCredentialsPath(config = {}) {
 
 function getSpreadsheetId(config = {}) {
   const input = config.googleSync?.spreadsheetId || process.env.GOOGLE_SPREADSHEET_ID || '';
-  const match = String(input).match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-  return match ? match[1] : String(input).trim();
+  const raw = String(input || '').trim();
+  if (!raw) return '';
+
+  const urlMatch = raw.match(/\/spreadsheets(?:\/u\/\d+)?\/d\/([a-zA-Z0-9-_]+)/i);
+  if (urlMatch) return urlMatch[1];
+
+  const queryMatch = raw.match(/[?&]id=([a-zA-Z0-9-_]+)/i);
+  if (queryMatch) return queryMatch[1];
+
+  return raw;
 }
 
 function normalizeA1Range(range = '', fallback = '') {
@@ -319,7 +327,7 @@ function buildFixtureAddressColumns(config = {}) {
 }
 
 function buildFixtureHeaders(config = {}) {
-  return ['eventId', 'title', 'date', 'location', ...buildFixtureAddressColumns(config), 'team', 'discordMessageId', 'updatedAt'];
+  return ['eventId', 'title', 'eventType', 'date', 'addressNickname', 'location', ...buildFixtureAddressColumns(config), 'team', 'discordMessageId', 'updatedAt'];
 }
 
 function buildFixtureRows(db = {}, config = {}) {
@@ -328,6 +336,7 @@ function buildFixtureRows(db = {}, config = {}) {
     .map(([eventId, event]) => ({
       eventId,
       title: event.title || '',
+      eventType: determineEventType(event, config),
       date: event.date || '',
       location: event.location || '',
       team: event.team || '',
@@ -336,13 +345,17 @@ function buildFixtureRows(db = {}, config = {}) {
     }))
     .sort((a, b) => new Date(a.date || 0).getTime() - new Date(b.date || 0).getTime())
     .map((event) => {
-      const addressFlags = addressColumns.map((nickname) => (getLocationAliasLabel(config, event) === nickname ? '✅' : ''));
+      const addressNickname = getLocationAliasLabel(config, event) || '';
+      const locationLabel = addressNickname || event.location || '';
+      const addressFlags = addressColumns.map((nickname) => (addressNickname === nickname ? '✅' : ''));
       return [
         event.eventId,
         compactText(event.title, 70),
+        eventTypeLabel(event.eventType),
         event.date,
+        addressNickname,
         event.location
-          ? `=HYPERLINK("${getMapsLink(event.location)}","${compactText(getLocationAliasLabel(config, event) || event.location, 60).replace(/"/g, '""')}")`
+          ? `=HYPERLINK("${getMapsLink(event.location)}","${compactText(locationLabel, 60).replace(/"/g, '""')}")`
           : '',
         ...addressFlags,
         event.team,

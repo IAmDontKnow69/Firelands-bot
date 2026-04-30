@@ -98,7 +98,7 @@ function getGoogleToolsSummary(config = {}) {
     '📗 **Google Tools**',
     `Current calendar source: **${calendarId}**`,
     `Last calendar/sheets sync: **${lastSyncedLabel}**`,
-    `Auto sync fixtures: **${autoSyncEnabled ? 'ON' : 'OFF'}**`,
+    `Auto sync fixtures: **${autoSyncEnabled ? '🟢 ON' : '🔴 OFF'}**`,
     '',
     'What each button does:',
     '• Sync Google Sheets: force sync fixtures/attendance/config into the sheet.',
@@ -143,9 +143,15 @@ function getTeamManagementSummary() {
 }
 
 function getClubManagementSummary() {
+  const config = loadConfig();
+  const adminChat = config.channels?.admin ? `<#${config.channels.admin}>` : 'not set';
+  const botCommandsChat = config.channels?.botCommands ? `<#${config.channels.botCommands}>` : 'OFF';
   return [
     '🏟️ **Club Management**',
     'Configure club-wide settings and integrations.',
+    '',
+    `Current Admin Chat: ${adminChat}`,
+    `Current Bot Commands Chat: ${botCommandsChat}`,
     '',
     'Buttons in this menu:',
     '• 📗 Google — open Google calendar + sheet sync tools.',
@@ -308,8 +314,8 @@ function createGoogleToolsRow2(config = loadConfig()) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('admin_google_action:toggle_auto_sync')
-      .setLabel(autoSyncEnabled ? '🛑 Auto Sync: ON' : '✅ Auto Sync: OFF')
-      .setStyle(autoSyncEnabled ? ButtonStyle.Danger : ButtonStyle.Success),
+      .setLabel(autoSyncEnabled ? '🟢 Auto Sync: ON' : '🔴 Auto Sync: OFF')
+      .setStyle(autoSyncEnabled ? ButtonStyle.Success : ButtonStyle.Danger),
     new ButtonBuilder().setCustomId('admin_back_club_management').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
   );
 }
@@ -1949,17 +1955,34 @@ module.exports = {
           return;
         }
         if (action === 'set_admin_chat') {
+          const latestConfig = loadConfig();
+          const currentAdminChat = latestConfig.channels?.admin ? `<#${latestConfig.channels.admin}>` : 'not set';
           const row = new ActionRowBuilder().addComponents(
             new ChannelSelectMenuBuilder().setCustomId('admin_set_channel:channels.admin:global').setPlaceholder('Choose Admin Chat channel').setChannelTypes(ChannelType.GuildText).setMinValues(1).setMaxValues(1)
           );
-          await interaction.update({ content: 'Select the Admin chat channel. Bot errors + interaction failures are posted there.', embeds: [], components: [row, createBackButtonRow('admin_back_club_management')] });
+          await interaction.update({ content: `Select the Admin chat channel.\nCurrent Admin chat: ${currentAdminChat}\n\nBot errors + interaction failures are posted there.`, embeds: [], components: [row, createBackButtonRow('admin_back_club_management')] });
           return;
         }
         if (action === 'set_bot_commands_chat') {
+          const latestConfig = loadConfig();
+          const currentBotCommandsChat = latestConfig.channels?.botCommands ? `<#${latestConfig.channels.botCommands}>` : 'OFF';
           const row = new ActionRowBuilder().addComponents(
             new ChannelSelectMenuBuilder().setCustomId('admin_set_channel:channels.botCommands:global').setPlaceholder('Choose Bot Commands channel').setChannelTypes(ChannelType.GuildText).setMinValues(1).setMaxValues(1)
           );
-          await interaction.update({ content: 'Select the channel where /player and /coach commands must be used.', embeds: [], components: [row, createBackButtonRow('admin_back_club_management')] });
+          const disableRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('admin_club_action:disable_bot_commands_chat').setLabel('🔕 Turn OFF Bot Commands Chat').setStyle(ButtonStyle.Danger)
+          );
+          await interaction.update({ content: `Select the channel where /player and /coach commands must be used.\nCurrent Bot Commands chat: ${currentBotCommandsChat}\n\nYou can turn this OFF to allow commands in any channel.`, embeds: [], components: [row, disableRow, createBackButtonRow('admin_back_club_management')] });
+          return;
+        }
+        if (action === 'disable_bot_commands_chat') {
+          updateConfig('channels.botCommands', '');
+          await logAdminUiAction(interaction, 'admin-config', 'disable-bot-commands-channel');
+          await interaction.update({
+            content: '✅ Bot Commands Chat is now **OFF**.\nPlayers and coaches can currently use `/player` and `/coach` in any channel until a dedicated commands chat is set again.',
+            embeds: [],
+            components: [createClubManagementRow(), createClubManagementRow2()]
+          });
           return;
         }
         if (action === 'backups') {
@@ -3469,18 +3492,19 @@ module.exports = {
       }
 
       if (interaction.customId.startsWith('admin_event_type_set:')) {
+        await interaction.deferUpdate().catch(() => null);
         const eventId = interaction.customId.split(':')[1];
         const eventType = interaction.values[0];
         const db = loadDb();
         if (!db.events[eventId]) {
-          await interaction.reply({ content: 'Event not found.', flags: MessageFlags.Ephemeral });
+          await interaction.editReply({ content: 'Event not found.', components: [createEventTypeRulesRow(), createEventTypeRulesRow2()] }).catch(() => null);
           return;
         }
         db.events[eventId].type = eventType;
         db.events[eventId].updatedAt = new Date().toISOString();
         saveDb(db);
         await triggerGoogleSync(context);
-        await interaction.update({
+        await interaction.editReply({
           content: `✅ Event type set to **${eventTypeLabel(eventType)}** for **${db.events[eventId].title}**.`,
           embeds: [],
           components: [createEventTypeRulesRow(), createEventTypeRulesRow2()]
@@ -4340,7 +4364,9 @@ module.exports = {
       }
 
       await interaction.editReply({
-        content: `${renderProgressMessage(100, `Updated ${configPath} to <#${channelId}>.`)}${team === 'global' ? '' : `\n\n${getTeamConfigSummary(loadConfig(), interaction.guild, team)}\n\n**ID settings**`}`,
+        content: team === 'global'
+          ? `${renderProgressMessage(100, `Updated ${configPath} to <#${channelId}>.`)}\n\n${getClubManagementSummary()}`
+          : `${renderProgressMessage(100, `Updated ${configPath} to <#${channelId}>.`)}\n\n${getTeamConfigSummary(loadConfig(), interaction.guild, team)}\n\n**ID settings**`,
         embeds: [],
         components: team === 'global'
           ? [createClubManagementRow(), createClubManagementRow2()]
@@ -4353,6 +4379,12 @@ module.exports = {
           await commandChannel.send(
             '🔥 Firelands-Bot is now configured for this channel.\nPlayers can use **/player** and coaches can use **/coach** to open their bot UI.'
           ).catch(() => null);
+        }
+      }
+      if (team === 'global' && configPath === 'channels.admin') {
+        const adminChannel = interaction.guild?.channels?.cache?.get(channelId);
+        if (adminChannel?.isTextBased()) {
+          await adminChannel.send('✅ Connected to admin chat. Firelands Bot will post admin errors and setup/system notices here.').catch(() => null);
         }
       }
       return;

@@ -101,6 +101,14 @@ Firelands Bot is intentionally designed to work with **any supported Google Cale
 - `config.json` ⚙️ — runtime configuration and backup state.
 - `data.json` 💾 — events, responses, profiles, absences, vacations, and internal workflow data.
 
+### Local-only runtime data (not synced to Google Sheets)
+
+The following data is intentionally stored only in `data.json` and is not exported to Google Sheets:
+
+- `futureAvailability` (all per-user/per-team date availability entries).
+- `meta.postEventCoachReminders` (post-event reminder flags per event).
+- `meta.setupWizard` (setup wizard progress/state metadata).
+
 ---
 
 ## 🩺 Troubleshooting
