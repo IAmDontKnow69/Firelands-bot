@@ -30,7 +30,7 @@ const adminCommand = require('./commands/admin');
 const confirmCommand = require('./commands/confirm');
 const interactionHandler = require('./events/interactionCreate');
 const { fetchUpcomingEvents, fetchCalendarEvents, normalizeCalendarId } = require('./utils/googleCalendar');
-const { loadDb, saveDb, upsertEvent, setEventMessageId } = require('./utils/database');
+const { loadDb, saveDb, upsertEvent, setEventMessageId, upsertPlayerProfile, getPlayerProfile } = require('./utils/database');
 const { startReminderJobs } = require('./utils/reminders');
 const { ensureConfig, loadConfig, saveConfig, updateConfig, resetConfigFresh } = require('./utils/config');
 const {
@@ -87,10 +87,11 @@ function buildSetupWelcome() {
     '• Check out our **free content** on YouTube and visit our website for more updates.',
     '',
     '🧰 **Core features:**',
-    '• ✅ Attendance tracking and fixture notifications.',
-    '• 🧑‍💼 Admin controls for team and channel configuration.',
-    '• 📊 Google Sheets sync plus full-sheet backups (up to 5 slots).',
-    '• ♻️ Backup restore to repopulate all synced tabs from one saved snapshot.',
+    '• 📒 Player attendance records you can trust each week.',
+    '• 📅 Players can manage their own fixtures with simple controls.',
+    '• 🌴 Vacation mode to mark planned time away and keep coaches informed.',
+    '• 🧑‍🏫 Coach management tools for squad oversight and decisions.',
+    '• ✨ A fancy admin panel for setup, syncing, and club operations.',
     '',
     'Made by **George Villiers** and published by **Grev**.',
     '',
@@ -358,8 +359,9 @@ async function inspectSetupSheetState(config = {}) {
 
 function progressBar(percent = 0, width = 20) {
   const safePercent = Math.min(100, Math.max(0, Number.isFinite(percent) ? Math.round(percent) : 0));
-  const filled = Math.round((safePercent / 100) * width);
-  return `[${'█'.repeat(filled)}${'░'.repeat(Math.max(0, width - filled))}] ${safePercent}%`;
+  const segments = 10;
+  const filled = Math.round((safePercent / 100) * segments);
+  return `${'🟩'.repeat(filled)}${'⬜'.repeat(Math.max(0, segments - filled))} ${safePercent}%${safePercent >= 100 ? '\n✅' : ''}`;
 }
 
 function buildGoogleConnectionCheckProgress(percent = 0, step = '') {
@@ -988,12 +990,8 @@ async function handleSetupInteraction(interaction) {
     const sourceMessageId = interaction.customId.split(':')[1] || '';
     const updated = await updateSetupMessageFromModal(interaction, sourceMessageId);
     if (updated) {
-      if (typeof interaction.deferUpdate === 'function') {
-        await interaction.deferUpdate().catch(() => null);
-      } else {
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => null);
-        await interaction.deleteReply().catch(() => null);
-      }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => null);
+      await interaction.deleteReply().catch(() => null);
       return true;
     }
     await interaction.reply({
@@ -1016,12 +1014,8 @@ async function handleSetupInteraction(interaction) {
     const sourceMessageId = interaction.customId.split(':')[1] || '';
     const updated = await updateSetupMessageFromModal(interaction, sourceMessageId);
     if (updated) {
-      if (typeof interaction.deferUpdate === 'function') {
-        await interaction.deferUpdate().catch(() => null);
-      } else {
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => null);
-        await interaction.deleteReply().catch(() => null);
-      }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => null);
+      await interaction.deleteReply().catch(() => null);
       return true;
     }
     await interaction.reply({
@@ -1205,11 +1199,11 @@ async function handleSetupInteraction(interaction) {
     }
     await interaction.update({ content: `${progressBar(15)} Syncing fixtures from Google Calendar...`, components: [] }).catch(() => null);
     try {
-      await syncCalendarEvents();
+      const syncResult = await syncCalendarEvents({ throwOnError: true });
       const sheetConfig = await loadConfigFromSheet(getConfig()).catch(() => null);
       if (sheetConfig) saveConfig(sheetConfig);
       await interaction.message?.edit({
-        content: `${progressBar(100)} ✅ Fixture sync completed.\nFirelands Bot setup is complete and ready to use. Delete this message to finish setup.`,
+        content: `${progressBar(100)} ✅ Fixture sync completed (${syncResult.totalEvents} calendar event(s) checked).\nFirelands Bot setup is complete and ready to use. Delete this message to finish setup.`,
         components: createSetupFinishRow()
       }).catch(() => null);
     } catch (error) {
@@ -1253,6 +1247,8 @@ function isWithinDays(dateValue, days) {
 }
 
 function getAttendanceChannelId(config, team) {
+  const teamDeliveryMode = config.channels?.teamDeliveryMode?.[team] || 'team_chat';
+  if (teamDeliveryMode === 'bot_commands' && config.channels?.botCommands) return config.channels.botCommands;
   return config.channels.teamChats?.[team] || config.channels.events || '';
 }
 
@@ -1349,7 +1345,7 @@ async function notifyAttendingUsersAboutChange(event = {}, changeLines = []) {
   }
 }
 
-async function syncCalendarEvents() {
+async function syncCalendarEvents(options = {}) {
   try {
     const config = getConfig();
     const teamMatchers = Object.fromEntries(
@@ -1367,6 +1363,7 @@ async function syncCalendarEvents() {
     });
 
     const db = loadDb();
+    let postedCount = 0;
 
     for (const event of calendarEvents) {
       const existingEvent = db.events[event.id];
@@ -1421,6 +1418,7 @@ async function syncCalendarEvents() {
       clearAttendanceWarning(syncedEvent.team, `Team setup incomplete for ${syncedEvent.team}. Missing: ${getTeamSetupProgress(config, syncedEvent.team).missing.join(', ')}`);
 
       await postEventMessage(syncedWithId);
+      postedCount += 1;
       console.log(`Posted new event: ${syncedEvent.title} (${event.id})`);
     }
 
@@ -1428,15 +1426,52 @@ async function syncCalendarEvents() {
       const latestDb = loadDb();
       await syncAllToSheet(config, latestDb);
     }
+
+    return { ok: true, totalEvents: calendarEvents.length, postedCount };
   } catch (error) {
     console.error('Calendar sync failed:', error);
     await sendLog(`❌ Calendar sync failed: ${error.message}`);
+    if (options.throwOnError) throw error;
+    return { ok: false, totalEvents: 0, postedCount: 0, error: error.message };
   }
 }
 
 client.on('interactionCreate', async (interaction) => {
   try {
     if (await handleSetupInteraction(interaction)) return;
+    if (interaction.isButton() && interaction.customId.startsWith('coach_team_delivery_mode:')) {
+      const team = interaction.customId.split(':')[1] || '';
+      const coachRoleId = getConfig().roles?.[team]?.coach;
+      if (!team || !coachRoleId || !interaction.member?.roles?.cache?.has(coachRoleId)) {
+        await interaction.reply({ content: 'Only coaches for this team can change team delivery settings.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const config = getConfig();
+      const current = config.channels?.teamDeliveryMode?.[team] || 'team_chat';
+      const next = current === 'bot_commands' ? 'team_chat' : 'bot_commands';
+      updateConfig(`channels.teamDeliveryMode.${team}`, next);
+      const botCommandsId = getConfig().channels?.botCommands || '';
+      await interaction.reply({
+        content: next === 'bot_commands'
+          ? `✅ Team fixture announcements for **${team}** will now post in ${botCommandsId ? `<#${botCommandsId}>` : 'the Bot Commands channel once configured'}.`
+          : `✅ Team fixture announcements for **${team}** will now post in that team's chat channel.`,
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+    if (interaction.isButton() && interaction.customId === 'player_delivery_mode') {
+      const profile = getPlayerProfile(interaction.user.id) || {};
+      const current = profile.notificationDeliveryMode || 'team_default';
+      const next = current === 'dm' ? 'team_default' : 'dm';
+      upsertPlayerProfile(interaction.user.id, { notificationDeliveryMode: next });
+      await interaction.reply({
+        content: next === 'dm'
+          ? '✅ Your preference is now **Direct Message only** for personal bot updates.'
+          : '✅ Your preference is now **Team default channel** (uses your team delivery settings).',
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
 
     if (interaction.isChatInputCommand()) {
       if (interaction.inGuild() && ['player', 'coach'].includes(interaction.commandName)) {

@@ -131,9 +131,17 @@ function getGoogleCalendarViewUrl(config = {}) {
 }
 
 function getTeamManagementSummary() {
+  const config = loadConfig();
+  const teams = Object.entries(config.teams || {});
+  const teamLines = teams.length
+    ? teams.map(([teamKey, meta]) => `• ${(meta?.emoji || '🔹')} ${meta?.label || teamKey} (\`${teamKey}\`) — Badge: ${meta?.badgeUrl ? `[open](${meta.badgeUrl})` : 'not set'}`)
+    : ['• no teams configured'];
   return [
     '🛠️ **Team Management**',
     'Choose a team button to open its setup panel.',
+    '',
+    '**Teams**',
+    ...teamLines,
     '',
     'Buttons in this menu:',
     '• Team button — open that team settings page.',
@@ -549,24 +557,20 @@ function getTeamConfigSummary(config, guild, team) {
       return `• ${getCoachPositionLabel(getCoachPositionForTeam(profile, team, config), config)} ${shortName}`;
     }).join('\n')
     : '• none';
+  const now = Date.now();
+  const nextFiveEvents = Object.values(loadDb().events || {})
+    .filter((event) => event?.team === team && new Date(event.date).getTime() >= now)
+    .sort((a, b) => new Date(a.date) - new Date(b.date))
+    .slice(0, 5)
+    .map((event, index) => `• ${index + 1}. ${event.title} — ${new Date(event.date).toLocaleString()}`);
   return [
     `⚙️ Now Configuring: ${meta.emoji} ${meta.label} (\`${team}\`)`,
     '',
-    '🧩 **Current configuration**',
-    `• 👕 Player Role: ${formatConfigRef(guild, 'role', config.roles?.[team]?.player)}`,
-    `• 🧢 Coach Role: ${formatConfigRef(guild, 'role', config.roles?.[team]?.coach)}`,
-    `• ⚧️ Team Gender: ${(config.teams?.[team]?.gender || 'not set').toString()}`,
-    `• 💬 Team Chat: ${formatConfigRef(guild, 'channel', config.channels?.teamChats?.[team])}`,
-    `• 🧰 Staff Room: ${formatConfigRef(guild, 'channel', config.channels?.staffRooms?.[team])}`,
-    `• 🚫 Absence Chat Category: ${formatConfigRef(guild, 'channel', config.channels?.privateChatCategories?.[team])}`,
-    `• 😀 Team Emoji: ${meta.emoji}`,
-    `• 🫡 Captain Role: ${formatConfigRef(guild, 'role', config.teams?.[team]?.captainRoleId)}`,
-    `• 🅒 Captain Emoji: ${config.teams?.[team]?.captainEmoji || 'not set'}`,
-    `• 🛡️ Team Badge: ${config.teams?.[team]?.badgeUrl || 'not set'}`,
-    `• 📝 Event Name Phrases (exact): ${(config.teams?.[team]?.eventNamePhrases || []).join(', ') || 'not set'}`,
-    '',
     '**ID Setup Progress**',
     `• **${progress.completed}/${progress.total} (${progress.percent}%)** ${progress.isComplete ? '✅ Ready' : '⚠️ Incomplete'}`,
+    '',
+    '**Next 5 Team Events**',
+    nextFiveEvents.length ? nextFiveEvents.join('\n') : '• none found',
     '',
     '**Coaches**',
     coachLines,
@@ -577,6 +581,20 @@ function getTeamConfigSummary(config, guild, team) {
     !progress.isComplete
       ? `⚠️ Missing required IDs: ${progress.missing.join(', ')}`
       : '✅ All required IDs are configured for this team.'
+  ].join('\n');
+}
+
+function buildTeamIdSettingsSummary(config, guild, team) {
+  const meta = getTeamMeta(config, team);
+  return [
+    `🪪 **${meta.label} ID Settings**`,
+    `• 👕 Player Role: ${formatConfigRef(guild, 'role', config.roles?.[team]?.player)}`,
+    `• 🧢 Coach Role: ${formatConfigRef(guild, 'role', config.roles?.[team]?.coach)}`,
+    `• ⚧️ Team Gender: ${(config.teams?.[team]?.gender || 'not set').toString()}`,
+    `• 💬 Team Chat: ${formatConfigRef(guild, 'channel', config.channels?.teamChats?.[team])}`,
+    `• 🧰 Staff Room: ${formatConfigRef(guild, 'channel', config.channels?.staffRooms?.[team])}`,
+    `• 🚫 Absence Chat Category: ${formatConfigRef(guild, 'channel', config.channels?.privateChatCategories?.[team])}`,
+    `• 🫡 Captain Role: ${formatConfigRef(guild, 'role', config.teams?.[team]?.captainRoleId)}`
   ].join('\n');
 }
 
@@ -610,7 +628,7 @@ function progressLines({ title = '', percent = 0, etaMs = 0, currentTab = '', ta
   return [
     title,
     '',
-    `Progress: **${safePercent}%**`,
+    `Progress: **${renderProgressBar(safePercent)}${safePercent >= 100 ? '\n✅' : ''}**`,
     `Estimated time remaining: **${formatEtaMs(etaMs)}**`,
     currentTab ? `Current tab: **${currentTab}**` : 'Current tab: starting…',
     '',
@@ -786,8 +804,7 @@ function renderProgressBar(percent = 0) {
 }
 
 function renderProgressMessage(percent = 0, label = 'Working...') {
-  const done = percent >= 100 ? '\n✅ Complete.' : '';
-  return `⏳ ${label}\n${renderProgressBar(percent)}${done}`;
+  return `⏳ ${label}\n${renderProgressBar(percent)}${percent >= 100 ? '\n✅' : ''}`;
 }
 
 async function setProgressReply(interaction, percent, label, options = {}) {
@@ -842,9 +859,10 @@ function formatAbsenceNotification(ticket = {}, event = {}, status = 'open') {
     ].join('\n');
   }
   return [
-    `🚨 New Absence Ticket Open`,
+    `🚨 Attendance update: marked **not attending**`,
     `👤 ${playerName}`,
     `📅 ${dateLabel} — ${eventLabel}`,
+    ticket.reason ? `📝 Reason: ${ticket.reason}` : '📝 Reason: not provided',
     `Status: OPEN`
   ].join('\n');
 }
@@ -880,6 +898,13 @@ function getPlayerNameForUi(user, member, profile) {
   return profile?.customName || profile?.nickName || member?.displayName || user?.globalName || user?.username || 'Player';
 }
 
+function getCoachAddressLabel(config, member, profile, team, fallbackName = '') {
+  const coachTitle = getCoachPositionLabel(getCoachPositionForTeam(profile || {}, team, config), config);
+  const isAdmin = Boolean(config.bot?.adminRoleId && member?.roles?.cache?.has(config.bot.adminRoleId));
+  const baseName = fallbackName || member?.displayName || 'Coach';
+  return `${isAdmin ? 'Admin/' : ''}${coachTitle} ${baseName}`.trim();
+}
+
 function getUserTeamFromMember(member, config, mode = 'player') {
   return Object.keys(config.teams || {}).find((teamKey) => {
     const roleId = mode === 'coach' ? config.roles?.[teamKey]?.coach : config.roles?.[teamKey]?.player;
@@ -889,8 +914,10 @@ function getUserTeamFromMember(member, config, mode = 'player') {
 
 function getCaptainSuffix(config, team, member) {
   const captainRoleId = config.teams?.[team]?.captainRoleId;
-  if (!captainRoleId || !member?.roles?.cache?.has(captainRoleId)) return '';
-  return config.teams?.[team]?.captainEmoji || '🅒';
+  if (captainRoleId && member?.roles?.cache?.has(captainRoleId)) return config.teams?.[team]?.captainEmoji || '🅒';
+  const profile = member ? getPlayerProfile(member.id) : null;
+  if (Array.isArray(profile?.viceCaptainTeams) && profile.viceCaptainTeams.includes(team)) return config.teams?.[team]?.viceCaptainEmoji || '🅥';
+  return '';
 }
 
 function buildRichPlayerMention(config, user, member, profile, team) {
@@ -908,6 +935,27 @@ function buildAbsenceTicketChannelName(config, event, profile, member, user) {
   const displayName = getPlayerNameForUi(user, member, profile);
   const eventDateLabel = getCompactDateLabel(event.date);
   return sanitizeChannelName(`${teamEmoji}${captainEmoji}-${displayName}-${eventDateLabel}-${event.title}`);
+}
+
+function buildEventAttendanceSnapshot(eventId, config, guild) {
+  const db = loadDb();
+  const event = db.events?.[eventId];
+  if (!event) return 'Event not found.';
+  const teamRoles = config.roles?.[event.team] || {};
+  const playerRole = teamRoles.player ? guild.roles.cache.get(teamRoles.player) : null;
+  const coachRole = teamRoles.coach ? guild.roles.cache.get(teamRoles.coach) : null;
+  const trackedIds = new Set([...(playerRole ? Array.from(playerRole.members.keys()) : []), ...(coachRole ? Array.from(coachRole.members.keys()) : [])]);
+  const responses = event.responses || {};
+  const lines = [];
+  for (const userId of trackedIds) {
+    const response = responses[userId];
+    const status = !response ? '❓ undecided' : response.status === 'yes' ? '✅ attending' : `🔴 not attending (${response.reason || 'No reason'})`;
+    lines.push(`• <@${userId}> — ${status}`);
+  }
+  return [
+    `📋 Attendance List — **${event.title}** (${new Date(event.date).toLocaleString()})`,
+    lines.length ? lines.join('\n') : 'No roster members found for this team.'
+  ].join('\n');
 }
 
 function createPlayerOptions(guild = null, config = loadConfig()) {
@@ -1040,7 +1088,6 @@ function createPlayerProfileActionRow2(userId, mode = 'player') {
     new ButtonBuilder().setCustomId(`admin_player_action:set_teams:${userId}:${mode}`).setLabel('🧩 Teams').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`admin_player_action:set_gender:${userId}:${mode}`).setLabel('⚧️ Gender').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`admin_player_action:set_positions:${userId}:${mode}`).setLabel('📍 Positions').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_player_action:assign_roles:${userId}:${mode}`).setLabel('🅒 Make Captain?').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`admin_player_view_attendance:${userId}:${mode}`).setLabel('📈 Attendance').setStyle(ButtonStyle.Success)
   );
   if (mode === 'coach') {
@@ -1450,6 +1497,7 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
     : '  - none';
 
   const displayName = shortName;
+  const faceImageUrl = profile.faceImageUrl || profile.facePngUrl || '';
   const primaryCoachTeam = coachingTeams[0];
   const coachTitle = primaryCoachTeam ? getCoachPositionLabel(getCoachPositionForTeam(profile, primaryCoachTeam, config), config) : getCoachPositionLabel(getDefaultCoachRoleId(config), config);
   const managerLabel = (mode === 'coach' && playingTeams.length)
@@ -1491,6 +1539,8 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
     absenceLines.length ? `• Not attended:\n${absenceLines.join('\n')}` : '• Not attended: none',
     '',
     `• Roles: ${roles}`
+    ,
+    `• Face Image: ${faceImageUrl ? `[open](${faceImageUrl})` : 'not set'}`
   ].join('\n');
 }
 
@@ -1508,7 +1558,7 @@ function buildPlayerProfileEmbeds(user, profile = {}, mode = 'player') {
 function buildPlayerProfileView(config, guild, user, member, profile = {}, mode = 'player') {
   return {
     content: buildPlayerProfileSummary(config, guild, user, member, profile, mode),
-    embeds: buildPlayerProfileEmbeds(user, profile, mode)
+    embeds: []
   };
 }
 
@@ -1716,16 +1766,19 @@ async function triggerGoogleSync(context) {
 
 async function notifyCoachAndAdminOnAttending(interaction, context, event, attendanceName, responderType) {
   await context.sendLog(`🟢 ${attendanceName} marked attending for **${event.title}** (${getEventDateLabel(event.date)}).`);
-  if (responderType !== 'player') return;
-
   const config = loadConfig();
   const coachChannelId = config.channels?.staffRooms?.[event.team];
   if (!coachChannelId) return;
   const coachChannel = await interaction.guild?.channels?.fetch(coachChannelId).catch(() => null);
   if (!coachChannel?.isTextBased()) return;
-  await coachChannel.send(
-    `🟢 ${attendanceName} marked attending for **${event.title}** (${getEventDateLabel(event.date)}).`
-  ).catch(() => null);
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`absence_open_profile:coach:${interaction.user.id}`).setLabel('Open profile in /coach').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`coach_event_attendance_list:${event.id}`).setLabel('Current attendance list').setStyle(ButtonStyle.Primary)
+  );
+  await coachChannel.send({
+    content: `🟢 ${attendanceName} (${responderType === 'coach' ? 'Coach' : 'Player'}) marked attending for **${event.title}** (${getEventDateLabel(event.date)}).`,
+    components: [row]
+  }).catch(() => null);
 }
 
 async function logAdminUiAction(interaction, command, subcommand = '', options = {}) {
@@ -2321,6 +2374,72 @@ module.exports = {
         await interaction.showModal(modal);
         return;
       }
+      if (interaction.customId.startsWith('coach_set_captain:') || interaction.customId.startsWith('coach_set_vice_captain:')) {
+        const [action, team] = interaction.customId.split(':');
+        const latestConfig = loadConfig();
+        const coachRoleId = latestConfig.roles?.[team]?.coach;
+        if (!coachRoleId || !interaction.member?.roles?.cache?.has(coachRoleId)) {
+          await interaction.reply({ content: 'Only coaches assigned to this team can set captain or vice captain.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const playerRoleId = latestConfig.roles?.[team]?.player;
+        const role = playerRoleId ? interaction.guild.roles.cache.get(playerRoleId) : null;
+        const options = role ? Array.from(role.members.values()).slice(0, 25).map((member) => ({ label: member.displayName.slice(0, 100), value: member.id })) : [];
+        if (!options.length) {
+          await interaction.reply({ content: 'No players found for this team.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        await interaction.reply({
+          content: action === 'coach_set_captain' ? 'Select player to set/clear as captain.' : 'Select player to set/clear as vice captain.',
+          components: [new ActionRowBuilder().addComponents(new StringSelectMenuBuilder().setCustomId(`${action}_pick:${team}`).setPlaceholder('Select player').addOptions(options))],
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+      if (interaction.customId.startsWith('coach_set_captain_pick:') || interaction.customId.startsWith('coach_set_vice_captain_pick:')) {
+        const [action, team] = interaction.customId.split(':');
+        const userId = interaction.values[0];
+        const latestConfig = loadConfig();
+        const profile = getPlayerProfile(userId) || {};
+        if (action === 'coach_set_captain_pick') {
+          const captainRoleId = latestConfig.teams?.[team]?.captainRoleId;
+          if (!captainRoleId) {
+            await interaction.update({ content: 'Captain role is not configured for this team.', components: [] });
+            return;
+          }
+          const playerRoleId = latestConfig.roles?.[team]?.player;
+          const role = playerRoleId ? interaction.guild.roles.cache.get(playerRoleId) : null;
+          for (const member of Array.from(role?.members?.values() || [])) {
+            if (member.roles.cache.has(captainRoleId) && member.id !== userId) await member.roles.remove(captainRoleId).catch(() => null);
+          }
+          const target = await interaction.guild.members.fetch(userId).catch(() => null);
+          const wasCaptain = Boolean(target?.roles?.cache?.has(captainRoleId));
+          if (wasCaptain) await target.roles.remove(captainRoleId).catch(() => null);
+          else await target?.roles?.add(captainRoleId).catch(() => null);
+          const dbProfileIds = Object.keys(loadDb().players || {});
+          for (const pid of dbProfileIds) {
+            const existing = getPlayerProfile(pid) || {};
+            const list = Array.isArray(existing.captainTeams) ? existing.captainTeams.filter((t) => t !== team) : [];
+            upsertPlayerProfile(pid, { captainTeams: list });
+          }
+          if (!wasCaptain) {
+            const updatedProfile = getPlayerProfile(userId) || {};
+            upsertPlayerProfile(userId, { captainTeams: Array.from(new Set([...(updatedProfile.captainTeams || []), team])) });
+          }
+          await interaction.update({ content: `✅ Captain updated for ${getTeamMeta(latestConfig, team).label}.`, components: [] });
+          return;
+        }
+        const dbProfileIds = Object.keys(loadDb().players || {});
+        for (const pid of dbProfileIds) {
+          const existing = getPlayerProfile(pid) || {};
+          const list = Array.isArray(existing.viceCaptainTeams) ? existing.viceCaptainTeams.filter((t) => t !== team) : [];
+          upsertPlayerProfile(pid, { viceCaptainTeams: list });
+        }
+        const next = Array.from(new Set([...(profile.viceCaptainTeams || []).filter((t) => t !== team), team]));
+        upsertPlayerProfile(userId, { viceCaptainTeams: next });
+        await interaction.update({ content: `✅ Vice captain updated for ${getTeamMeta(latestConfig, team).label}.`, components: [] });
+        return;
+      }
       if (interaction.customId === 'admin_back_coach_management') {
         await interaction.update({
           content: getCoachManagementSummary(),
@@ -2394,7 +2513,7 @@ module.exports = {
         const teamLabel = getTeamMeta(latestConfig, team).label || team;
         if (selectedAction === 'id_settings') {
           await interaction.update({
-            content: `${getTeamConfigSummary(latestConfig, interaction.guild, team)}\n\n**ID settings**`,
+            content: `${getTeamConfigSummary(latestConfig, interaction.guild, team)}\n\n${buildTeamIdSettingsSummary(latestConfig, interaction.guild, team)}\n\n**ID settings**`,
             embeds: [],
             components: [...createTeamConfigIdSettingsRows(team, latestConfig), createBackButtonRow(`admin_back_team_config:${team}`)]
           });
@@ -2407,6 +2526,8 @@ module.exports = {
         if (selectedAction === 'player_role' || selectedAction === 'coach_role') {
           const label = selectedAction === 'player_role' ? `${teamLabel} Player Role` : `${teamLabel} Coach Role`;
           const path = selectedAction === 'player_role' ? `roles.${team}.player` : `roles.${team}.coach`;
+          const currentRoleId = selectedAction === 'player_role' ? latestConfig.roles?.[team]?.player : latestConfig.roles?.[team]?.coach;
+          const currentRoleLabel = formatConfigRef(interaction.guild, 'role', currentRoleId);
           const row = new ActionRowBuilder().addComponents(
             new RoleSelectMenuBuilder()
               .setCustomId(`admin_set_role:${path}:${team}`)
@@ -2414,7 +2535,7 @@ module.exports = {
               .setMinValues(1)
               .setMaxValues(1)
           );
-          await interaction.update({ content: `Select the role to assign for **${label}**.`, embeds: [], components: [row, createBackButtonRow(`admin_back_team_config:${team}`)] });
+          await interaction.update({ content: `Select the role to assign for **${label}**.\nCurrent: ${currentRoleLabel}`, embeds: [], components: [row, createBackButtonRow(`admin_back_team_config:${team}`)] });
           return;
         }
         if (selectedAction === 'team_chat' || selectedAction === 'staff_room' || selectedAction === 'private_category') {
@@ -2768,16 +2889,51 @@ module.exports = {
         return;
       }
       if (interaction.customId.startsWith('admin_player_absence_logs:')) {
-        const [, userId] = interaction.customId.split(':');
+        const [, userId, mode = 'player'] = interaction.customId.split(':');
         const db = loadDb();
         const tickets = Object.values(db.absenceTickets || {})
           .filter((ticket) => ticket.playerId === userId)
           .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
           .slice(0, 10);
-        const lines = tickets.length
-          ? tickets.map((ticket) => `• ${new Date(ticket.createdAt || Date.now()).toLocaleDateString()} — ${ticket.team || 'unknown'} — ${ticket.closedReason || 'open'}\n  🔗 Ticket: ${ticket.ticketId ? `<#${ticket.ticketId}>` : 'deleted channel'}\n  📌 Log entries: ${(ticket.chatLog || []).length}`)
-          : ['No absence ticket logs found for this player.'];
-        await interaction.reply({ content: lines.join('\n\n').slice(0, 1900), flags: MessageFlags.Ephemeral });
+        if (!tickets.length) {
+          await interaction.reply({ content: 'No absence ticket logs found for this player.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const lines = tickets.map((ticket, index) => `${index + 1}. ${new Date(ticket.createdAt || Date.now()).toLocaleString()} — ${ticket.closedReason || 'open'} — ${(ticket.chatLog || []).length} log lines`);
+        const row = new ActionRowBuilder().addComponents(
+          new StringSelectMenuBuilder()
+            .setCustomId(`admin_player_absence_log_pick:${userId}:${mode}`)
+            .setPlaceholder('Select a ticket log to open')
+            .addOptions(tickets.slice(0, 25).map((ticket, index) => ({
+              label: `${index + 1}. ${new Date(ticket.createdAt || Date.now()).toLocaleDateString()} — ${ticket.closedReason || 'open'}`.slice(0, 100),
+              value: ticket.ticketId,
+              description: `${ticket.team || 'unknown'} • ${(ticket.chatLog || []).length} lines`.slice(0, 100)
+            })))
+        );
+        await interaction.reply({ content: `Found ${tickets.length} ticket log(s):\n${lines.join('\n')}\n\nWhich log do you want to view?`, components: [row], flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (interaction.customId.startsWith('admin_player_absence_log_pick:') && interaction.isStringSelectMenu()) {
+        const ticketId = interaction.values[0];
+        const db = loadDb();
+        const ticket = db.absenceTickets?.[ticketId];
+        if (!ticket) {
+          await interaction.update({ content: 'Selected ticket log no longer exists.', components: [] });
+          return;
+        }
+        const entries = Array.isArray(ticket.chatLog) ? ticket.chatLog.slice(-60) : [];
+        const lines = entries.map((entry) => typeof entry === 'string' ? entry : `${entry.time || String(entry.ts || '').slice(11, 19)} — ${entry.name || entry.userId || 'unknown'}: ${entry.message || '(no text)'}`);
+        await interaction.update({
+          content: [
+            `📜 Selected Absence Ticket Log`,
+            `Player: ${ticket.playerName || `<@${ticket.playerId}>`}`,
+            `Event: ${loadDb().events?.[ticket.eventId]?.title || ticket.eventId}`,
+            `Status: ${ticket.status || 'unknown'}`,
+            '',
+            lines.length ? lines.join('\n') : 'No saved chat log entries.'
+          ].join('\n').slice(0, 1900),
+          components: []
+        });
         return;
       }
       if (interaction.customId.startsWith('admin_player_back_to_profile:')) {
@@ -2846,8 +3002,9 @@ module.exports = {
             continue;
           }
           const day = item.day || String(item.ts || '').slice(0, 10) || 'unknown-day';
-          const time = item.time || String(item.ts || '').slice(11, 16) || '??:??';
-          const name = item.name || getPlayerDisplayName(item.userId || '', loadConfig()) || 'unknown';
+          const time = item.time || String(item.ts || '').slice(11, 19) || '??:??:??';
+          const memberName = item.userId ? (await interaction.guild.members.fetch(item.userId).catch(() => null))?.displayName : '';
+          const name = item.name || getPlayerDisplayName(item.userId || '', loadConfig()) || memberName || 'unknown';
           const text = item.message || '(no text)';
           if (day !== lastDay) {
             lines.push(`\n📅 ${day}`);
@@ -2857,13 +3014,37 @@ module.exports = {
         }
         await interaction.reply({
           content: [
-            `📜 Absence Ticket Log (${ticket.team || 'unknown'})`,
-            `Player: <@${ticket.playerId}>`,
-            `Event: ${ticket.eventId}`,
+            '📜 Absence Ticket Log',
+            `Player: ${ticket.playerName || `<@${ticket.playerId}>`}`,
+            `Event: ${loadDb().events?.[ticket.eventId]?.title || ticket.eventId}`,
+            `Event Date: ${loadDb().events?.[ticket.eventId]?.date ? new Date(loadDb().events[ticket.eventId].date).toLocaleString() : 'unknown'}`,
+            `Event Location: ${loadDb().events?.[ticket.eventId]?.location || 'not set'}`,
             `Status: ${ticket.status || 'unknown'}`,
             '',
             lines.length ? lines.join('\n') : 'No saved chat log entries.'
           ].join('\n').slice(0, 1950),
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+
+      if (interaction.customId.startsWith('coach_event_attendance_list:')) {
+        const eventId = interaction.customId.split(':')[1];
+        const latestConfig = loadConfig();
+        const event = loadDb().events?.[eventId];
+        if (!event) {
+          await interaction.reply({ content: 'Event not found for attendance list.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const canAdmin = hasAdminAccess(interaction.member, latestConfig);
+        const coachRoleId = latestConfig.roles?.[event.team]?.coach;
+        const canCoach = coachRoleId && interaction.member?.roles?.cache?.has(coachRoleId);
+        if (!canAdmin && !canCoach) {
+          await interaction.reply({ content: 'Only team coaches/admins can view this attendance list.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        await interaction.reply({
+          content: buildEventAttendanceSnapshot(eventId, latestConfig, interaction.guild),
           flags: MessageFlags.Ephemeral
         });
         return;
@@ -2984,6 +3165,7 @@ module.exports = {
       }
 
       const parsed = parseCustomId(interaction.customId);
+      if (!['attend_yes', 'attend_no', 'confirm_no'].includes(parsed.action)) return;
       const db = loadDb();
       let event = db.events[parsed.eventId];
 
@@ -3071,9 +3253,11 @@ module.exports = {
           updatedAt: new Date().toISOString()
         });
 
-        const attendanceName = getPlayerDisplayName(interaction.user.id, interaction.user.tag);
+        const fallbackName = getPlayerDisplayName(interaction.user.id, interaction.user.tag);
+        const attendanceName = responderType === 'coach'
+          ? getCoachAddressLabel(config, interaction.member, profile, event.team, fallbackName)
+          : fallbackName;
         await interaction.reply({ content: '✅ You are marked as attending.', flags: MessageFlags.Ephemeral });
-        await updateAttendancePromptToConfirmation(interaction, event, attendanceName, 'Attending');
         await triggerGoogleSync(context);
         await notifyCoachAndAdminOnAttending(interaction, context, event, attendanceName, responderType);
         return;
@@ -3637,6 +3821,8 @@ module.exports = {
         if (selectedAction === 'player_role' || selectedAction === 'coach_role') {
           const label = selectedAction === 'player_role' ? `${teamLabel} Player Role` : `${teamLabel} Coach Role`;
           const path = selectedAction === 'player_role' ? `roles.${team}.player` : `roles.${team}.coach`;
+          const currentRoleId = selectedAction === 'player_role' ? config.roles?.[team]?.player : config.roles?.[team]?.coach;
+          const currentRoleLabel = formatConfigRef(interaction.guild, 'role', currentRoleId);
           const row = new ActionRowBuilder().addComponents(
             new RoleSelectMenuBuilder()
               .setCustomId(`admin_set_role:${path}:${team}`)
@@ -3646,7 +3832,7 @@ module.exports = {
           );
 
           await interaction.update({
-            content: `Select the role to assign for **${label}**.`,
+            content: `Select the role to assign for **${label}**.\nCurrent: ${currentRoleLabel}`,
             embeds: [],
             components: [row, createBackButtonRow(`admin_back_team_config:${team}`)]
           });
@@ -4137,7 +4323,7 @@ module.exports = {
         updateConfig(`teams.${team}.gender`, gender);
         const refreshed = loadConfig();
         await interaction.update({
-          content: `✅ Updated **${getTeamMeta(refreshed, team).label}** gender to **${gender}**.\n\n${getTeamConfigSummary(refreshed, interaction.guild, team)}\n\n**ID settings**`,
+          content: `✅ Updated **${getTeamMeta(refreshed, team).label}** gender to **${gender}**.\n\n${getTeamConfigSummary(refreshed, interaction.guild, team)}\n\n${buildTeamIdSettingsSummary(refreshed, interaction.guild, team)}\n\n**ID settings**`,
           embeds: [],
           components: [...createTeamConfigIdSettingsRows(team, refreshed), createBackButtonRow(`admin_back_team_config:${team}`)]
         });
@@ -4278,7 +4464,7 @@ module.exports = {
       }
 
       await interaction.editReply({
-        content: `${renderProgressMessage(100, `Updated ${configPath} to <@&${roleId}>.`)}\n\n${getTeamConfigSummary(loadConfig(), interaction.guild, team)}\n\n**ID settings**`,
+        content: `${renderProgressMessage(100, `Updated ${configPath} to <@&${roleId}>.`)}\n\n${getTeamConfigSummary(loadConfig(), interaction.guild, team)}\n\n${buildTeamIdSettingsSummary(loadConfig(), interaction.guild, team)}\n\n**ID settings**`,
         embeds: [],
         components: [...createTeamConfigIdSettingsRows(team, loadConfig()), createBackButtonRow(`admin_back_team_config:${team}`)]
       });
@@ -4417,7 +4603,7 @@ module.exports = {
       await interaction.editReply({
         content: team === 'global'
           ? `${renderProgressMessage(100, `Updated ${configPath} to <#${channelId}>.`)}\n\n${getClubManagementSummary()}`
-          : `${renderProgressMessage(100, `Updated ${configPath} to <#${channelId}>.`)}\n\n${getTeamConfigSummary(loadConfig(), interaction.guild, team)}\n\n**ID settings**`,
+          : `${renderProgressMessage(100, `Updated ${configPath} to <#${channelId}>.`)}\n\n${getTeamConfigSummary(loadConfig(), interaction.guild, team)}\n\n${buildTeamIdSettingsSummary(loadConfig(), interaction.guild, team)}\n\n**ID settings**`,
         embeds: [],
         components: team === 'global'
           ? [createClubManagementRow(), createClubManagementRow2()]
@@ -4470,6 +4656,7 @@ module.exports = {
         await interaction.reply({ content: getGenderMismatchMessage(getTeamMeta(config, event.team).label, requiredGender), flags: MessageFlags.Ephemeral });
         return;
       }
+      const isCoachResponder = hasRole(interaction.member, teamRoles.coach) && !hasRole(interaction.member, teamRoles.player);
       const playerDisplayName = buildRichPlayerMention(config, interaction.user, interaction.member, profile, event.team);
 
       setResponse(eventId, interaction.user.id, {
@@ -4491,11 +4678,12 @@ module.exports = {
         ].join('\n'),
         flags: MessageFlags.Ephemeral
       });
-      await updateAttendancePromptToConfirmation(interaction, event, getPlayerDisplayName(interaction.user.id, interaction.user.tag), 'Not Attending');
       await triggerGoogleSync(context);
 
       const eventDateLabel = getCompactDateLabel(event.date);
-      const channelName = buildAbsenceTicketChannelName(config, event, profile, interaction.member, interaction.user);
+      const coachTitle = isCoachResponder ? getCoachPositionLabel(getCoachPositionForTeam(profile || {}, event.team, config), config) : '';
+      const baseChannelName = buildAbsenceTicketChannelName(config, event, profile, interaction.member, interaction.user);
+      const channelName = isCoachResponder ? sanitizeChannelName(`${coachTitle}-${baseChannelName}`) : baseChannelName;
 
       let ticketChannel;
       try {
@@ -4554,11 +4742,18 @@ module.exports = {
           content: [
             `🧾 Absence ticket for <@${interaction.user.id}>`,
             `📅 ${eventDateLabel} — ${event.title}`,
+            isCoachResponder ? `🧢 Role: Coach (${coachTitle})` : '👕 Role: Player',
             `📝 Reason: ${reason}`,
             '',
             'Staff/coaches: confirm or decline this absence request below.'
           ].join('\n'),
-          components: [createAbsenceTicketDecisionRow()]
+          components: [
+            createAbsenceTicketDecisionRow(),
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder().setCustomId(`absence_open_profile:coach:${interaction.user.id}`).setLabel('Open profile in /coach').setStyle(ButtonStyle.Secondary),
+              new ButtonBuilder().setCustomId(`coach_event_attendance_list:${eventId}`).setLabel('Current attendance list').setStyle(ButtonStyle.Primary)
+            )
+          ]
         });
 
         const staffRoomId = config.channels.staffRooms?.[event.team];
@@ -4599,7 +4794,7 @@ module.exports = {
         }
 
         await context.sendLog(
-          `🔴 ${playerDisplayName} submitted not-attending for **${event.title}** (${eventDateLabel}). Reason: ${reason}\nTicket: <#${ticketChannel.id}>`
+          `🔴 ${playerDisplayName} marked not attending for **${event.title}** (${eventDateLabel}). Reason: ${reason}\nTicket: <#${ticketChannel.id}>`
         );
       }
 
@@ -4857,15 +5052,16 @@ module.exports = {
         await denyAdminAccess();
         return;
       }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => null);
       const team = interaction.customId.split(':')[1];
       const badgeUrl = interaction.fields.getTextInputValue('badge_url').trim();
       if (!/^https?:\/\/\S+$/i.test(badgeUrl)) {
-        await interaction.reply({ content: 'Badge URL must start with http:// or https://', flags: MessageFlags.Ephemeral });
+        await interaction.editReply({ content: 'Badge URL must start with http:// or https://.' }).catch(() => null);
         return;
       }
       updateConfig(`teams.${team}.badgeUrl`, badgeUrl);
       await syncConfigSnapshotIfEnabled().catch(() => null);
-      await interaction.reply({ content: `✅ Team badge updated for **${getTeamMeta(loadConfig(), team).label}**.\n${badgeUrl}`, flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: `✅ Team badge updated for **${getTeamMeta(loadConfig(), team).label}**.\n${badgeUrl}` }).catch(() => null);
       return;
     }
 
@@ -4877,14 +5073,15 @@ module.exports = {
         await interaction.reply({ content: 'Only coaches assigned to this team can update the team badge.', flags: MessageFlags.Ephemeral });
         return;
       }
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => null);
       const badgeUrl = interaction.fields.getTextInputValue('badge_url').trim();
       if (!/^https?:\/\/\S+$/i.test(badgeUrl)) {
-        await interaction.reply({ content: 'Badge URL must start with http:// or https://', flags: MessageFlags.Ephemeral });
+        await interaction.editReply({ content: 'Badge URL must start with http:// or https://.' }).catch(() => null);
         return;
       }
       updateConfig(`teams.${team}.badgeUrl`, badgeUrl);
       await syncConfigSnapshotIfEnabled().catch(() => null);
-      await interaction.reply({ content: `✅ Team badge updated for **${getTeamMeta(loadConfig(), team).label}**.\n${badgeUrl}`, flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: `✅ Team badge updated for **${getTeamMeta(loadConfig(), team).label}**.\n${badgeUrl}` }).catch(() => null);
       return;
     }
 

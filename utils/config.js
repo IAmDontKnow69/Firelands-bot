@@ -33,16 +33,11 @@ function defaultConfig() {
       spreadsheetId: process.env.GOOGLE_SPREADSHEET_ID || '',
       commandLogRange: process.env.GOOGLE_COMMAND_LOG_RANGE || "'Command Logs'!A2:I",
       fixturesRange: process.env.GOOGLE_FIXTURES_RANGE || 'Fixtures!A2:F',
-      mensFixturesRange: process.env.GOOGLE_MENS_FIXTURES_RANGE || 'Mens Fixtures!A2:F',
-      womensFixturesRange: process.env.GOOGLE_WOMENS_FIXTURES_RANGE || 'Womens Fixtures!A2:F',
       attendanceRange: process.env.GOOGLE_ATTENDANCE_RANGE || 'Attendance!A2:F',
       configRange: process.env.GOOGLE_CONFIG_RANGE || 'Config!A2:C',
       configIdsRange: process.env.GOOGLE_CONFIG_IDS_RANGE || 'Config!A2:C',
       playersRange: process.env.GOOGLE_PLAYERS_RANGE || 'Player and Coach Management!A2:Q',
-      teamFixturesRanges: {
-        mens: process.env.GOOGLE_MENS_FIXTURES_RANGE || 'Mens Fixtures!A2:G',
-        womens: process.env.GOOGLE_WOMENS_FIXTURES_RANGE || 'Womens Fixtures!A2:G'
-      },
+      teamFixturesRanges: {},
       autoFullSync: (process.env.GOOGLE_AUTO_FULL_SYNC || 'false').toLowerCase() === 'true'
     }
   };
@@ -100,6 +95,10 @@ function buildRuntimeConfig(current = {}) {
       ])
   );
 
+  const normalizedCurrentGoogleSync = { ...(current.googleSync || {}) };
+  delete normalizedCurrentGoogleSync.mensFixturesRange;
+  delete normalizedCurrentGoogleSync.womensFixturesRange;
+
   const merged = {
     ...defaultConfig(),
     ...current,
@@ -131,7 +130,7 @@ function buildRuntimeConfig(current = {}) {
     defaultCoachRoleId: current.defaultCoachRoleId || base.defaultCoachRoleId,
     googleSync: {
       ...base.googleSync,
-      ...(current.googleSync || {}),
+      ...normalizedCurrentGoogleSync,
       teamFixturesRanges: {
         ...(base.googleSync?.teamFixturesRanges || {}),
         ...(current.googleSync?.teamFixturesRanges || {})
