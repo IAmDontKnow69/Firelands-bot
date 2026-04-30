@@ -977,6 +977,7 @@ async function handleSetupInteraction(interaction) {
     return true;
   }
   if (interaction.customId.startsWith('setup_set_calendar_id_modal') && interaction.isModalSubmit()) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => null);
     const calendarInput = interaction.fields.getTextInputValue('calendar_id').trim();
     const calendarId = parseCalendarId(calendarInput);
     if (calendarId) {
@@ -990,7 +991,6 @@ async function handleSetupInteraction(interaction) {
     const sourceMessageId = interaction.customId.split(':')[1] || '';
     const updated = await updateSetupMessageFromModal(interaction, sourceMessageId);
     if (updated) {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => null);
       await interaction.deleteReply().catch(() => null);
       return true;
     }
@@ -1001,6 +1001,7 @@ async function handleSetupInteraction(interaction) {
     return true;
   }
   if (interaction.customId.startsWith('setup_set_sheet_url_modal') && interaction.isModalSubmit()) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => null);
     const input = interaction.fields.getTextInputValue('sheet_input').trim();
     const spreadsheetId = getSpreadsheetId({ googleSync: { spreadsheetId: input } }) || input;
     if (spreadsheetId) {
@@ -1014,7 +1015,6 @@ async function handleSetupInteraction(interaction) {
     const sourceMessageId = interaction.customId.split(':')[1] || '';
     const updated = await updateSetupMessageFromModal(interaction, sourceMessageId);
     if (updated) {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => null);
       await interaction.deleteReply().catch(() => null);
       return true;
     }
