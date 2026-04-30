@@ -72,7 +72,7 @@ client.commands.set(coachCommand.data.name, coachCommand);
 client.commands.set(adminCommand.data.name, adminCommand);
 client.commands.set(confirmCommand.data.name, confirmCommand);
 const missingAttendanceConfigWarnings = new Set();
-const REQUIRED_SETUP_TABS = ['Fixtures', 'Players and Coaches', 'Attendance', 'Absences', 'Config', 'Command Logs', 'Backups'];
+const REQUIRED_SETUP_TABS = ['Fixtures', 'Player and Coach Management', 'Attendance', 'Absences', 'Player and Coach Notes', 'Config', 'Command Logs', 'Backups'];
 const setupRestoreDrafts = new Map();
 const SETUP_LOGO_PATH = path.join(__dirname, 'assets', 'firelands-logo-transparent.png');
 
