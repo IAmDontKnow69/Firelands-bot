@@ -1478,6 +1478,40 @@ client.on('interactionCreate', async (interaction) => {
       });
       return;
     }
+
+    if (interaction.isButton() && interaction.customId.startsWith('coach_notification_mode:')) {
+      const team = interaction.customId.split(':')[1] || '';
+      const coachRoleId = getConfig().roles?.[team]?.coach;
+      if (!team || !coachRoleId || !interaction.member?.roles?.cache?.has(coachRoleId)) {
+        await interaction.reply({ content: 'Only coaches for this team can change coach notification settings.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const profile = getPlayerProfile(interaction.user.id) || {};
+      const current = profile.coachAttendanceDeliveryMode || 'team_staff_chat';
+      const next = current === 'dm' ? 'team_staff_chat' : 'dm';
+      upsertPlayerProfile(interaction.user.id, { coachAttendanceDeliveryMode: next });
+      await interaction.reply({
+        content: next === 'dm'
+          ? '✅ Coach attendance reminders will now be sent to your **DM**.'
+          : '✅ Coach attendance reminders will now be posted to your **team staff chat** only for you to review.',
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
+    if (interaction.isButton() && (
+      interaction.customId.startsWith('coach_manage_profile:')
+      || interaction.customId.startsWith('coach_manage_events:')
+      || interaction.customId.startsWith('coach_next_event:')
+      || interaction.customId.startsWith('coach_open_player_chat:')
+    )) {
+      await interaction.reply({
+        content: '🚧 This coach workflow is now mapped in the UI and will be connected to full management flows next.',
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
     if (interaction.isButton() && interaction.customId === 'player_delivery_mode') {
       const profile = getPlayerProfile(interaction.user.id) || {};
       const current = profile.notificationDeliveryMode || 'team_default';
