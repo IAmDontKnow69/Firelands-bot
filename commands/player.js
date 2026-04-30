@@ -8,6 +8,12 @@ function getPlayerTeams(member, teamRoles) {
     .map(([team]) => team);
 }
 
+function formatPhoneNumber(value = '') {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (digits.length === 10) return `(${digits.slice(0, 3)})${digits.slice(3, 6)}-${digits.slice(6)}`;
+  return value || 'not set';
+}
+
 async function resolveGuildMember(interaction, config) {
   if (interaction.member && interaction.guild) {
     return { guild: interaction.guild, member: interaction.member };
@@ -69,7 +75,7 @@ module.exports = {
 
     const teamLabels = playerTeams.map((team) => config.teams?.[team]?.label || team);
     const embed = new EmbedBuilder()
-      .setTitle('Player Menu')
+      .setTitle('⚽ Player Hub')
       .setDescription([
         `Hi **${profile.customName || interaction.member?.displayName || interaction.user.username}** 👋`,
         `Teams: **${teamLabels.join(', ')}**`,
@@ -88,15 +94,34 @@ module.exports = {
         nextGames
       ].join('\n'))
       .setColor(0x2ecc71)
-      .setFooter({ text: 'Use attendance/vacation controls below. Profile editor is available in admin player management currently.' });
+      .addFields(
+        {
+          name: 'Profile',
+          value: [
+            `• Discord: <@${userId}>`,
+            `• Full name: ${profile.customName || interaction.user.username}`,
+            `• First name: ${profile.firstName || 'not set'}`,
+            `• Last name: ${profile.lastName || 'not set'}`,
+            `• Gender: ${profile.gender || 'not set'}`,
+            `• Nickname: ${profile.nickName || 'not set'}`,
+            `• Joined discord server: ${member?.joinedAt ? member.joinedAt.toISOString().slice(0, 10) : 'unknown'}`,
+            `• Phone number: ${formatPhoneNumber(profile.phoneNumber)}`
+          ].join('\n')
+        }
+      )
+      .setFooter({ text: 'Use the buttons below to manage your profile, fixtures, vacations, notifications, and coach chat.' });
 
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('player_next_event_address').setLabel('📍 Send Me Next Event Address').setStyle(ButtonStyle.Primary),
+    const row1 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('player_profile_manager').setLabel('🪪 Profile Manager').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('player_fixture_manager:0:future').setLabel('📅 Events/Fixtures').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId('player_next_event_address').setLabel('📍 Next Event').setStyle(ButtonStyle.Primary)
+    );
+    const row2 = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('player_vacation_open').setLabel('🌴 Vacation').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('player_profile_editor_info').setLabel('🪪 Profile Editor').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('player_delivery_mode').setLabel('📩 Message Delivery').setStyle(ButtonStyle.Primary)
+      new ButtonBuilder().setCustomId('player_delivery_mode').setLabel('🔔 Notification Settings').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('player_talk_to_coaches').setLabel('💬 Talk to your coaches').setStyle(ButtonStyle.Secondary)
     );
 
-    await interaction.reply({ embeds: [embed], components: [row], flags: MessageFlags.Ephemeral });
+    await interaction.reply({ embeds: [embed], components: [row1, row2], flags: MessageFlags.Ephemeral });
   }
 };
