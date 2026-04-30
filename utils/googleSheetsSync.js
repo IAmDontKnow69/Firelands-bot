@@ -1179,6 +1179,13 @@ async function syncAllToSheet(config = {}, db = {}, options = {}) {
       .map((entry) => ({ deleteSheet: { sheetId: entry.properties.sheetId } }));
     if (requests.length) {
       await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
+      const refreshed = await sheets.spreadsheets.get({ spreadsheetId });
+      sheetIdByTitle.clear();
+      for (const sheet of refreshed.data.sheets || []) {
+        const title = sheet.properties?.title;
+        const sheetId = sheet.properties?.sheetId;
+        if (title && Number.isInteger(sheetId)) sheetIdByTitle.set(title, sheetId);
+      }
     }
   }
   await writeTabNavigationRows(sheets, spreadsheetId, sections, sheetIdByTitle);
