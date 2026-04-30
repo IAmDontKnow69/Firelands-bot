@@ -2335,7 +2335,7 @@ module.exports = {
         if (action === 'new_team') {
           const modal = new ModalBuilder().setCustomId(`admin_new_team_modal:${interaction.message?.id || ''}`).setTitle('Create New Team');
           const keyInput = new TextInputBuilder().setCustomId('team_key').setLabel('Team key (letters/numbers, e.g. team_alpha)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(30);
-          const labelInput = new TextInputBuilder().setCustomId('team_label').setLabel('Display name (e.g. Firelands United FC Reserves)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80);
+          const labelInput = new TextInputBuilder().setCustomId('team_label').setLabel('Display name (e.g. Firelands United)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80);
           const emojiInput = new TextInputBuilder().setCustomId('team_emoji').setLabel('Emoji (optional, default 🔹)').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(20);
           const genderInput = new TextInputBuilder().setCustomId('team_gender').setLabel('Team gender (male/female/mixed)').setStyle(TextInputStyle.Short).setRequired(true).setValue('male').setMaxLength(10);
           modal.addComponents(new ActionRowBuilder().addComponents(keyInput), new ActionRowBuilder().addComponents(labelInput), new ActionRowBuilder().addComponents(emojiInput), new ActionRowBuilder().addComponents(genderInput));
@@ -2758,7 +2758,7 @@ module.exports = {
 
         const labelInput = new TextInputBuilder()
           .setCustomId('team_label')
-          .setLabel('Display name (e.g. Firelands United FC Reserves)')
+          .setLabel('Display name (e.g. Firelands United)')
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
           .setMaxLength(80);
