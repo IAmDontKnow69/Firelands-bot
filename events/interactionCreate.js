@@ -645,6 +645,12 @@ function getMapsLink(location = '') {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(location)}`;
 }
 
+function normalizePhoneNumber(value = '') {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (digits.length !== 10) return '';
+  return `(${digits.slice(0, 3)})${digits.slice(3, 6)}-${digits.slice(6)}`;
+}
+
 function encodeAliasKey(eventType = 'any', location = '') {
   return Buffer.from(`${eventType}|${normalizeLocation(location)}`).toString('base64url');
 }
@@ -2809,6 +2815,70 @@ module.exports = {
 
       if (interaction.customId === 'player_profile_editor_info') {
         await interaction.reply({ content: 'Only you can see this. Profile editing is currently managed by coaches/admins in player management.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (interaction.customId === 'player_profile_manager') {
+        const profile = getPlayerProfile(interaction.user.id) || {};
+        await interaction.reply({
+          content: [
+            '**Profile manager**',
+            'Update your nickname or phone number.',
+            '',
+            `Nickname: ${profile.nickName || 'not set'}`,
+            `Phone number: ${profile.phoneNumber || 'not set'}`
+          ].join('\n'),
+          components: [
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder().setCustomId('player_profile_edit_nickname').setLabel('Change nickname').setStyle(ButtonStyle.Primary),
+              new ButtonBuilder().setCustomId('player_profile_edit_phone').setLabel('Add/Change phone').setStyle(ButtonStyle.Primary),
+              new ButtonBuilder().setCustomId('player_back_to_hub').setLabel('Back').setStyle(ButtonStyle.Secondary)
+            )
+          ],
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+      if (interaction.customId === 'player_profile_edit_phone' || interaction.customId === 'player_profile_edit_nickname') {
+        const isPhone = interaction.customId === 'player_profile_edit_phone';
+        const profile = getPlayerProfile(interaction.user.id) || {};
+        const modal = new ModalBuilder()
+          .setCustomId(`player_profile_modal:${isPhone ? 'phone' : 'nickname'}`)
+          .setTitle(isPhone ? 'Update Phone Number' : 'Update Nickname');
+        modal.addComponents(new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('value')
+            .setLabel(isPhone ? 'Phone Number (10 digits)' : 'Nickname')
+            .setStyle(TextInputStyle.Short)
+            .setRequired(true)
+            .setValue(isPhone ? (profile.phoneNumber || '') : (profile.nickName || ''))
+            .setMaxLength(isPhone ? 20 : 80)
+        ));
+        await interaction.showModal(modal);
+        return;
+      }
+      if (interaction.customId === 'player_back_to_hub') {
+        await interaction.reply({ content: 'Use `/player` to reopen the full player hub.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (interaction.customId === 'player_talk_to_coaches') {
+        await interaction.reply({ content: 'Coach chat launch is set up next: if you are in multiple teams, you will choose which team coaches to contact.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (interaction.customId === 'player_next_event_address') {
+        const configNow = loadConfig();
+        const db = loadDb();
+        const member = interaction.member;
+        const teams = Object.entries(configNow.roles || {}).filter(([, roles]) => member?.roles?.cache?.has(roles?.player)).map(([team]) => team);
+        const nextEvent = Object.entries(db.events || {})
+          .map(([eventId, event]) => ({ eventId, ...event }))
+          .filter((event) => teams.includes(event.team))
+          .filter((event) => new Date(event.date).getTime() >= Date.now())
+          .sort((a, b) => new Date(a.date) - new Date(b.date))[0];
+        if (!nextEvent) {
+          await interaction.reply({ content: 'No upcoming event found for your teams.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        await interaction.reply({ content: `**${nextEvent.title}**\n${new Date(nextEvent.date).toLocaleString()}\n${nextEvent.location ? `[Open in Maps](${getMapsLink(nextEvent.location)})` : 'Location not set.'}`, flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -5023,6 +5093,23 @@ module.exports = {
         components: [createPlayerProfileActionRow(userId, mode), createPlayerProfileActionRow2(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')],
         flags: MessageFlags.Ephemeral
       });
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('player_profile_modal:')) {
+      const [, action] = interaction.customId.split(':');
+      const raw = interaction.fields.getTextInputValue('value').trim();
+      if (action === 'phone') {
+        const normalized = normalizePhoneNumber(raw);
+        if (!normalized) {
+          await interaction.reply({ content: 'Phone number must be 10 digits (US format).', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        upsertPlayerProfile(interaction.user.id, { phoneNumber: normalized });
+      }
+      if (action === 'nickname') upsertPlayerProfile(interaction.user.id, { nickName: raw });
+      await triggerGoogleSync(context).catch(() => null);
+      await interaction.reply({ content: `✅ Updated your ${action === 'phone' ? 'phone number' : 'nickname'}.`, flags: MessageFlags.Ephemeral });
       return;
     }
 

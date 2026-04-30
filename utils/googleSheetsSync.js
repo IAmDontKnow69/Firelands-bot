@@ -470,6 +470,7 @@ function buildPlayerRows(db = {}, config = {}) {
       truncateId(userId),
       compactText(profile.customName || '', 40),
       compactText(profile.nickName || '', 40),
+      profile.phoneNumber || '',
       profile.gender || '',
       profile.shirtNumber || '',
       profile.shirtNumbers && typeof profile.shirtNumbers === 'object'
@@ -1167,7 +1168,7 @@ async function syncAllToSheet(config = {}, db = {}, options = {}) {
     : options.setupFreshWipe
       ? [
         { range: fixturesRange, headers: fixtureHeaders, description: 'All events imported from Google Calendar plus address nicknames.' },
-        { range: playersRange, headers: ['userIdPreview', 'customName', 'nickName', 'gender', 'shirtNumber', 'shirtNumbersByTeam', 'teams', 'coachTeams', 'captainTeams', 'viceCaptainTeams', 'isGoalkeeper', 'isDefender', 'isMidfielder', 'isAttacker', 'coachPositionsByTeam', 'roles', 'joinedDiscordAt', 'notes', 'faceImageUrl', 'notesLog', 'updatedAt', 'userId', 'profileJson'], description: 'All player and coach data, including notes.' },
+        { range: playersRange, headers: ['userIdPreview', 'customName', 'nickName', 'phoneNumber', 'gender', 'shirtNumber', 'shirtNumbersByTeam', 'teams', 'coachTeams', 'captainTeams', 'viceCaptainTeams', 'isGoalkeeper', 'isDefender', 'isMidfielder', 'isAttacker', 'coachPositionsByTeam', 'roles', 'joinedDiscordAt', 'notes', 'faceImageUrl', 'notesLog', 'updatedAt', 'userId', 'profileJson'], description: 'All player and coach data, including notes.' },
         { range: attendanceRange, headers: ['eventId', 'userId', 'username', 'team', 'status', 'updatedAt'], description: 'Attendance record of attending/not attending responses.' },
         { range: absencesRange, headers: ['ticketPreview', 'channelPreview', 'eventPreview', 'eventTitle', 'eventDate', 'eventLocation', 'team', 'playerPreview', 'playerName', 'attendanceStatus', 'reason', 'coachDecision', 'coachPreview', 'coachName', 'closedAt', 'createdAt', 'closedReason', 'ticketId', 'channelId', 'eventId', 'playerId', 'coachId', 'recordType'], description: 'Logs for not-attending reasons and coach outcomes.' },
         { range: configRange, headers: ['key', 'value', 'updatedAt'], description: 'Bot configuration values.' },
@@ -1182,7 +1183,7 @@ async function syncAllToSheet(config = {}, db = {}, options = {}) {
         { range: attendanceRange, headers: ['eventId', 'userId', 'username', 'team', 'status', 'updatedAt'], description: 'Attendance responses by event.' },
         { range: configRange, headers: ['key', 'value', 'updatedAt'], description: 'Flattened runtime configuration.' },
         { range: configBackupsRange, headers: ['backupOrder', 'timestamp', 'changedPath', 'reason', 'snapshotPreview', 'snapshot'], description: 'Last 5 config states before changes.' },
-        { range: playersRange, headers: ['userIdPreview', 'customName', 'nickName', 'gender', 'shirtNumber', 'shirtNumbersByTeam', 'teams', 'coachTeams', 'captainTeams', 'viceCaptainTeams', 'isGoalkeeper', 'isDefender', 'isMidfielder', 'isAttacker', 'coachPositionsByTeam', 'roles', 'joinedDiscordAt', 'notes', 'faceImageUrl', 'notesLog', 'updatedAt', 'userId', 'profileJson'], description: 'Player + coach management profiles, including team assignments, titles, and saved profile fields.' },
+        { range: playersRange, headers: ['userIdPreview', 'customName', 'nickName', 'phoneNumber', 'gender', 'shirtNumber', 'shirtNumbersByTeam', 'teams', 'coachTeams', 'captainTeams', 'viceCaptainTeams', 'isGoalkeeper', 'isDefender', 'isMidfielder', 'isAttacker', 'coachPositionsByTeam', 'roles', 'joinedDiscordAt', 'notes', 'faceImageUrl', 'notesLog', 'updatedAt', 'userId', 'profileJson'], description: 'Player + coach management profiles, including team assignments, titles, and saved profile fields.' },
         { range: absencesRange, headers: ['ticketPreview', 'channelPreview', 'eventPreview', 'eventTitle', 'eventDate', 'eventLocation', 'team', 'playerPreview', 'playerName', 'attendanceStatus', 'reason', 'coachDecision', 'coachPreview', 'coachName', 'closedAt', 'createdAt', 'closedReason', 'ticketId', 'channelId', 'eventId', 'playerId', 'coachId', 'recordType'], description: 'Absence tickets and outcomes.' },
         { range: playerCoachNotesRange, headers: ['notePreview', 'openNote', 'name', 'profileType', 'noteSummary', 'hidden', 'authorTag', 'createdAt', 'updatedAt', 'noteId', 'userId', 'authorId', 'note'], description: 'Player and coach notes with quick-open links.' }
       ];
