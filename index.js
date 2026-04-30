@@ -360,6 +360,21 @@ function buildSetupRestoreProgressText(slot, progressState, done = false) {
   ].join('\n');
 }
 
+function buildSetupFreshProgressText(progressState = {}, done = false) {
+  const safePercent = done ? 100 : Math.min(100, Math.max(0, Math.round(progressState.percent || 0)));
+  const etaSeconds = Math.max(0, Math.round((progressState.etaMs || 0) / 1000));
+  const step = progressState.step || (done ? 'Complete' : 'starting…');
+  return [
+    `${done ? '✅' : '🛠️'} ${done ? 'Fresh setup completed' : 'Building fresh config + empty sheets'}`,
+    '',
+    `Loading: **${progressBar(safePercent)}**`,
+    `ETA: **${etaSeconds}s**`,
+    `Current step: ${step}`,
+    '',
+    'Please wait while Firelands resets config, rebuilds tabs, and prepares your sheet.'
+  ].join('\n');
+}
+
 function getConfig() {
   return loadConfig();
 }
@@ -823,7 +838,7 @@ async function handleSetupInteraction(interaction) {
     const config = getConfig();
     const draft = getSetupDraft(interaction.guildId);
     const calendarId = draft.calendarId || '';
-    const spreadsheetId = draft.spreadsheetId || '';
+    const spreadsheetId = getSpreadsheetId({ googleSync: { spreadsheetId: draft.spreadsheetId || '' } }) || '';
     if (!calendarId || !spreadsheetId) {
       await interaction.message?.edit({
         content: `❌ Missing Google details.\nCalendar ID: \`${calendarId || 'not set'}\`\nSheet ID: \`${spreadsheetId || 'not set'}\`\n\nPlease recheck your Calendar ID and Sheet URL/ID, then click **Check Google connections** again.`,
@@ -990,16 +1005,38 @@ async function handleSetupInteraction(interaction) {
     const config = getConfig();
     try {
       if (interaction.values[0] === 'fresh_config') {
+        const startedAt = Date.now();
+        const progressState = { percent: 0, etaMs: 0, step: 'Starting fresh setup' };
+        const refreshFreshProgress = async (percent, step) => {
+          const elapsed = Date.now() - startedAt;
+          const safePercent = Math.max(1, Math.min(99, Math.round(percent)));
+          const totalEstimate = elapsed * (100 / safePercent);
+          const etaMs = Math.max(0, Math.round(totalEstimate - elapsed));
+          progressState.percent = percent;
+          progressState.etaMs = etaMs;
+          progressState.step = step;
+          await interaction.message?.edit({ content: buildSetupFreshProgressText(progressState), components: [] }).catch(() => null);
+        };
+
+        await refreshFreshProgress(5, 'Resetting local config');
         resetConfigFresh();
+        await refreshFreshProgress(20, 'Clearing local database');
         saveDb({ events: {}, futureAvailability: {}, absenceTickets: {}, players: {}, meta: { postEventCoachReminders: {}, setupWizard: {} } });
+        await refreshFreshProgress(35, 'Applying setup wizard draft values');
         applySetupDraftToConfig(setupDraft);
         const freshConfig = getConfig();
+        await refreshFreshProgress(55, 'Clearing existing sheet tabs (keeping Backups)');
         await clearSetupSpreadsheetTabsExceptBackups(freshConfig);
+        await refreshFreshProgress(75, 'Rebuilding required Google Sheet tabs');
         const result = await syncAllToSheet(freshConfig, loadDb(), { wipe: true, setupFreshWipe: true });
+        await refreshFreshProgress(90, 'Loading latest config snapshot from sheet');
         const sheetConfig = await loadConfigFromSheet(getConfig()).catch(() => null);
         if (sheetConfig) saveConfig(sheetConfig);
+        progressState.percent = 100;
+        progressState.etaMs = 0;
+        progressState.step = 'Complete';
         await interaction.message?.edit(result.ok
-          ? { content: `✅ Fresh config completed and sheet tabs rebuilt (\`${result.spreadsheetId}\`).\n\nWould you like to sync fixtures from Google Calendar now for the first time?`, components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('setup_fresh_sync_yes').setLabel('Yes, sync fixtures now').setStyle(ButtonStyle.Success), new ButtonBuilder().setCustomId('setup_fresh_sync_no').setLabel('No, finish setup').setStyle(ButtonStyle.Secondary))] }
+          ? { content: `${buildSetupFreshProgressText(progressState, true)}\n\n✅ Fresh config completed and sheet tabs rebuilt (\`${result.spreadsheetId}\`).\n\nWould you like to sync fixtures from Google Calendar now for the first time?`, components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('setup_fresh_sync_yes').setLabel('Yes, sync fixtures now').setStyle(ButtonStyle.Success), new ButtonBuilder().setCustomId('setup_fresh_sync_no').setLabel('No, finish setup').setStyle(ButtonStyle.Secondary))] }
           : { content: 'Could not sync because spreadsheet ID is not configured.', components: createSetupRows() }).catch(() => null);
         return true;
       } else if (interaction.values[0] === 'load_backup') {
