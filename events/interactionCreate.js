@@ -2334,8 +2334,8 @@ module.exports = {
         const action = interaction.customId.split(':')[1];
         if (action === 'new_team') {
           const modal = new ModalBuilder().setCustomId(`admin_new_team_modal:${interaction.message?.id || ''}`).setTitle('Create New Team');
-          const keyInput = new TextInputBuilder().setCustomId('team_key').setLabel('Team key (letters/numbers, e.g. u18mens)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(30);
-          const labelInput = new TextInputBuilder().setCustomId('team_label').setLabel('Display name (e.g. U18 Mens)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80);
+          const keyInput = new TextInputBuilder().setCustomId('team_key').setLabel('Team key (letters/numbers, e.g. team_alpha)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(30);
+          const labelInput = new TextInputBuilder().setCustomId('team_label').setLabel('Display name (e.g. Firelands United FC Reserves)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80);
           const emojiInput = new TextInputBuilder().setCustomId('team_emoji').setLabel('Emoji (optional, default 🔹)').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(20);
           const genderInput = new TextInputBuilder().setCustomId('team_gender').setLabel('Team gender (male/female/mixed)').setStyle(TextInputStyle.Short).setRequired(true).setValue('male').setMaxLength(10);
           modal.addComponents(new ActionRowBuilder().addComponents(keyInput), new ActionRowBuilder().addComponents(labelInput), new ActionRowBuilder().addComponents(emojiInput), new ActionRowBuilder().addComponents(genderInput));
@@ -2495,6 +2495,7 @@ module.exports = {
           embeds: [],
           components: createCoachRoleButtons(latestConfig, userId, mode, team, roleId)
         });
+        await triggerGoogleSync(context).catch((error) => context.sendLog(`⚠️ Google Sheets sync failed after coaching title update: ${error.message}`));
         return;
       }
       if (interaction.customId.startsWith('admin_back_team_config:')) {
@@ -2750,14 +2751,14 @@ module.exports = {
 
         const keyInput = new TextInputBuilder()
           .setCustomId('team_key')
-          .setLabel('Team key (letters/numbers, e.g. u18mens)')
+          .setLabel('Team key (letters/numbers, e.g. team_alpha)')
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
           .setMaxLength(30);
 
         const labelInput = new TextInputBuilder()
           .setCustomId('team_label')
-          .setLabel('Display name (e.g. U18 Mens)')
+          .setLabel('Display name (e.g. Firelands United FC Reserves)')
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
           .setMaxLength(80);
@@ -2783,6 +2784,31 @@ module.exports = {
           new ActionRowBuilder().addComponents(genderInput)
         );
         await interaction.showModal(modal);
+        return;
+      }
+
+      
+      if (interaction.customId === 'player_delivery_mode') {
+        const profile = getPlayerProfile(interaction.user.id) || {};
+        const current = profile.attendanceDeliveryMode === 'team_chat' ? 'team_chat' : 'dm';
+        const next = current === 'dm' ? 'team_chat' : 'dm';
+        upsertPlayerProfile(interaction.user.id, { attendanceDeliveryMode: next });
+        await interaction.reply({
+          content: [
+            'Only you can see this.',
+            `📩 Attendance delivery is now set to **${next === 'dm' ? 'Direct Message' : 'Team Chat'}**.`,
+            next === 'dm'
+              ? 'Future attendance prompts will be sent to you in DM.'
+              : 'Future attendance prompts will be posted in the team chat and mention opted-in players.'
+          ].join('\n'),
+          flags: MessageFlags.Ephemeral
+        });
+        await triggerGoogleSync(context).catch((error) => context.sendLog(`⚠️ Google Sheets sync failed after delivery mode update: ${error.message}`));
+        return;
+      }
+
+      if (interaction.customId === 'player_profile_editor_info') {
+        await interaction.reply({ content: 'Only you can see this. Profile editing is currently managed by coaches/admins in player management.', flags: MessageFlags.Ephemeral });
         return;
       }
 
@@ -2957,6 +2983,7 @@ module.exports = {
           ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, updated, mode),
           components: [createPlayerProfileActionRow(userId, mode), createPlayerProfileActionRow2(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')]
         });
+        await triggerGoogleSync(context).catch((error) => context.sendLog(`⚠️ Google Sheets sync failed after position update: ${error.message}`));
         return;
       }
 
@@ -3257,7 +3284,7 @@ module.exports = {
         const attendanceName = responderType === 'coach'
           ? getCoachAddressLabel(config, interaction.member, profile, event.team, fallbackName)
           : fallbackName;
-        await interaction.reply({ content: '✅ You are marked as attending.', flags: MessageFlags.Ephemeral });
+        await interaction.reply({ content: 'Only you can see this. ✅ You are marked as attending for this event.', flags: MessageFlags.Ephemeral });
         await triggerGoogleSync(context);
         await notifyCoachAndAdminOnAttending(interaction, context, event, attendanceName, responderType);
         return;
@@ -4067,6 +4094,31 @@ module.exports = {
         }
       }
 
+      
+      if (interaction.customId === 'player_delivery_mode') {
+        const profile = getPlayerProfile(interaction.user.id) || {};
+        const current = profile.attendanceDeliveryMode === 'team_chat' ? 'team_chat' : 'dm';
+        const next = current === 'dm' ? 'team_chat' : 'dm';
+        upsertPlayerProfile(interaction.user.id, { attendanceDeliveryMode: next });
+        await interaction.reply({
+          content: [
+            'Only you can see this.',
+            `📩 Attendance delivery is now set to **${next === 'dm' ? 'Direct Message' : 'Team Chat'}**.`,
+            next === 'dm'
+              ? 'Future attendance prompts will be sent to you in DM.'
+              : 'Future attendance prompts will be posted in the team chat and mention opted-in players.'
+          ].join('\n'),
+          flags: MessageFlags.Ephemeral
+        });
+        await triggerGoogleSync(context).catch((error) => context.sendLog(`⚠️ Google Sheets sync failed after delivery mode update: ${error.message}`));
+        return;
+      }
+
+      if (interaction.customId === 'player_profile_editor_info') {
+        await interaction.reply({ content: 'Only you can see this. Profile editing is currently managed by coaches/admins in player management.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
       if (interaction.customId.startsWith('admin_player_action:')) {
         const selectedAction = interaction.values[0];
         const [, userId, mode = 'player'] = interaction.customId.split(':');
@@ -4121,6 +4173,7 @@ module.exports = {
           ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, updated, mode),
           components: [createPlayerProfileActionRow(userId, mode), createPlayerProfileActionRow2(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')]
         });
+        await triggerGoogleSync(context).catch((error) => context.sendLog(`⚠️ Google Sheets sync failed after position update: ${error.message}`));
         return;
       }
 
@@ -4314,6 +4367,7 @@ module.exports = {
           ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, updated, mode),
           components: [createPlayerProfileActionRow(userId, mode), createPlayerProfileActionRow2(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')]
         });
+        await triggerGoogleSync(context).catch((error) => context.sendLog(`⚠️ Google Sheets sync failed after position update: ${error.message}`));
         return;
       }
 
@@ -4669,6 +4723,7 @@ module.exports = {
       });
       await interaction.reply({
         content: [
+          `Only you can see this.`,
           `${playerDisplayName}, your absence for:`,
           `📅 ${event.title}`,
           `🕒 ${new Date(event.date).toLocaleString()}`,
@@ -4737,6 +4792,14 @@ module.exports = {
             `🔗 Open ticket: ${ticketUrl}`
           ].join('\n')
         }).catch(() => null);
+
+        await interaction.editReply({
+          content: [
+            'Only you can see this.',
+            `🔴 You are marked as **not attending** for **${event.title}** (${eventDateLabel}).`,
+            `🔗 Absence chat: ${ticketUrl}`
+          ].join('\n')
+        });
 
         await ticketChannel.send({
           content: [
@@ -5360,7 +5423,7 @@ module.exports = {
       }
 
       await interaction.editReply({
-        content: `${renderProgressMessage(100, `Team created: **${teamLabel}** (\`${teamKey}\`).`)}\n\n${getTeamManagementSummary()}`,
+        content: `${renderProgressMessage(100, `Team created: **${teamLabel}** (\`${teamKey}\`).`)}\nSaved in config at \`teams.${teamKey}.label\` (team key-driven, not forced to mens).\n\n${getTeamManagementSummary()}`,
         embeds: [],
         components: [...createTeamButtonsRows(loadConfig()), createTeamManagementRow()]
       });
