@@ -341,16 +341,19 @@ function createEventTypeRulesRow(config = loadConfig()) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('admin_event_type_rule:toggle_auto_detect')
-      .setLabel(autoDetectEnabled ? '🛑 Turn OFF Auto Detect' : '✅ Turn ON Auto Detect')
-      .setStyle(autoDetectEnabled ? ButtonStyle.Danger : ButtonStyle.Success),
+      .setLabel(autoDetectEnabled ? '🟢 Auto Detect: ON' : '🔴 Auto Detect: OFF')
+      .setStyle(autoDetectEnabled ? ButtonStyle.Success : ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId('admin_event_type_rule:sync_event_types').setLabel('🔄 Sync Event Types').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId('admin_event_type_rule:set_practice_exact').setLabel('📝 Practice Exact Names').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('admin_event_type_rule:set_match_exact').setLabel('🏁 Match Exact Names').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId('admin_event_type_rule:set_match_exact').setLabel('🏁 Match Exact Names').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_event_type_rule:set_other_exact').setLabel('🧩 Other Exact Names').setStyle(ButtonStyle.Secondary)
   );
 }
 
 function createEventTypeRulesRow2() {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('admin_event_type_rule:set_other_exact').setLabel('🧩 Other Exact Names').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_event_type_rule:add_exact_name').setLabel('➕ Add Exact Name').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('admin_event_type_rule:delete_exact_name').setLabel('🗑️ Delete Exact Name').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId('admin_event_type_rule:manual_set_event_type').setLabel('🎯 Manual Event Type').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId('admin_back_fixture_settings').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
   );
@@ -686,7 +689,12 @@ function buildLocationGroupsFromEvents(events, config) {
     grouped.set(key, existing);
   }
 
-  return Array.from(grouped.values()).sort((a, b) => b.count - a.count || a.location.localeCompare(b.location));
+  return Array.from(grouped.values()).sort((a, b) => {
+    const typeOrder = ['practice', 'match', 'other'];
+    const typeCompare = typeOrder.indexOf(a.eventType) - typeOrder.indexOf(b.eventType);
+    if (typeCompare !== 0) return typeCompare;
+    return a.location.localeCompare(b.location);
+  });
 }
 
 function createForceAttendanceWindowRow(team) {
@@ -1081,6 +1089,7 @@ function createPlayerProfileActionRow(userId, mode = 'player') {
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`admin_player_action:set_name:${userId}:${mode}`).setLabel('🪪 Name').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(`admin_player_action:set_nickname:${userId}:${mode}`).setLabel('🤿 Nickname').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`admin_player_action:set_phone:${userId}:${mode}`).setLabel('📞 Phone').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(`admin_player_action:set_notes:${userId}:${mode}`).setLabel('🗒️ Notes').setStyle(ButtonStyle.Secondary)
   );
   if (mode === 'coach') row.addComponents(new ButtonBuilder().setCustomId(`admin_player_action:set_coaching_initials:${userId}:${mode}`).setLabel('🔤 Coaching Initials').setStyle(ButtonStyle.Primary));
@@ -1388,8 +1397,8 @@ async function handleAdminPlayerAction(interaction, selectedAction, userId, mode
     const active = getSortedPositions(mergedProfile);
     const buttons = PLAYER_POSITION_ORDER.map((position) => new ButtonBuilder()
       .setCustomId(`admin_player_position_toggle:${userId}:${mode}:${position}`)
-      .setLabel(`${active.includes(position) ? '🟢' : '⚪'} ${normalizePositionLabel(position)}`)
-      .setStyle(active.includes(position) ? ButtonStyle.Success : ButtonStyle.Secondary));
+      .setLabel(`${active.includes(position) ? '🟢' : '🔴'} ${normalizePositionLabel(position)}`)
+      .setStyle(active.includes(position) ? ButtonStyle.Success : ButtonStyle.Danger));
     await interaction.update({
       content: 'Toggle active positions for this player.',
       embeds: [],
@@ -1425,11 +1434,13 @@ async function handleAdminPlayerAction(interaction, selectedAction, userId, mode
     set_face: 'Set Player Face URL (.png, .webp, or .jpg)',
     set_shirt: 'Set Player Shirt Number',
     set_gender: 'Set Player Gender (male/female only)',
-    set_coaching_initials: 'Set Coaching Initials'
+    set_coaching_initials: 'Set Coaching Initials',
+    set_phone: 'Set Player Phone Number'
   };
   const fieldByAction = {
-    set_name: { id: 'custom_name', label: 'Full name fallback', value: mergedProfile.customName || '' },
+    set_name: { id: 'custom_name', label: 'Legacy fallback name (optional)', value: mergedProfile.customName || '' },
     set_nickname: { id: 'nickname', label: 'Nickname', value: mergedProfile.nickName || '' },
+    set_phone: { id: 'phone_number', label: 'Phone number', value: mergedProfile.phoneNumber || '' },
     set_face: { id: 'face_image_url', label: 'Face image URL', value: mergedProfile.faceImageUrl || mergedProfile.facePngUrl || '' },
     set_shirt: { id: 'shirt_number', label: 'Shirt number', value: mergedProfile.shirtNumber || '' },
     set_gender: { id: 'gender', label: 'Gender (male/female)', value: mergedProfile.gender || '' },
@@ -1448,8 +1459,7 @@ async function handleAdminPlayerAction(interaction, selectedAction, userId, mode
   if (selectedAction === 'set_name') {
     modal.addComponents(
       new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('first_name').setLabel('First name').setStyle(TextInputStyle.Short).setRequired(false).setValue(mergedProfile.firstName || '').setMaxLength(80)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('last_name').setLabel('Last name').setStyle(TextInputStyle.Short).setRequired(false).setValue(mergedProfile.lastName || '').setMaxLength(80)),
-      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('custom_name').setLabel('Full name fallback').setStyle(TextInputStyle.Short).setRequired(false).setValue(mergedProfile.customName || '').setMaxLength(120))
+      new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('last_name').setLabel('Last name').setStyle(TextInputStyle.Short).setRequired(false).setValue(mergedProfile.lastName || '').setMaxLength(80))
     );
   } else {
     modal.addComponents(
@@ -1529,6 +1539,7 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
     `• Last name: ${profile.lastName || 'not set'}`,
     `• Gender: ${profile.gender || 'not set'}`,
     `• Nickname: ${nickname || 'not set'}`,
+    `• Phone number: ${profile.phoneNumber || 'not set'}`,
     `• Joined discord server: ${joined}`,
     '',
     '**Teams**',
@@ -1543,6 +1554,7 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
     '**Attendance summary**',
     attendanceSummary,
     absenceLines.length ? `• Not attended:\n${absenceLines.join('\n')}` : '• Not attended: none',
+    `• No response yet: ${buildAttendanceStatsMessage(user?.id || profile.userId, config).includes('❓') ? 'see breakdown above' : 'none'}`,
     '',
     `• Roles: ${roles}`
     ,
@@ -2273,6 +2285,30 @@ module.exports = {
             embeds: [],
             components: [createEventTypeRulesRow(), createEventTypeRulesRow2()]
           });
+          return;
+        }
+        if (selected === 'sync_event_types') {
+          await triggerGoogleSync(context);
+          await interaction.update({
+            content: '✅ Synced event types from Google Sheets and fixture data.',
+            embeds: [],
+            components: [createEventTypeRulesRow(loadConfig()), createEventTypeRulesRow2()]
+          });
+          return;
+        }
+        if (selected === 'add_exact_name' || selected === 'delete_exact_name') {
+          const modal = new ModalBuilder()
+            .setCustomId(`admin_event_type_exact_single_modal:${selected}`)
+            .setTitle(selected === 'add_exact_name' ? 'Add Exact Event Name' : 'Delete Exact Event Name');
+          modal.addComponents(
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder().setCustomId('event_type').setLabel('Type (practice/match/other)').setStyle(TextInputStyle.Short).setRequired(true)
+            ),
+            new ActionRowBuilder().addComponents(
+              new TextInputBuilder().setCustomId('exact_name').setLabel('Exact event name').setStyle(TextInputStyle.Short).setRequired(true)
+            )
+          );
+          await interaction.showModal(modal);
           return;
         }
 
@@ -4236,12 +4272,20 @@ module.exports = {
         const current = new Set(Array.isArray(profile.positions) ? profile.positions : []);
         if (current.has(position)) current.delete(position);
         else current.add(position);
-        const updated = upsertPlayerProfile(userId, { positions: Array.from(current) });
-        const member = await interaction.guild.members.fetch(userId).catch(() => null);
-        const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
+        upsertPlayerProfile(userId, { positions: Array.from(current) });
+        const active = PLAYER_POSITION_ORDER.filter((key) => current.has(key));
+        const buttons = PLAYER_POSITION_ORDER.map((key) => new ButtonBuilder()
+          .setCustomId(`admin_player_position_toggle:${userId}:${mode}:${key}`)
+          .setLabel(`${active.includes(key) ? '🟢' : '🔴'} ${normalizePositionLabel(key)}`)
+          .setStyle(active.includes(key) ? ButtonStyle.Success : ButtonStyle.Danger));
         await interaction.update({
-          ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, updated, mode),
-          components: [createPlayerProfileActionRow(userId, mode), createPlayerProfileActionRow2(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')]
+          content: 'Toggle active positions for this player.',
+          embeds: [],
+          components: [
+            new ActionRowBuilder().addComponents(buttons.slice(0, 2)),
+            new ActionRowBuilder().addComponents(buttons.slice(2, 4)),
+            createBackButtonRow(`admin_player_back_to_profile:${userId}:${mode}`, mode === 'coach' ? '⬅️ Back to Coach' : '⬅️ Back to Player')
+          ]
         });
         await triggerGoogleSync(context).catch((error) => context.sendLog(`⚠️ Google Sheets sync failed after position update: ${error.message}`));
         return;
@@ -4934,6 +4978,31 @@ module.exports = {
       return;
     }
 
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('admin_event_type_exact_single_modal:')) {
+      if (!canManagePlayerProfiles()) {
+        await denyAdminAccess();
+        return;
+      }
+      const action = interaction.customId.split(':')[1];
+      const type = interaction.fields.getTextInputValue('event_type').trim().toLowerCase();
+      const name = interaction.fields.getTextInputValue('exact_name').trim();
+      const map = { practice: 'practiceExactNames', match: 'matchExactNames', other: 'otherExactNames' };
+      const key = map[type];
+      if (!key || !name) {
+        await interaction.reply({ content: 'Use a valid type (practice/match/other) and exact name.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const latest = loadConfig();
+      const current = Array.isArray(latest.eventTypes?.[key]) ? latest.eventTypes[key] : [];
+      const next = action === 'add_exact_name'
+        ? Array.from(new Set([...current, name]))
+        : current.filter((entry) => entry !== name);
+      updateConfig(`eventTypes.${key}`, next);
+      await triggerGoogleSync(context).catch(() => null);
+      await interaction.reply({ content: `✅ Exact name ${action === 'add_exact_name' ? 'added' : 'deleted'} for ${type}: **${name}**`, flags: MessageFlags.Ephemeral });
+      return;
+    }
+
     if (interaction.isModalSubmit() && interaction.customId.startsWith('admin_event_type_exact_modal:')) {
       if (!hasAdminAccess(interaction.member, config)) {
         await denyAdminAccess();
@@ -5130,9 +5199,10 @@ module.exports = {
       if (action === 'set_name') {
         updates.firstName = interaction.fields.getTextInputValue('first_name').trim();
         updates.lastName = interaction.fields.getTextInputValue('last_name').trim();
-        updates.customName = interaction.fields.getTextInputValue('custom_name').trim();
+        updates.customName = `${updates.firstName} ${updates.lastName}`.trim();
       }
       if (action === 'set_nickname') updates.nickName = interaction.fields.getTextInputValue('nickname').trim();
+      if (action === 'set_phone') updates.phoneNumber = interaction.fields.getTextInputValue('phone_number').trim();
       if (action === 'set_face') {
         const faceImageUrl = interaction.fields.getTextInputValue('face_image_url').trim();
         if (faceImageUrl && !/^https?:\/\/\S+\.(png|webp|jpe?g)(?:\?\S*)?$/i.test(faceImageUrl)) {
