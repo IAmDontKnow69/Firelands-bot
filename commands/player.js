@@ -93,7 +93,8 @@ module.exports = {
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('player_next_event_address').setLabel('📍 Send Me Next Event Address').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId('player_vacation_open').setLabel('🌴 Vacation').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('player_profile_editor_info').setLabel('🪪 Profile Editor').setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId('player_profile_editor_info').setLabel('🪪 Profile Editor').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('player_delivery_mode').setLabel('📩 Message Delivery').setStyle(ButtonStyle.Primary)
     );
 
     await interaction.reply({ embeds: [embed], components: [row], flags: MessageFlags.Ephemeral });

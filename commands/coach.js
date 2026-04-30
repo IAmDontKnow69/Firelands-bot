@@ -122,7 +122,10 @@ module.exports = {
       new ButtonBuilder().setCustomId(`coach_manage_players:${team}`).setLabel('👥 Player Manager').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`coach_manage_attendance:${team}`).setLabel('📋 Next Games Attendance').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId(`coach_manage_vacation:${team}`).setLabel('🌴 Vacation').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`coach_set_team_badge:${team}`).setLabel('🛡️ Team Badge').setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId(`coach_set_team_badge:${team}`).setLabel('🛡️ Team Badge').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`coach_team_delivery_mode:${team}`).setLabel('📣 Team Delivery').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`coach_set_captain:${team}`).setLabel('🅒 Set Captain').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`coach_set_vice_captain:${team}`).setLabel('🅥 Set Vice Captain').setStyle(ButtonStyle.Secondary)
     );
 
     await interaction.reply({ embeds: [embed], components: [row], flags: MessageFlags.Ephemeral });
