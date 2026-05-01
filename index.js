@@ -1397,7 +1397,7 @@ async function syncCalendarEvents(options = {}) {
         await updatePostedEventMessage(event.id, syncedWithId);
         await notifyAttendingUsersAboutChange(syncedWithId, changeLines);
         await sendLog([
-          `📝 Calendar event updated: **${syncedEvent.title}** (${event.id})`,
+          `📝 Calendar event updated: **${syncedEvent.title}**`,
           ...changeLines.map((line) => `• ${line}`)
         ].join('\n'));
       }
