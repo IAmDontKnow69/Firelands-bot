@@ -417,10 +417,12 @@ function parseCalendarId(input = '') {
 function shouldSendAdminErrorReport(interaction) {
   if (!interaction) return false;
   if (interaction.isChatInputCommand?.()) {
-    return ['admin', 'player', 'coach'].includes(interaction.commandName);
+    return ['admin', 'player', 'coach', 'attendance'].includes(interaction.commandName);
   }
-  const customId = String(interaction.customId || '');
-  return customId.startsWith('admin_') || customId.startsWith('player_') || customId.startsWith('coach_');
+  const customId = String(interaction.customId || '').toLowerCase();
+  const routedByPrefix = customId.startsWith('admin_') || customId.startsWith('player_') || customId.startsWith('coach_') || customId.startsWith('attendance_');
+  const routedByKeyword = ['admin', 'player', 'coach', 'attendance'].some((keyword) => customId.includes(keyword));
+  return routedByPrefix || routedByKeyword;
 }
 
 function buildAdminErrorReport(error, interaction) {
@@ -434,6 +436,10 @@ function buildAdminErrorReport(error, interaction) {
     `guildId: ${interaction?.guildId || ''}`,
     `channelId: ${interaction?.channelId || ''}`,
     `userId: ${interaction?.user?.id || ''}`,
+    `userTag: ${interaction?.user?.tag || ''}`,
+    `messageId: ${interaction?.message?.id || ''}`,
+    `createdAt: ${interaction?.createdAt ? new Date(interaction.createdAt).toISOString() : ''}`,
+    `options: ${toOptionSummary(interaction)}`,
     '',
     'context:',
     summarizeInteractionContext(interaction)
