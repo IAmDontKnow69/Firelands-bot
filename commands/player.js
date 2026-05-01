@@ -25,21 +25,13 @@ async function resolveGuildMember(interaction, config) {
   return { guild, member };
 }
 
-module.exports = {
-  data: new SlashCommandBuilder()
-    .setName('player')
-    .setDescription('Open the player UI for profile, fixtures, attendance, and vacation status')
-    .setDMPermission(true),
-
-  async execute(interaction, context) {
-    try {
+async function buildPlayerHubResponse(interaction, context) {
       const config = context.getConfig();
       const { member } = await resolveGuildMember(interaction, config);
       const playerTeams = member ? getPlayerTeams(member, config.roles) : [];
 
       if (!playerTeams.length) {
-        await interaction.reply({ content: 'You are not assigned as a player for any team.', flags: MessageFlags.Ephemeral });
-        return;
+        return { content: 'You are not assigned as a player for any team.', flags: MessageFlags.Ephemeral };
       }
 
       const db = loadDb();
@@ -128,7 +120,20 @@ module.exports = {
       new ButtonBuilder().setCustomId('player_talk_to_coaches').setLabel('💬 Talk to your coaches').setStyle(ButtonStyle.Secondary)
     );
 
-      await interaction.reply({ embeds: [embed], components: [row1, row2], flags: MessageFlags.Ephemeral });
+      return { embeds: [embed], components: [row1, row2], flags: MessageFlags.Ephemeral };
+}
+
+module.exports = {
+  data: new SlashCommandBuilder()
+    .setName('player')
+    .setDescription('Open the player UI for profile, fixtures, attendance, and vacation status')
+    .setDMPermission(true),
+  buildPlayerHubResponse,
+
+  async execute(interaction, context) {
+    try {
+      const payload = await buildPlayerHubResponse(interaction, context);
+      await interaction.reply(payload);
     } catch (error) {
       const log = `[PLAYER_UI_ERROR] user=${interaction.user?.id} name=${interaction.user?.tag || interaction.user?.username} message="${error.message}"\n${error.stack}`;
       context.sendLog(log);

@@ -43,6 +43,7 @@ const {
 } = require('../utils/googleSheetsSync');
 const coachCommand = require('../commands/coach');
 const adminCommand = require('../commands/admin');
+const playerCommand = require('../commands/player');
 const { hasAdminAccess, adminAccessMessage } = require('../utils/adminAccess');
 const { determineEventType, eventTypeLabel, getEventTypeConfig } = require('../utils/eventType');
 
@@ -2336,8 +2337,9 @@ module.exports = {
           return;
         }
         if (selected === 'sync_event_types') {
+          await interaction.deferUpdate();
           await triggerGoogleSync(context);
-          await interaction.update({
+          await interaction.editReply({
             content: '✅ Synced event types from Google Sheets and fixture data.',
             embeds: [],
             components: [createEventTypeRulesRow(loadConfig()), createEventTypeRulesRow2()]
@@ -2990,7 +2992,8 @@ module.exports = {
         return;
       }
       if (interaction.customId === 'player_back_to_hub') {
-        await interaction.reply({ content: 'Use `/player` to reopen the full player hub.', flags: MessageFlags.Ephemeral });
+        const payload = await playerCommand.buildPlayerHubResponse(interaction, context);
+        await interaction.update(payload);
         return;
       }
       if (interaction.customId.startsWith('player_fixture_manager:')) {
@@ -3008,7 +3011,48 @@ module.exports = {
         return;
       }
       if (interaction.customId === 'player_talk_to_coaches') {
-        await interaction.reply({ content: 'Coach chat launch is set up next: if you are in multiple teams, you will choose which team coaches to contact.', flags: MessageFlags.Ephemeral });
+        const configNow = loadConfig();
+        const teams = Object.entries(configNow.roles || {}).filter(([, roles]) => interaction.member?.roles?.cache?.has(roles?.player)).map(([team]) => team);
+        if (!teams.length) {
+          await interaction.reply({ content: 'You are not assigned to any player team.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        if (teams.length === 1) {
+          const team = teams[0];
+          const coachRoleId = configNow.roles?.[team]?.coach;
+          const categoryId = configNow.channels.privateChatCategories?.[team] || configNow.channels.ticket || null;
+          const playerName = getPlayerDisplayName(interaction.user.id, interaction.user.tag);
+          const channel = await interaction.guild.channels.create({
+            name: sanitizeChannelName(`Coach Chat - ${playerName}`),
+            type: ChannelType.GuildText,
+            parent: categoryId,
+            permissionOverwrites: [
+              { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+              { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] },
+              { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+              ...(coachRoleId ? [{ id: coachRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }] : [])
+            ]
+          }).catch(() => null);
+          if (!channel) {
+            await interaction.reply({ content: 'Could not create coach chat.', flags: MessageFlags.Ephemeral });
+            return;
+          }
+          const profile = getPlayerProfile(interaction.user.id) || {};
+          const notes = Array.isArray(profile.notesLog) ? profile.notesLog : [];
+          upsertPlayerProfile(interaction.user.id, { ...profile, notesLog: [...notes, { id: `coachchat-${Date.now()}`, ts: new Date().toISOString(), authorId: interaction.user.id, text: `Opened coach chat for ${configNow.teams?.[team]?.label || team}: #${channel.name}` }] });
+          await triggerGoogleSync(context).catch(() => null);
+          await interaction.reply({ content: `✅ Coach chat created: <#${channel.id}>`, flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const row = new ActionRowBuilder().addComponents(
+          new StringSelectMenuBuilder()
+            .setCustomId('player_talk_to_coaches_pick_teams')
+            .setPlaceholder('Choose teams for coach chat')
+            .setMinValues(1)
+            .setMaxValues(teams.length)
+            .addOptions(teams.map((team) => ({ label: (configNow.teams?.[team]?.label || team).slice(0, 100), value: team })))
+        );
+        await interaction.reply({ content: 'Choose which team coaches to include in the chat.', components: [row], flags: MessageFlags.Ephemeral });
         return;
       }
       if (interaction.customId === 'player_next_event_address') {
@@ -3025,7 +3069,11 @@ module.exports = {
           await interaction.reply({ content: 'No upcoming event found for your teams.', flags: MessageFlags.Ephemeral });
           return;
         }
-        await interaction.reply({ content: `🗓️ **${nextEvent.title}**\n🕒 ${new Date(nextEvent.date).toLocaleString()}\n📍 ${nextEvent.location || 'Location not set'}\n${nextEvent.description || ''}\n${nextEvent.location ? `[Open in Maps](${getMapsLink(nextEvent.location)})` : ''}`, flags: MessageFlags.Ephemeral });
+        const response = nextEvent.responses?.[interaction.user.id];
+        const attendanceStatus = response?.status === 'yes'
+          ? '✅ Marked as attending'
+          : (['pending_no', 'confirmed_no'].includes(response?.status) ? '❌ Marked as not attending' : '❓ Not answered yet');
+        await interaction.reply({ content: `🗓️ **${nextEvent.title}**\n🕒 ${new Date(nextEvent.date).toLocaleString()}\n📍 ${nextEvent.location || 'Location not set'}\n👤 ${attendanceStatus}\n${nextEvent.description || ''}\n${nextEvent.location ? `[Open in Maps](${getMapsLink(nextEvent.location)})` : ''}`, flags: MessageFlags.Ephemeral });
         return;
       }
       if (interaction.customId === 'player_vacation_open') {
@@ -3039,8 +3087,75 @@ module.exports = {
         });
         return;
       }
-      if (interaction.customId === 'player_vacation_create' || interaction.customId === 'player_vacation_manage') {
-        await interaction.reply({ content: 'This vacation feature is currently not working.', flags: MessageFlags.Ephemeral });
+      if (interaction.customId === 'player_vacation_create' || interaction.customId.startsWith('coach_manage_vacation:')) {
+        const modal = new ModalBuilder().setCustomId(`vacation_create_modal:${interaction.customId.startsWith('coach_manage_vacation:') ? 'coach' : 'player'}`).setTitle('Create Vacation Request');
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId('start_date').setLabel('Start date (YYYY-MM-DD)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(10)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId('end_date').setLabel('End date (YYYY-MM-DD)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(10)
+          ),
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder().setCustomId('reason').setLabel('Reason (Army, Family trip, etc.)').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(300)
+          )
+        );
+        await interaction.showModal(modal);
+        return;
+      }
+      if (interaction.customId === 'player_vacation_manage') {
+        const mine = Object.values(loadDb().vacations?.[interaction.user.id] || {}).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+        if (!mine.length) {
+          await interaction.reply({ content: 'You do not have any vacations saved yet.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const row = new ActionRowBuilder().addComponents(
+          new StringSelectMenuBuilder()
+            .setCustomId('player_vacation_edit_pick')
+            .setPlaceholder('Choose a vacation to edit')
+            .addOptions(mine.slice(0, 25).map((vac) => ({
+              label: `${vac.startDate} → ${vac.endDate} (${vac.status || 'pending'})`.slice(0, 100),
+              value: vac.vacationId,
+              description: (vac.reason || 'no reason').slice(0, 100)
+            })))
+        );
+        await interaction.reply({ content: 'Your current vacations:', components: [row], flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (interaction.customId === 'player_talk_to_coaches_pick_teams' && interaction.isStringSelectMenu()) {
+        const teams = interaction.values || [];
+        const cfg = loadConfig();
+        const coachRoleIds = Array.from(new Set(teams.map((team) => cfg.roles?.[team]?.coach).filter(Boolean)));
+        const categoryId = cfg.channels.privateChatCategories?.[teams[0]] || cfg.channels.ticket || null;
+        const playerName = getPlayerDisplayName(interaction.user.id, interaction.user.tag);
+        const channel = await interaction.guild.channels.create({
+          name: sanitizeChannelName(`Coach Chat - ${playerName}`),
+          type: ChannelType.GuildText,
+          parent: categoryId,
+          permissionOverwrites: [
+            { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+            { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] },
+            { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+            ...coachRoleIds.map((id) => ({ id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }))
+          ]
+        }).catch(() => null);
+        await interaction.update({ content: channel ? `✅ Coach chat created: <#${channel.id}>` : 'Could not create coach chat.', components: [] });
+        return;
+      }
+      if (interaction.customId === 'player_vacation_edit_pick' && interaction.isStringSelectMenu()) {
+        const vacationId = interaction.values?.[0];
+        const vacation = loadDb().vacations?.[interaction.user.id]?.[vacationId];
+        if (!vacation) {
+          await interaction.update({ content: 'Vacation no longer exists.', components: [] });
+          return;
+        }
+        const modal = new ModalBuilder().setCustomId(`vacation_edit_modal:${vacationId}`).setTitle('Edit Vacation');
+        modal.addComponents(
+          new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('start_date').setLabel('Start date (YYYY-MM-DD)').setStyle(TextInputStyle.Short).setRequired(true).setValue(vacation.startDate || '')),
+          new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('end_date').setLabel('End date (YYYY-MM-DD)').setStyle(TextInputStyle.Short).setRequired(true).setValue(vacation.endDate || '')),
+          new ActionRowBuilder().addComponents(new TextInputBuilder().setCustomId('reason').setLabel('Reason').setStyle(TextInputStyle.Paragraph).setRequired(true).setValue(vacation.reason || '').setMaxLength(300))
+        );
+        await interaction.showModal(modal);
         return;
       }
 
@@ -3230,6 +3345,52 @@ module.exports = {
           ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, profile, mode === 'admin' ? 'player' : 'coach'),
           flags: MessageFlags.Ephemeral
         });
+        return;
+      }
+      if (interaction.customId.startsWith('vacation_ticket_')) {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        const [action, vacationId, targetUserId] = interaction.customId.split(':');
+        const db = loadDb();
+        const vacation = db.vacations?.[targetUserId]?.[vacationId];
+        if (!vacation) {
+          await interaction.editReply({ content: 'Vacation request not found.' });
+          return;
+        }
+        if (interaction.user.id === targetUserId) {
+          await interaction.editReply({ content: 'You cannot approve or decline your own vacation.' });
+          return;
+        }
+        const coachTeams = Object.entries(config.roles || {}).filter(([, roles]) => interaction.member?.roles?.cache?.has(roles?.coach)).map(([team]) => team);
+        if (!coachTeams.some((team) => (vacation.teams || []).includes(team))) {
+          await interaction.editReply({ content: 'You are not an assigned coach for this vacation request.' });
+          return;
+        }
+        const isApprove = action === 'vacation_ticket_approve';
+        upsertVacation(targetUserId, vacationId, {
+          status: isApprove ? 'approved' : 'declined',
+          coachDecision: isApprove ? 'approved_vacation' : 'declined_vacation',
+          coachId: interaction.user.id,
+          coachName: interaction.user.tag,
+          closedAt: new Date().toISOString()
+        });
+        if (isApprove) {
+          const allEvents = Object.entries(db.events || {}).map(([eventId, event]) => ({ eventId, ...event }));
+          for (const event of allEvents) {
+            const eventDay = new Date(event.date).toISOString().slice(0, 10);
+            if ((vacation.teams || []).includes(event.team) && eventDay >= vacation.startDate && eventDay <= vacation.endDate) {
+              setResponse(event.eventId, targetUserId, {
+                status: 'confirmed_no',
+                reason: `Vacation: ${vacation.reason}`,
+                confirmed: true,
+                responderType: vacation.requestedByRole || 'player',
+                username: vacation.playerName || 'Player',
+                updatedAt: new Date().toISOString()
+              });
+            }
+          }
+        }
+        await triggerGoogleSync(context).catch(() => null);
+        await interaction.editReply({ content: `✅ Vacation ${isApprove ? 'approved' : 'declined'} for <@${targetUserId}>.` });
         return;
       }
 
@@ -3869,16 +4030,21 @@ module.exports = {
           });
           return;
         }
+        const refreshedBackups = await loadSheetBackups(loadConfig()).catch(() => []);
+        const lines = refreshedBackups.length
+          ? refreshedBackups
+            .sort((a, b) => a.slot - b.slot)
+            .map((entry) => `• Slot ${entry.slot}: **${entry.name || `Backup ${entry.slot}`}** (${entry.createdAt || 'unknown'})`)
+          : ['No sheet backups saved yet.'];
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('admin_sheet_backup_create').setLabel('➕ Save Backup').setStyle(ButtonStyle.Success),
+          new ButtonBuilder().setCustomId('admin_sheet_backup_restore').setLabel('♻️ Restore Backup').setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId('admin_back_club_management').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
+        );
         await interaction.editReply({
-          content: progressLines({
-            title: `✅ Saved backup **${pending.name}** to slot ${slot}`,
-            percent: 100,
-            etaMs: 0,
-            currentTab: progressState.currentTab,
-            tabs: progressState.tabs
-          }),
+          content: `✅ Saved backup **${pending.name}** to slot ${slot}\n\n💾 Sheet Backups (max 5 slots)\nStores every non-Backups tab and every row/cell.\n${lines.join('\n')}`,
           embeds: [],
-          components: [createBackButtonRow('admin_back_club_management')]
+          components: [row]
         });
         return;
       }
@@ -5163,7 +5329,104 @@ module.exports = {
         : current.filter((entry) => entry !== name);
       updateConfig(`eventTypes.${key}`, next);
       await triggerGoogleSync(context).catch(() => null);
-      await interaction.reply({ content: `✅ Exact name ${action === 'add_exact_name' ? 'added' : 'deleted'} for ${type}: **${name}**`, flags: MessageFlags.Ephemeral });
+      const rules = getEventTypeConfig(loadConfig());
+      await interaction.reply({
+        content: [
+          `✅ Exact name ${action === 'add_exact_name' ? 'added' : 'deleted'} for ${type}: **${name}**`,
+          `• Practice: ${rules.practiceExactNames.join(', ') || 'none'}`,
+          `• Match: ${rules.matchExactNames.join(', ') || 'none'}`,
+          `• Other: ${rules.otherExactNames.join(', ') || 'none'}`
+        ].join('\n'),
+        components: [createEventTypeRulesRow(rules), createEventTypeRulesRow2()],
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('vacation_create_modal:')) {
+      const startDate = interaction.fields.getTextInputValue('start_date').trim();
+      const endDate = interaction.fields.getTextInputValue('end_date').trim();
+      const reason = interaction.fields.getTextInputValue('reason').trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate) || endDate < startDate) {
+        await interaction.reply({ content: 'Please provide valid dates in YYYY-MM-DD format and ensure end date is after start date.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const requestorRole = interaction.customId.split(':')[1] === 'coach' ? 'coach' : 'player';
+      const teams = Object.entries(config.roles || {})
+        .filter(([, roles]) => interaction.member?.roles?.cache?.has(requestorRole === 'coach' ? roles?.coach : roles?.player))
+        .map(([team]) => team);
+      if (!teams.length) {
+        await interaction.reply({ content: 'No eligible teams found for your account.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      const vacationId = `${interaction.user.id}-${Date.now()}`;
+      const playerName = getPlayerDisplayName(interaction.user.id, interaction.user.tag);
+      upsertVacation(interaction.user.id, vacationId, {
+        title: 'Vacation',
+        reason,
+        startDate,
+        endDate,
+        team: teams[0],
+        teams,
+        playerName,
+        requestedByRole: requestorRole,
+        status: 'pending',
+        createdAt: new Date().toISOString()
+      });
+      const coachRoleIds = Array.from(new Set(teams.map((team) => config.roles?.[team]?.coach).filter(Boolean)));
+      const categoryId = config.channels.privateChatCategories?.[teams[0]] || config.channels.ticket || null;
+      const channel = await interaction.guild.channels.create({
+        name: sanitizeChannelName(`Vacation - ${playerName}`),
+        type: ChannelType.GuildText,
+        parent: categoryId,
+        permissionOverwrites: [
+          { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+          { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] },
+          { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+          ...coachRoleIds.map((id) => ({ id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }))
+        ]
+      }).catch(() => null);
+      await triggerGoogleSync(context).catch(() => null);
+      await interaction.reply({ content: `✅ Vacation request submitted for ${startDate} to ${endDate}.`, flags: MessageFlags.Ephemeral });
+      if (channel) {
+        await channel.send({
+          content: [
+            `🌴 Vacation request for <@${interaction.user.id}>`,
+            `Range: ${startDate} → ${endDate}`,
+            `Reason: ${reason}`,
+            `Teams: ${(teams.map((team) => config.teams?.[team]?.label || team)).join(', ')}`,
+            '',
+            'Coaches: approve or decline below.'
+          ].join('\n'),
+          components: [new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`vacation_ticket_approve:${vacationId}:${interaction.user.id}`).setLabel('✅ Approve').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId(`vacation_ticket_decline:${vacationId}:${interaction.user.id}`).setLabel('❌ Decline').setStyle(ButtonStyle.Danger)
+          )]
+        }).catch(() => null);
+      }
+      return;
+    }
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('vacation_edit_modal:')) {
+      const vacationId = interaction.customId.split(':')[1];
+      const startDate = interaction.fields.getTextInputValue('start_date').trim();
+      const endDate = interaction.fields.getTextInputValue('end_date').trim();
+      const reason = interaction.fields.getTextInputValue('reason').trim();
+      const existing = loadDb().vacations?.[interaction.user.id]?.[vacationId];
+      if (!existing) {
+        await interaction.reply({ content: 'Vacation not found.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      upsertVacation(interaction.user.id, vacationId, { startDate, endDate, reason, status: 'pending', coachDecision: '', coachId: '', coachName: '', closedAt: '' });
+      await interaction.reply({ content: '✅ Vacation updated and sent for coach review.', flags: MessageFlags.Ephemeral });
+      const firstTeam = (existing.teams || [existing.team]).find(Boolean);
+      const coachChatId = loadConfig().channels.staffRooms?.[firstTeam];
+      if (coachChatId) {
+        const coachChannel = await interaction.guild.channels.fetch(coachChatId).catch(() => null);
+        if (coachChannel?.isTextBased()) {
+          await coachChannel.send(`📝 <@${interaction.user.id}> updated vacation **${vacationId}** (${startDate} → ${endDate}). Open/create chat if needed.`).catch(() => null);
+        }
+      }
+      await triggerGoogleSync(context).catch(() => null);
       return;
     }
 
@@ -5577,14 +5840,20 @@ module.exports = {
           });
           return;
         }
+        const refreshedBackups = await loadSheetBackups(loadConfig()).catch(() => []);
+        const lines = refreshedBackups.length
+          ? refreshedBackups
+            .sort((a, b) => a.slot - b.slot)
+            .map((entry) => `• Slot ${entry.slot}: **${entry.name || `Backup ${entry.slot}`}** (${entry.createdAt || 'unknown'})`)
+          : ['No sheet backups saved yet.'];
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('admin_sheet_backup_create').setLabel('➕ Save Backup').setStyle(ButtonStyle.Success),
+          new ButtonBuilder().setCustomId('admin_sheet_backup_restore').setLabel('♻️ Restore Backup').setStyle(ButtonStyle.Primary),
+          new ButtonBuilder().setCustomId('admin_back_club_management').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
+        );
         await interaction.editReply({
-          content: progressLines({
-            title: `✅ Saved backup **${name}** in slot ${freeSlot}`,
-            percent: 100,
-            etaMs: 0,
-            currentTab: progressState.currentTab,
-            tabs: progressState.tabs
-          })
+          content: `✅ Saved backup **${name}** in slot ${freeSlot}\n\n💾 Sheet Backups (max 5 slots)\nStores every non-Backups tab and every row/cell.\n${lines.join('\n')}`,
+          components: [row]
         });
         return;
       }
