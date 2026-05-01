@@ -2830,7 +2830,10 @@ module.exports = {
             .setLabel('Comma-separated EXACT phrases')
             .setStyle(TextInputStyle.Paragraph)
             .setRequired(true)
-            .setValue((latestConfig.teams?.[team]?.eventNamePhrases || []).join(', '))
+            .setValue((Array.isArray(latestConfig.teams?.[team]?.eventNamePhrases)
+              ? latestConfig.teams[team].eventNamePhrases
+              : String(latestConfig.teams?.[team]?.eventNamePhrases || '').split(',').map((value) => value.trim()).filter(Boolean)
+            ).join(', '))
             .setMaxLength(500);
           modal.addComponents(new ActionRowBuilder().addComponents(phrasesInput));
           await interaction.showModal(modal);
@@ -4494,7 +4497,10 @@ module.exports = {
             .setLabel('Comma-separated EXACT phrases')
             .setStyle(TextInputStyle.Paragraph)
             .setRequired(true)
-            .setValue((config.teams?.[team]?.eventNamePhrases || []).join(', '))
+            .setValue((Array.isArray(config.teams?.[team]?.eventNamePhrases)
+              ? config.teams[team].eventNamePhrases
+              : String(config.teams?.[team]?.eventNamePhrases || '').split(',').map((value) => value.trim()).filter(Boolean)
+            ).join(', '))
             .setMaxLength(500);
 
           modal.addComponents(new ActionRowBuilder().addComponents(phrasesInput));
