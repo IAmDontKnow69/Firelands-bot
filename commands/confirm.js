@@ -1,5 +1,5 @@
 const { SlashCommandBuilder, ChannelType, MessageFlags } = require('discord.js');
-const { loadDb, setResponse, deleteAbsenceTicket } = require('../utils/database');
+const { loadDb, setResponse, deleteAbsenceTicket, setAbsenceTicket } = require('../utils/database');
 const { syncAllToSheet } = require('../utils/googleSheetsSync');
 
 module.exports = {
@@ -39,7 +39,16 @@ module.exports = {
       status: 'confirmed_no',
       confirmed: true,
       confirmedBy: interaction.user.id,
-      confirmedAt: new Date().toISOString()
+      confirmedAt: new Date().toISOString(),
+      coachId: interaction.user.id,
+      coachName: interaction.user.tag
+    });
+    setAbsenceTicket(interaction.channelId, {
+      coachDecision: 'confirmed_not_attending',
+      coachId: interaction.user.id,
+      coachName: interaction.user.tag,
+      closedAt: new Date().toISOString(),
+      closedReason: 'Coach confirmed not attending.'
     });
 
     const latestConfig = context.getConfig();

@@ -986,7 +986,7 @@ async function buildSpreadsheetBackupSnapshot(config = {}, onProgress) {
   const metadata = await sheets.spreadsheets.get({ spreadsheetId });
   const targetSheets = (metadata.data.sheets || [])
     .map((entry) => entry.properties?.title)
-    .filter((title) => title && title !== backupsTabTitle && (REQUIRED_SETUP_TABS.includes(title) || isTeamFixturesTab(title)));
+    .filter((title) => title && title !== backupsTabTitle);
 
   const snapshot = { version: 1, buildVersion: BOT_BUILD_VERSION, createdAt: toIso(), tabs: [] };
   const startedAt = Date.now();
