@@ -63,9 +63,6 @@ module.exports = {
     deleteAbsenceTicket(interaction.channelId);
 
     await interaction.editReply({ content: `✅ Confirmed absence for <@${ticket.playerId}>.` });
-    const member = await interaction.guild.members.fetch(ticket.playerId).catch(() => null);
-    await member?.send(`✅ Your not-attending request for **${event.title}** (${new Date(event.date).toISOString().slice(0, 10)}) was confirmed by a coach.`).catch(() => null);
-
     await context.sendLog(
       `✅ Absence confirmed by ${interaction.user.tag} for <@${ticket.playerId}> on **${event.title}** (${new Date(event.date).toISOString().slice(0, 10)}).`
     );

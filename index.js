@@ -1304,31 +1304,14 @@ async function postEventMessage(event) {
   const row = new ActionRowBuilder().addComponents(attendingButton, notAttendingButton);
 
   const teamRole = channel.guild.roles.cache.get(teamRoleId);
-  const members = Array.from(teamRole?.members?.values() || []);
-  const db = loadDb();
-  const dmUsers = [];
-  const teamChatUsers = [];
-  for (const member of members) {
-    const mode = db.players?.[member.id]?.attendanceDeliveryMode === 'team_chat' ? 'team_chat' : 'dm';
-    if (mode === 'dm') dmUsers.push(member);
-    else teamChatUsers.push(member);
-  }
-
-  for (const member of dmUsers) {
-    await member.send({
-      content: ['Only you can see this.', getEventAnnouncementContent(event, '')].join('\n'),
-      components: [row]
-    }).catch(() => null);
-  }
-
-  const mentionLine = teamChatUsers.length ? teamChatUsers.map((member) => `<@${member.id}>`).join(' ') : `<@&${teamRoleId}>`;
+  const mentionLine = `<@&${teamRoleId}>`;
   const message = await channel.send({
     content: [mentionLine, getEventAnnouncementContent(event, '')].join('\n'),
     components: [row]
   });
 
   setEventMessageId(event.id, message.id);
-  await sendLog(`📌 Posted event: **${event.title}** (${event.team}) • DM: ${dmUsers.length}, Team chat: ${teamChatUsers.length}`);
+  await sendLog(`📌 Posted event: **${event.title}** (${event.team}) • Team chat post sent.`);
 }
 
 async function updatePostedEventMessage(eventId, event) {
@@ -1355,16 +1338,7 @@ async function notifyAttendingUsersAboutChange(event = {}, changeLines = []) {
   const attendingIds = Object.entries(responses)
     .filter(([, response]) => response?.status === 'yes')
     .map(([userId]) => userId);
-  for (const userId of attendingIds) {
-    const user = await client.users.fetch(userId).catch(() => null);
-    if (!user) continue;
-    await user.send([
-      `🔔 **Fixture update:** ${event.title}`,
-      `• ${changeLines.join('\n• ')}`,
-      `Updated time: ${formatEventDate(event.date)}`,
-      event.location ? `Updated location: ${event.location}` : ''
-    ].filter(Boolean).join('\n')).catch(() => null);
-  }
+  void attendingIds;
 }
 
 async function syncCalendarEvents(options = {}) {
