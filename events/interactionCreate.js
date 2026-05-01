@@ -54,6 +54,27 @@ function getTeamMeta(config = {}, team = '') {
   };
 }
 
+
+function parseDiscordEmoji(raw = '') {
+  const value = String(raw || '').trim();
+  if (!value) return null;
+  const custom = value.match(/^<(a?):([A-Za-z0-9_]{2,32}):(\d{17,20})>$/);
+  if (custom) {
+    return { id: custom[3], name: custom[2], animated: custom[1] === 'a' };
+  }
+  return value;
+}
+
+function buildTeamOption(config, team) {
+  const meta = getTeamMeta(config, team);
+  const emoji = parseDiscordEmoji(meta.emoji);
+  return {
+    label: `${meta.label}`.slice(0, 100),
+    value: team,
+    ...(emoji ? { emoji } : {})
+  };
+}
+
 function getTeamFixturesRangeByLabel(label = '') {
   const safeTitle = String(label || '')
     .replace(/[\\/?*\[\]:]/g, ' ')
@@ -187,7 +208,7 @@ function getFixtureSettingsSummary() {
 function getPlayerManagementSummary() {
   return [
     '👕 **Player Management**',
-    '🧭 Select a player from the menu to edit profile details, teams, notes, roles, and attendance.'
+    '🧭 First pick a team, then pick a player by number (1–9). Use "Unattached Players" for players without team roles.'
   ].join('\n');
 }
 
@@ -360,10 +381,7 @@ function createEventTypeRulesRow2() {
 }
 
 function createTeamPickerRow(config, customId, placeholder = 'Choose a team') {
-  const options = Object.keys(config.teams || {}).map((team) => {
-    const meta = getTeamMeta(config, team);
-    return { label: `${meta.emoji} ${meta.label}`.slice(0, 100), value: team };
-  });
+  const options = Object.keys(config.teams || {}).map((team) => buildTeamOption(config, team));
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
       .setCustomId(customId)
@@ -415,19 +433,23 @@ async function refreshFixtureSettingsMessage(interaction, team) {
   await interaction.message.edit({
     content: `${getTeamConfigSummary(latestConfig, interaction.guild, team)}\n\n**Fixture settings**`,
     embeds: [],
-    components: [createTeamConfigFixtureSettingsRow(team), createBackButtonRow(`admin_back_team_config:${team}`)]
+    components: [...createTeamConfigFixtureSettingsRows(team), createBackButtonRow(`admin_back_team_config:${team}`)]
   }).catch(() => null);
 }
 
-function createTeamConfigFixtureSettingsRow(team) {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:event_name_phrases`).setLabel('📝 Event Name Phrases').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:fixture_team`).setLabel('🔁 Manually Assign Fixture').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:auto_assign_fixtures`).setLabel('⚡ Auto Assign Fixtures').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:show_team_events`).setLabel('📆 Show Team Events').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:remove_fixture`).setLabel('🗑️ Remove Fixture').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:force_send_attendance`).setLabel('📣 Force Send Attendance').setStyle(ButtonStyle.Secondary)
-  );
+function createTeamConfigFixtureSettingsRows(team) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:event_name_phrases`).setLabel('📝 Event Name Phrases').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:fixture_team`).setLabel('🔁 Manually Assign Fixture').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:auto_assign_fixtures`).setLabel('⚡ Auto Assign Fixtures').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:show_team_events`).setLabel('📆 Show Team Events').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:remove_fixture`).setLabel('🗑️ Remove Fixture').setStyle(ButtonStyle.Secondary)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:force_send_attendance`).setLabel('📣 Force Send Attendance').setStyle(ButtonStyle.Secondary)
+    )
+  ];
 }
 
 function buildFixtureSettingsPanel(config, guild, team, notice = '') {
@@ -435,7 +457,7 @@ function buildFixtureSettingsPanel(config, guild, team, notice = '') {
   return {
     content,
     embeds: [],
-    components: [createTeamConfigFixtureSettingsRow(team), createBackButtonRow(`admin_back_team_config:${team}`)]
+    components: [...createTeamConfigFixtureSettingsRows(team), createBackButtonRow(`admin_back_team_config:${team}`)]
   };
 }
 
@@ -514,10 +536,15 @@ function createTeamButtonsRows(config = {}) {
         ? ButtonStyle.Primary
         : ButtonStyle.Secondary;
     current.addComponents(
-      new ButtonBuilder()
-        .setCustomId(`admin_open_team:${team}`)
-        .setLabel(`${meta?.emoji || '🔹'} ${meta?.label || team}`.slice(0, 80))
-        .setStyle(style)
+      (() => {
+        const emoji = parseDiscordEmoji(meta?.emoji || '🔹');
+        const button = new ButtonBuilder()
+          .setCustomId(`admin_open_team:${team}`)
+          .setLabel(`${meta?.label || team}`.slice(0, 80))
+          .setStyle(style);
+        if (emoji) button.setEmoji(emoji);
+        return button;
+      })()
     );
     count += 1;
   }
@@ -788,11 +815,10 @@ function buildMonthGroupedEventLines(events, db, guild, teamRolesMap, config) {
 
 function createEventScopePickerRow(config) {
   const teamOptions = Object.keys(config.teams || {}).slice(0, 24).map((team) => {
-    const meta = getTeamMeta(config, team);
+    const option = buildTeamOption(config, team);
     return {
-      label: `${meta.emoji} ${meta.label}`.slice(0, 100),
-      value: team,
-      description: `Show fixtures for ${meta.label}`.slice(0, 100)
+      ...option,
+      description: `Show fixtures for ${option.label}`.slice(0, 100)
     };
   });
 
@@ -997,42 +1023,71 @@ function createPlayerOptions(guild = null, config = loadConfig()) {
     .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
 }
 
-function createPlayerManagementRows(mode = 'player', guild = null, page = 0) {
-  if (!guild) {
-    return [new ActionRowBuilder().addComponents(
-      new UserSelectMenuBuilder()
-        .setCustomId('admin_player_select')
-        .setPlaceholder('Select a player to manage')
-        .setMinValues(1)
-        .setMaxValues(1)
-    )];
-  }
-
+function createPlayerManagementRows(mode = 'player', guild = null) {
   const config = loadConfig();
-  const allOptions = createPlayerOptions(guild, config);
-  const perPage = 25;
-  const totalPages = Math.max(1, Math.ceil(allOptions.length / perPage));
-  const safePage = Math.min(Math.max(page, 0), totalPages - 1);
-  const options = allOptions.slice(safePage * perPage, safePage * perPage + perPage);
-  if (!options.length) options.push({ label: 'No players found', value: 'none', description: 'Assign player roles first' });
-
-  const rows = [new ActionRowBuilder().addComponents(
+  const options = Object.keys(config.teams || {}).slice(0, 24).map((team) => ({
+    ...buildTeamOption(config, team),
+    description: `Show players for ${getTeamMeta(config, team).label}`.slice(0, 100)
+  }));
+  options.push({ label: 'Unattached Players', value: 'unattached', description: 'Players with no team assignment' });
+  return [new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
-      .setCustomId('admin_player_pick')
-      .setPlaceholder(`Select a player to manage (Page ${safePage + 1}/${totalPages})`)
+      .setCustomId('admin_player_pick_team')
+      .setPlaceholder('Pick a team to view players')
       .setMinValues(1)
       .setMaxValues(1)
       .addOptions(options)
   )];
+}
 
-  if (totalPages > 1) {
-    rows.push(new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`admin_player_page:${safePage - 1}`).setLabel('<').setStyle(ButtonStyle.Secondary).setDisabled(safePage <= 0),
-      new ButtonBuilder().setCustomId(`admin_player_page:${safePage + 1}`).setLabel('>').setStyle(ButtonStyle.Secondary).setDisabled(safePage >= totalPages - 1)
-    ));
+function getPlayerSortKey(userId = '') {
+  const profile = getPlayerProfile(userId) || {};
+  const positions = getSortedPositions(profile);
+  const rank = positions.length ? PLAYER_POSITION_ORDER.indexOf(positions[0]) : 99;
+  return Number.isFinite(rank) && rank >= 0 ? rank : 99;
+}
+
+function createPlayerNumberPickerRows(guild, config, team = 'unattached', page = 0) {
+  const all = createPlayerOptions(guild, config)
+    .filter((option) => {
+      const member = guild?.members?.cache?.get(option.value);
+      if (team === 'unattached') {
+        return !Object.keys(config.teams || {}).some((teamKey) => {
+          const roleId = config.roles?.[teamKey]?.player;
+          return roleId && roleId !== 'ROLE_ID' && member?.roles?.cache?.has(roleId);
+        });
+      }
+      const teamRoleId = config.roles?.[team]?.player;
+      return Boolean(teamRoleId && teamRoleId !== 'ROLE_ID' && member?.roles?.cache?.has(teamRoleId));
+    })
+    .sort((a, b) => {
+      const rankDiff = getPlayerSortKey(a.value) - getPlayerSortKey(b.value);
+      if (rankDiff !== 0) return rankDiff;
+      return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
+    });
+
+  const perPage = 9;
+  const totalPages = Math.max(1, Math.ceil(all.length / perPage));
+  const safePage = Math.min(Math.max(page, 0), totalPages - 1);
+  const items = all.slice(safePage * perPage, safePage * perPage + perPage);
+  const rows = [];
+  if (items.length) {
+    const numberRow = new ActionRowBuilder();
+    items.forEach((item, idx) => {
+      numberRow.addComponents(
+        new ButtonBuilder().setCustomId(`admin_player_pick_num:${team}:${safePage}:${idx}`).setLabel(String(idx + 1)).setStyle(ButtonStyle.Primary)
+      );
+    });
+    rows.push(numberRow);
   }
-
-  return rows;
+  rows.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`admin_player_team_page:${team}:${safePage - 1}`).setLabel('<').setStyle(ButtonStyle.Secondary).setDisabled(safePage <= 0),
+    new ButtonBuilder().setCustomId(`admin_player_team_page:${team}:${safePage + 1}`).setLabel('>').setStyle(ButtonStyle.Secondary).setDisabled(safePage >= totalPages - 1),
+    new ButtonBuilder().setCustomId('admin_back_player_management').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
+  ));
+  const title = team === 'unattached' ? 'Unattached Players' : getTeamMeta(config, team).label;
+  const list = items.map((item, idx) => `${idx + 1}. ${item.label}`).join('\n') || 'No players found for this selection.';
+  return { rows, text: `Pick player in **${title}** (page ${safePage + 1}/${totalPages})\n\n${list}` };
 }
 
 function createCoachManagementRow(config, guild) {
@@ -1154,10 +1209,7 @@ function createPlayerNotesActionRows(userId, mode = 'player', isAdmin = false, p
 }
 
 function createPlayerTeamSelectRow(config, userId, mode = 'player') {
-  const options = Object.entries(config.teams || {}).map(([team, meta]) => ({
-    label: `${meta.emoji || '🔹'} ${meta.label || team}`.slice(0, 100),
-    value: team
-  }));
+  const options = Object.keys(config.teams || {}).map((team) => buildTeamOption(config, team));
 
   return new ActionRowBuilder().addComponents(
     new StringSelectMenuBuilder()
@@ -2381,14 +2433,63 @@ module.exports = {
           return;
         }
       }
-      if (interaction.customId.startsWith('admin_player_page:')) {
-        const page = Number.parseInt(interaction.customId.split(':')[1] || '0', 10);
+      if (interaction.customId.startsWith('admin_player_team_page:')) {
+        const [, , team, rawPage] = interaction.customId.split(':');
+        const page = Number.parseInt(rawPage || '0', 10);
         await interaction.guild?.members.fetch().catch(() => null);
-        await interaction.update({
-          content: getPlayerManagementSummary(),
-          embeds: [],
-          components: [...createPlayerManagementRows('player', interaction.guild, Number.isNaN(page) ? 0 : page), createAdminBackButtonRow()]
+        const picker = createPlayerNumberPickerRows(interaction.guild, loadConfig(), team, Number.isNaN(page) ? 0 : page);
+        await interaction.update({ content: picker.text, embeds: [], components: picker.rows });
+        return;
+      }
+      if (interaction.customId.startsWith('admin_player_pick_num:')) {
+        const [, team, rawPage, rawIndex] = interaction.customId.split(':');
+        const page = Number.parseInt(rawPage || '0', 10);
+        const index = Number.parseInt(rawIndex || '0', 10);
+        await interaction.guild?.members.fetch().catch(() => null);
+        const config = loadConfig();
+        const picker = createPlayerNumberPickerRows(interaction.guild, config, team, Number.isNaN(page) ? 0 : page);
+        const line = picker.text.split('\n\n')[1] || '';
+        const names = line.split('\n').filter(Boolean);
+        const chosen = names[index];
+        if (!chosen) {
+          await interaction.reply({ content: 'Invalid player selection.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const selectedName = chosen.replace(/^\d+\.\s*/, '');
+        const option = createPlayerOptions(interaction.guild, config).find((entry) => entry.label === selectedName);
+        if (!option) {
+          await interaction.reply({ content: 'Could not resolve player from selection.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const userId = option.value;
+        const member = await interaction.guild.members.fetch(userId).catch(() => null);
+        const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
+        const existing = getPlayerProfile(userId) || {};
+        const inferredPlayerTeams = Object.keys(loadConfig().roles || {}).filter((teamKey) => {
+          const roleId = loadConfig().roles?.[teamKey]?.player;
+          return roleId && roleId !== 'ROLE_ID' && member?.roles?.cache?.has(roleId);
         });
+        const inferredCoachTeams = Object.keys(loadConfig().roles || {}).filter((teamKey) => {
+          const roleId = loadConfig().roles?.[teamKey]?.coach;
+          return roleId && roleId !== 'ROLE_ID' && member?.roles?.cache?.has(roleId);
+        });
+        const seeded = upsertPlayerProfile(userId, {
+          userId,
+          customName: existing.customName || '',
+          shirtNumber: existing.shirtNumber || '',
+          teams: Array.from(new Set([...(existing.teams || []), ...inferredPlayerTeams])),
+          coachTeams: Array.from(new Set([...(existing.coachTeams || []), ...inferredCoachTeams])),
+          roles: existing.roles || (member ? Array.from(member.roles.cache.keys()).filter((id) => id !== interaction.guild.id) : []),
+          joinedDiscordAt: existing.joinedDiscordAt || (member?.joinedAt ? member.joinedAt.toISOString().slice(0, 10) : ''),
+          faceImageUrl: existing.faceImageUrl || existing.facePngUrl || '',
+          facePngUrl: existing.faceImageUrl || existing.facePngUrl || '',
+          notes: existing.notes || ''
+        });
+        await interaction.update({
+          ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, seeded, 'player'),
+          components: [createPlayerProfileActionRow(userId, 'player'), createPlayerProfileActionRow2(userId, 'player'), createBackButtonRow('admin_back_player_management')]
+        });
+        await triggerGoogleSync(context);
         return;
       }
       if (interaction.customId.startsWith('coach_set_team_badge:')) {
@@ -2759,7 +2860,7 @@ module.exports = {
           await interaction.update({
             content: [`📆 Events attached to **${teamLabel}**:`, ...lines].join('\n'),
             embeds: [],
-            components: [createTeamConfigFixtureSettingsRow(team), createBackButtonRow(`admin_back_team_config:${team}`)]
+            components: [...createTeamConfigFixtureSettingsRows(team), createBackButtonRow(`admin_back_team_config:${team}`)]
           });
           return;
         }
@@ -3596,6 +3697,14 @@ module.exports = {
         return;
       }
 
+      if (interaction.customId === 'admin_player_pick_team') {
+        const team = interaction.values[0];
+        await interaction.guild?.members.fetch().catch(() => null);
+        const picker = createPlayerNumberPickerRows(interaction.guild, loadConfig(), team, 0);
+        await interaction.update({ content: picker.text, embeds: [], components: picker.rows });
+        return;
+      }
+
       if (interaction.customId === 'admin_player_pick') {
         const userId = interaction.values[0];
         if (userId === 'none') {
@@ -4221,7 +4330,7 @@ module.exports = {
           await interaction.update({
             content: [`📆 Events attached to **${teamLabel}**:`, ...lines].join('\n'),
             embeds: [],
-            components: [createTeamConfigFixtureSettingsRow(team), createBackButtonRow(`admin_back_team_config:${team}`)]
+            components: [...createTeamConfigFixtureSettingsRows(team), createBackButtonRow(`admin_back_team_config:${team}`)]
           });
           return;
         }
