@@ -734,6 +734,41 @@ function createForceAttendanceWindowRow(team) {
   );
 }
 
+
+function createForceAttendancePickerRows(team, events = [], page = 0) {
+  const perPage = 10;
+  const totalPages = Math.max(1, Math.ceil(events.length / perPage));
+  const safePage = Math.min(Math.max(page, 0), totalPages - 1);
+  const items = events.slice(safePage * perPage, safePage * perPage + perPage);
+  const rows = [];
+
+  if (items.length) {
+    const numberRow = new ActionRowBuilder();
+    items.forEach((event, idx) => {
+      numberRow.addComponents(
+        new ButtonBuilder().setCustomId(`admin_force_attendance_pick_num:${team}:${safePage}:${idx}`).setLabel(String(idx)).setStyle(ButtonStyle.Primary)
+      );
+    });
+    rows.push(numberRow);
+  }
+
+  rows.push(createForceAttendanceWindowRow(team));
+  rows.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`admin_force_attendance_page:${team}:${safePage - 1}`).setLabel('<').setStyle(ButtonStyle.Secondary).setDisabled(safePage <= 0),
+    new ButtonBuilder().setCustomId(`admin_force_attendance_page:${team}:${safePage + 1}`).setLabel('>').setStyle(ButtonStyle.Secondary).setDisabled(safePage >= totalPages - 1),
+    new ButtonBuilder().setCustomId(`admin_back_team_config:${team}`).setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
+  ));
+
+  const list = items.length
+    ? items.map((event, idx) => `${idx}. ${new Date(event.date).toLocaleDateString()} — ${event.title}`).join('\n')
+    : 'No unsent upcoming fixtures found for this team.';
+
+  return {
+    text: `Select fixture to force-send for **${getTeamMeta(loadConfig(), team).label}** (page ${safePage + 1}/${totalPages})\n\n${list}`,
+    rows
+  };
+}
+
 async function postAttendancePromptForEvent(interaction, event, config) {
   const teamChatChannelId = config.channels.teamChats?.[event.team];
   const eventsChannelId = teamChatChannelId || config.channels.events;
@@ -2463,7 +2498,7 @@ module.exports = {
         return;
       }
       if (interaction.customId.startsWith('admin_player_pick_num:')) {
-        const [, team, rawPage, rawIndex] = interaction.customId.split(':');
+        const [, , team, rawPage, rawIndex] = interaction.customId.split(':');
         const page = Number.parseInt(rawPage || '0', 10);
         const index = Number.parseInt(rawIndex || '0', 10);
         await interaction.guild?.members.fetch().catch(() => null);
@@ -2897,11 +2932,13 @@ module.exports = {
           return;
         }
         if (selectedAction === 'force_send_attendance') {
-          await interaction.update({
-            content: `Choose how far ahead to force-send attendance for **${teamLabel}**.`,
-            embeds: [],
-            components: [createForceAttendanceWindowRow(team), createBackButtonRow(`admin_back_team_config:${team}`)]
-          });
+          const now = Date.now();
+          const candidates = Object.entries(loadDb().events || {})
+            .map(([id, event]) => ({ id, ...event }))
+            .filter((event) => event.team === team && new Date(event.date).getTime() >= now && !event.discordMessageId)
+            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+          const picker = createForceAttendancePickerRows(team, candidates, 0);
+          await interaction.update({ content: picker.text, embeds: [], components: picker.rows });
           return;
         }
       }
@@ -4543,11 +4580,13 @@ module.exports = {
         }
 
         if (selectedAction === 'force_send_attendance') {
-          await interaction.update({
-            content: `Choose how far ahead to force-send attendance for **${teamLabel}**.`,
-            embeds: [],
-            components: [createForceAttendanceWindowRow(team), createBackButtonRow(`admin_back_team_config:${team}`)]
-          });
+          const now = Date.now();
+          const candidates = Object.entries(loadDb().events || {})
+            .map(([id, event]) => ({ id, ...event }))
+            .filter((event) => event.team === team && new Date(event.date).getTime() >= now && !event.discordMessageId)
+            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+          const picker = createForceAttendancePickerRows(team, candidates, 0);
+          await interaction.update({ content: picker.text, embeds: [], components: picker.rows });
           return;
         }
       }
@@ -4869,9 +4908,55 @@ module.exports = {
         return;
       }
 
+
+      if (interaction.customId.startsWith('admin_force_attendance_page:')) {
+        const [, , team, pageRaw] = interaction.customId.split(':');
+        const page = Number.parseInt(pageRaw || '0', 10) || 0;
+        const now = Date.now();
+        const candidates = Object.entries(loadDb().events || {})
+          .map(([id, event]) => ({ id, ...event }))
+          .filter((event) => event.team === team && new Date(event.date).getTime() >= now && !event.discordMessageId)
+          .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+        const picker = createForceAttendancePickerRows(team, candidates, page);
+        await interaction.update({ content: picker.text, embeds: [], components: picker.rows });
+        return;
+      }
+
+      if (interaction.customId.startsWith('admin_force_attendance_pick_num:')) {
+        await interaction.deferUpdate();
+        const [, , team, pageRaw, indexRaw] = interaction.customId.split(':');
+        const page = Number.parseInt(pageRaw || '0', 10) || 0;
+        const index = Number.parseInt(indexRaw || '0', 10) || 0;
+        const now = Date.now();
+        const candidates = Object.entries(loadDb().events || {})
+          .map(([id, event]) => ({ id, ...event }))
+          .filter((event) => event.team === team && new Date(event.date).getTime() >= now && !event.discordMessageId)
+          .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+        const picked = candidates[(page * 10) + index];
+        if (!picked) {
+          const picker = createForceAttendancePickerRows(team, candidates, page);
+          await interaction.editReply({ content: `${picker.text}
+
+⚠️ That fixture selection is no longer valid.`, embeds: [], components: picker.rows });
+          return;
+        }
+
+        const latestConfig = loadConfig();
+        await postAttendancePromptForEvent(interaction, picked, latestConfig);
+        const updatedCandidates = Object.entries(loadDb().events || {})
+          .map(([id, event]) => ({ id, ...event }))
+          .filter((event) => event.team === team && new Date(event.date).getTime() >= now && !event.discordMessageId)
+          .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+        const picker = createForceAttendancePickerRows(team, updatedCandidates, page);
+        await interaction.editReply({ content: `✅ Attendance prompt sent for **${picked.title}**.
+
+${picker.text}`, embeds: [], components: picker.rows });
+        return;
+      }
+
       if (interaction.customId.startsWith('admin_force_attendance_window:')) {
         await interaction.deferUpdate();
-        const [, team, window] = interaction.customId.split(':');
+        const [, , team, window] = interaction.customId.split(':');
         const latestConfig = loadConfig();
         const db = loadDb();
         let remoteEvents = [];
