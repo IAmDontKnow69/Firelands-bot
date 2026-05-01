@@ -96,6 +96,63 @@ Firelands Bot is intentionally designed to work with **any supported Google Cale
 
 ---
 
+## 🧩 UI Workflow Deep Dive
+
+### `/player` panel workflow 👟
+
+The player experience is designed to be fast, clear, and mobile-friendly in Discord:
+
+1. Player opens `/player`.
+2. Bot renders a personal dashboard view with:
+   - upcoming matches (next 5 fixtures),
+   - current attendance decisions,
+   - active or upcoming vacation windows.
+3. Player can quickly confirm or adjust availability for upcoming events.
+4. Updates immediately feed attendance tracking and coach visibility.
+
+**Key player-facing benefits**
+- Minimal clicks to report availability.
+- Clear personal schedule context before answering.
+- Vacation-aware UX so conflicts are visible and less error-prone.
+- Consistent panel design that lowers confusion across the season.
+
+### `/coach` panel workflow 🧢
+
+The coach workflow is built around actionable next-game intelligence:
+
+1. Coach opens `/coach`.
+2. Bot shows upcoming fixtures with a team attendance snapshot.
+3. Coach reviews who is available/unavailable and where vacation overlaps exist.
+4. Coach can trigger management actions (follow-up checks, roster-related actions, and attendance oversight flows).
+5. Coach can route edge cases into `/confirm` moderation/confirmation when needed.
+
+**Key coach-facing benefits**
+- Real-time visibility for upcoming game readiness.
+- Faster decision making with absence/vacation context included.
+- Structured operational flow that reduces manual chat chasing.
+- Better communication loop between players, coaches, and admins.
+
+### `/admin` panel workflow 🧰
+
+The admin panel is the control center for club operations:
+
+1. Admin opens `/admin`.
+2. Configures and maintains core infrastructure:
+   - club channels/roles,
+   - team routing,
+   - command and logging destinations.
+3. Uses Google tools to connect Calendar + Sheets and run sync operations.
+4. Uses diagnostics/backups/management actions to keep data healthy.
+5. Monitors command logs and sync status for operational reliability.
+
+**Key admin-facing benefits**
+- Centralized governance for all teams and workflows.
+- Robust Google integration control from Discord (no code changes needed for day-to-day operations).
+- Safer operations through backups, logs, and diagnostic tooling.
+- Scalable setup pattern for clubs managing multiple squads.
+
+---
+
 ## 🗂️ Data & Operations
 
 - `config.json` ⚙️ — runtime configuration and backup state.
