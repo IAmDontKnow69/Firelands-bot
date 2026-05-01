@@ -2855,18 +2855,27 @@ module.exports = {
       }
       if (interaction.customId === 'player_profile_manager') {
         const profile = getPlayerProfile(interaction.user.id) || {};
+        const configNow = loadConfig();
+        const teams = Object.entries(configNow.roles || {})
+          .filter(([, roles]) => interaction.member?.roles?.cache?.has(roles?.player))
+          .map(([team]) => configNow.teams?.[team]?.label || team);
         await interaction.reply({
           content: [
-            '**Profile manager**',
-            'Update your nickname or phone number.',
-            '',
-            `Nickname: ${profile.nickName || 'not set'}`,
-            `Phone number: ${profile.phoneNumber || 'not set'}`
+            `Hi ${profile.customName || interaction.user.username} 👋`,
+            `Teams: ${teams.join(', ') || 'none'}`,
+            `• Discord: @${interaction.user.username}`,
+            `• Full name: ${profile.customName || interaction.user.username}`,
+            `• First name: ${profile.firstName || 'not set'}`,
+            `• Last name: ${profile.lastName || 'not set'}`,
+            `• Gender: ${profile.gender || 'not set'}`,
+            `• Nickname: ${profile.nickName || 'not set'}`,
+            `• Joined discord server: ${interaction.member?.joinedAt ? interaction.member.joinedAt.toISOString().slice(0, 10) : 'unknown'}`,
+            `• Phone number: ${profile.phoneNumber || 'not set'}`
           ].join('\n'),
           components: [
             new ActionRowBuilder().addComponents(
               new ButtonBuilder().setCustomId('player_profile_edit_nickname').setLabel('Change nickname').setStyle(ButtonStyle.Primary),
-              new ButtonBuilder().setCustomId('player_profile_edit_phone').setLabel('Add/Change phone').setStyle(ButtonStyle.Primary),
+              new ButtonBuilder().setCustomId('player_profile_edit_phone').setLabel('Change phone').setStyle(ButtonStyle.Primary),
               new ButtonBuilder().setCustomId('player_back_to_hub').setLabel('Back').setStyle(ButtonStyle.Secondary)
             )
           ],
@@ -2896,6 +2905,20 @@ module.exports = {
         await interaction.reply({ content: 'Use `/player` to reopen the full player hub.', flags: MessageFlags.Ephemeral });
         return;
       }
+      if (interaction.customId.startsWith('player_fixture_manager:')) {
+        const configNow = loadConfig();
+        const db = loadDb();
+        const teams = Object.entries(configNow.roles || {}).filter(([, roles]) => interaction.member?.roles?.cache?.has(roles?.player)).map(([team]) => team);
+        const lines = Object.entries(db.events || {})
+          .map(([eventId, event]) => ({ eventId, ...event }))
+          .filter((event) => teams.includes(event.team))
+          .filter((event) => new Date(event.date).getTime() >= Date.now())
+          .sort((a, b) => new Date(a.date) - new Date(b.date))
+          .slice(0, 10)
+          .map((event, i) => `**${i + 1}. ${event.title}**\n🕒 ${new Date(event.date).toLocaleString()}\n📍 ${event.location || 'Location not set'}`);
+        await interaction.reply({ content: lines.length ? lines.join('\n\n') : 'No upcoming events/fixtures found.', flags: MessageFlags.Ephemeral });
+        return;
+      }
       if (interaction.customId === 'player_talk_to_coaches') {
         await interaction.reply({ content: 'Coach chat launch is set up next: if you are in multiple teams, you will choose which team coaches to contact.', flags: MessageFlags.Ephemeral });
         return;
@@ -2914,7 +2937,22 @@ module.exports = {
           await interaction.reply({ content: 'No upcoming event found for your teams.', flags: MessageFlags.Ephemeral });
           return;
         }
-        await interaction.reply({ content: `**${nextEvent.title}**\n${new Date(nextEvent.date).toLocaleString()}\n${nextEvent.location ? `[Open in Maps](${getMapsLink(nextEvent.location)})` : 'Location not set.'}`, flags: MessageFlags.Ephemeral });
+        await interaction.reply({ content: `🗓️ **${nextEvent.title}**\n🕒 ${new Date(nextEvent.date).toLocaleString()}\n📍 ${nextEvent.location || 'Location not set'}\n${nextEvent.description || ''}\n${nextEvent.location ? `[Open in Maps](${getMapsLink(nextEvent.location)})` : ''}`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (interaction.customId === 'player_vacation_open') {
+        await interaction.reply({
+          content: 'Vacation manager: choose an option below.',
+          components: [new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('player_vacation_create').setLabel('Create vacation').setStyle(ButtonStyle.Primary),
+            new ButtonBuilder().setCustomId('player_vacation_manage').setLabel('Manage current').setStyle(ButtonStyle.Secondary)
+          )],
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+      if (interaction.customId === 'player_vacation_create' || interaction.customId === 'player_vacation_manage') {
+        await interaction.reply({ content: 'This vacation feature is currently not working.', flags: MessageFlags.Ephemeral });
         return;
       }
 
