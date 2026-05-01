@@ -127,7 +127,6 @@ module.exports = {
     );
 
     const row2 = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`coach_notification_mode:${team}`).setLabel('🔔 Notification Settings').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`coach_open_player_chat:${team}`).setLabel('💬 Chat With Player').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId(`coach_set_team_badge:${team}`).setLabel('🛡️ Team Badge').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId(`coach_set_captain:${team}`).setLabel('🅒 Set Captain').setStyle(ButtonStyle.Success),

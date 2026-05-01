@@ -1751,7 +1751,7 @@ async function closeAbsenceTicketChannel(channel, reason = 'Absence ticket resol
               day: date.toISOString().slice(0, 10),
               time: date.toISOString().slice(11, 16),
               userId: msg.author?.id || '',
-              name: getPlayerDisplayName(msg.author?.id || '', loadConfig()) || msg.member?.displayName || msg.author?.username || 'unknown',
+              name: getPlayerDisplayName(msg.author?.id || '', msg.member?.displayName || msg.author?.username || '') || msg.member?.displayName || msg.author?.username || 'unknown',
               message: msg.content || '(no text)'
             };
           });
@@ -3424,7 +3424,7 @@ module.exports = {
           const day = item.day || String(item.ts || '').slice(0, 10) || 'unknown-day';
           const time = item.time || String(item.ts || '').slice(11, 19) || '??:??:??';
           const memberName = item.userId ? (await interaction.guild.members.fetch(item.userId).catch(() => null))?.displayName : '';
-          const name = item.name || getPlayerDisplayName(item.userId || '', loadConfig()) || memberName || 'unknown';
+          const name = item.name || getPlayerDisplayName(item.userId || '', memberName || '') || memberName || 'unknown';
           const text = item.message || '(no text)';
           if (day !== lastDay) {
             lines.push(`\n📅 ${day}`);
@@ -3546,7 +3546,20 @@ module.exports = {
           await interaction.editReply({ content: `✅ Absence confirmed for <@${playerId}>. Closing this absence chat now.` });
           const member = await interaction.guild.members.fetch(playerId).catch(() => null);
           await member?.send(`✅ Your not-attending request for **${event.title}** (${getCompactDateLabel(event.date)}) was confirmed by **${interaction.user.tag}**.`).catch(() => null);
-          await context.sendLog(`✅ ${interaction.user.tag} confirmed not attending for <@${playerId}> on **${event.title}**.`);
+
+          const playerProfile = getPlayerProfile(playerId) || {};
+          const playerName = playerProfile.customName || member?.displayName || member?.user?.globalName || member?.user?.username || `<@${playerId}>`;
+          const coachProfile = getPlayerProfile(interaction.user.id) || {};
+          const coachName = coachProfile.customName || interaction.member?.displayName || interaction.user?.globalName || interaction.user?.username || interaction.user.tag;
+          const confirmMessage = `🔴 Not attending confirmed for ${playerName} by ${coachName} on ${event.title}.`;
+          await context.sendLog(confirmMessage);
+
+          const staffRoomId = config.channels?.staffRooms?.[event.team];
+          if (staffRoomId) {
+            const staffRoom = await interaction.guild.channels.fetch(staffRoomId).catch(() => null);
+            if (staffRoom?.isTextBased()) await staffRoom.send(confirmMessage).catch(() => null);
+          }
+
           await closeAbsenceTicketChannel(interaction.channel, 'Absence confirmed by coach');
           return;
         }
