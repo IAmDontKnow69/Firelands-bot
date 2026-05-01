@@ -2424,11 +2424,10 @@ module.exports = {
         const action = interaction.customId.split(':')[1];
         if (action === 'new_team') {
           const modal = new ModalBuilder().setCustomId(`admin_new_team_modal:${interaction.message?.id || ''}`).setTitle('Create New Team');
-          const keyInput = new TextInputBuilder().setCustomId('team_key').setLabel('Team key (letters/numbers, e.g. team_alpha)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(30);
           const labelInput = new TextInputBuilder().setCustomId('team_label').setLabel('Display name (e.g. Firelands United)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(80);
           const emojiInput = new TextInputBuilder().setCustomId('team_emoji').setLabel('Emoji (optional, default 🔹)').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(20);
           const genderInput = new TextInputBuilder().setCustomId('team_gender').setLabel('Team gender (male/female/mixed)').setStyle(TextInputStyle.Short).setRequired(true).setValue('male').setMaxLength(10);
-          modal.addComponents(new ActionRowBuilder().addComponents(keyInput), new ActionRowBuilder().addComponents(labelInput), new ActionRowBuilder().addComponents(emojiInput), new ActionRowBuilder().addComponents(genderInput));
+          modal.addComponents(new ActionRowBuilder().addComponents(labelInput), new ActionRowBuilder().addComponents(emojiInput), new ActionRowBuilder().addComponents(genderInput));
           await interaction.showModal(modal);
           return;
         }
@@ -2817,6 +2816,7 @@ module.exports = {
         }
         if (selectedAction === 'auto_assign_fixtures') {
           await interaction.deferUpdate();
+          await interaction.editReply(buildFixtureSettingsPanel(loadConfig(), interaction.guild, team, `${renderProgressMessage(15, 'Auto-assigning fixtures...')}\nEstimated completion time: 5–15 seconds.`));
           const db = loadDb();
           const teamMatchers = buildTeamMatchers(latestConfig);
           const assigned = [];
@@ -2854,13 +2854,21 @@ module.exports = {
         }
         if (selectedAction === 'show_team_events') {
           const teamEvents = getUpcomingFixtures(loadDb()).filter((event) => event.team === team);
-          const lines = teamEvents.length
-            ? teamEvents.slice(0, 25).map((event, idx) => `${idx + 1}. ${new Date(event.date).toLocaleDateString()} — ${event.title}`)
+          const pageSize = 20;
+          const page = 0;
+          const totalPages = Math.max(1, Math.ceil(teamEvents.length / pageSize));
+          const visible = teamEvents.slice(page * pageSize, (page + 1) * pageSize);
+          const lines = visible.length
+            ? visible.map((event, idx) => `${(page * pageSize) + idx + 1}. ${new Date(event.date).toLocaleDateString()} — ${event.title}${event.location ? ` — 📍 ${event.location}` : ''}`)
             : ['No events currently attached to this team.'];
+          const pagerRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`admin_team_events_page:${team}:0`).setLabel('Previous').setStyle(ButtonStyle.Secondary).setDisabled(true),
+            new ButtonBuilder().setCustomId(`admin_team_events_page:${team}:1`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(totalPages <= 1)
+          );
           await interaction.update({
-            content: [`📆 Events attached to **${teamLabel}**:`, ...lines].join('\n'),
+            content: [`📆 Events attached to **${teamLabel}** (page ${page + 1}/${totalPages}):`, ...lines].join('\n'),
             embeds: [],
-            components: [...createTeamConfigFixtureSettingsRows(team), createBackButtonRow(`admin_back_team_config:${team}`)]
+            components: [pagerRow, ...createTeamConfigFixtureSettingsRows(team), createBackButtonRow(`admin_back_team_config:${team}`)]
           });
           return;
         }
@@ -2888,13 +2896,6 @@ module.exports = {
           .setCustomId(`admin_new_team_modal:${interaction.message?.id || ''}`)
           .setTitle('Create New Team');
 
-        const keyInput = new TextInputBuilder()
-          .setCustomId('team_key')
-          .setLabel('Team key (letters/numbers, e.g. team_alpha)')
-          .setStyle(TextInputStyle.Short)
-          .setRequired(true)
-          .setMaxLength(30);
-
         const labelInput = new TextInputBuilder()
           .setCustomId('team_label')
           .setLabel('Display name (e.g. Firelands United)')
@@ -2917,7 +2918,6 @@ module.exports = {
           .setMaxLength(10);
 
         modal.addComponents(
-          new ActionRowBuilder().addComponents(keyInput),
           new ActionRowBuilder().addComponents(labelInput),
           new ActionRowBuilder().addComponents(emojiInput),
           new ActionRowBuilder().addComponents(genderInput)
@@ -2928,18 +2928,9 @@ module.exports = {
 
       
       if (interaction.customId === 'player_delivery_mode') {
-        const profile = getPlayerProfile(interaction.user.id) || {};
-        const current = profile.attendanceDeliveryMode === 'team_chat' ? 'team_chat' : 'dm';
-        const next = current === 'dm' ? 'team_chat' : 'dm';
-        upsertPlayerProfile(interaction.user.id, { attendanceDeliveryMode: next });
+        upsertPlayerProfile(interaction.user.id, { attendanceDeliveryMode: 'team_chat' });
         await interaction.reply({
-          content: [
-            'Only you can see this.',
-            `📩 Attendance delivery is now set to **${next === 'dm' ? 'Direct Message' : 'Team Chat'}**.`,
-            next === 'dm'
-              ? 'Future attendance prompts will be sent to you in DM.'
-              : 'Future attendance prompts will be posted in the team chat and mention opted-in players.'
-          ].join('\n'),
+          content: '📩 Attendance delivery is fixed to **Team Chat**. Direct Message prompts are disabled.',
           flags: MessageFlags.Ephemeral
         });
         await triggerGoogleSync(context).catch((error) => context.sendLog(`⚠️ Google Sheets sync failed after delivery mode update: ${error.message}`));
@@ -3526,7 +3517,7 @@ module.exports = {
         const attendanceName = responderType === 'coach'
           ? getCoachAddressLabel(config, interaction.member, profile, event.team, fallbackName)
           : fallbackName;
-        await interaction.reply({ content: 'Only you can see this. ✅ You are marked as attending for this event.', flags: MessageFlags.Ephemeral });
+        await interaction.reply({ content: '✅ You are marked as attending for this event.', flags: MessageFlags.Ephemeral });
         await triggerGoogleSync(context);
         await notifyCoachAndAdminOnAttending(interaction, context, event, attendanceName, responderType);
         return;
@@ -4287,6 +4278,7 @@ module.exports = {
 
         if (selectedAction === 'auto_assign_fixtures') {
           await interaction.deferUpdate();
+          await interaction.editReply(buildFixtureSettingsPanel(loadConfig(), interaction.guild, team, `${renderProgressMessage(15, 'Auto-assigning fixtures...')}\nEstimated completion time: 5–15 seconds.`));
           const db = loadDb();
           const teamMatchers = buildTeamMatchers(config);
           const assigned = [];
@@ -4324,13 +4316,21 @@ module.exports = {
         }
         if (selectedAction === 'show_team_events') {
           const teamEvents = getUpcomingFixtures(loadDb()).filter((event) => event.team === team);
-          const lines = teamEvents.length
-            ? teamEvents.slice(0, 25).map((event, idx) => `${idx + 1}. ${new Date(event.date).toLocaleDateString()} — ${event.title}`)
+          const pageSize = 20;
+          const page = 0;
+          const totalPages = Math.max(1, Math.ceil(teamEvents.length / pageSize));
+          const visible = teamEvents.slice(page * pageSize, (page + 1) * pageSize);
+          const lines = visible.length
+            ? visible.map((event, idx) => `${(page * pageSize) + idx + 1}. ${new Date(event.date).toLocaleDateString()} — ${event.title}${event.location ? ` — 📍 ${event.location}` : ''}`)
             : ['No events currently attached to this team.'];
+          const pagerRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId(`admin_team_events_page:${team}:0`).setLabel('Previous').setStyle(ButtonStyle.Secondary).setDisabled(true),
+            new ButtonBuilder().setCustomId(`admin_team_events_page:${team}:1`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(totalPages <= 1)
+          );
           await interaction.update({
-            content: [`📆 Events attached to **${teamLabel}**:`, ...lines].join('\n'),
+            content: [`📆 Events attached to **${teamLabel}** (page ${page + 1}/${totalPages}):`, ...lines].join('\n'),
             embeds: [],
-            components: [...createTeamConfigFixtureSettingsRows(team), createBackButtonRow(`admin_back_team_config:${team}`)]
+            components: [pagerRow, ...createTeamConfigFixtureSettingsRows(team), createBackButtonRow(`admin_back_team_config:${team}`)]
           });
           return;
         }
@@ -4347,18 +4347,9 @@ module.exports = {
 
       
       if (interaction.customId === 'player_delivery_mode') {
-        const profile = getPlayerProfile(interaction.user.id) || {};
-        const current = profile.attendanceDeliveryMode === 'team_chat' ? 'team_chat' : 'dm';
-        const next = current === 'dm' ? 'team_chat' : 'dm';
-        upsertPlayerProfile(interaction.user.id, { attendanceDeliveryMode: next });
+        upsertPlayerProfile(interaction.user.id, { attendanceDeliveryMode: 'team_chat' });
         await interaction.reply({
-          content: [
-            'Only you can see this.',
-            `📩 Attendance delivery is now set to **${next === 'dm' ? 'Direct Message' : 'Team Chat'}**.`,
-            next === 'dm'
-              ? 'Future attendance prompts will be sent to you in DM.'
-              : 'Future attendance prompts will be posted in the team chat and mention opted-in players.'
-          ].join('\n'),
+          content: '📩 Attendance delivery is fixed to **Team Chat**. Direct Message prompts are disabled.',
           flags: MessageFlags.Ephemeral
         });
         await triggerGoogleSync(context).catch((error) => context.sendLog(`⚠️ Google Sheets sync failed after delivery mode update: ${error.message}`));
@@ -4384,6 +4375,29 @@ module.exports = {
         const sourceEvents = isUnpick ? getUpcomingFixtures(loadDb()).filter((event) => event.team === team) : getUpcomingFixtures(loadDb());
         const pager = createFixturePagerRows(loadConfig(), team, page, sourceEvents, isUnpick ? 'admin_fixture_unpick' : 'admin_fixture_pick');
         await interaction.update({ content: pager.text, embeds: [], components: pager.rows });
+        return;
+      }
+
+      if (interaction.customId.startsWith('admin_team_events_page:')) {
+        const [, team, pageRaw] = interaction.customId.split(':');
+        const pageSize = 20;
+        const events = getUpcomingFixtures(loadDb()).filter((event) => event.team === team);
+        const totalPages = Math.max(1, Math.ceil(events.length / pageSize));
+        const page = Math.max(0, Math.min(totalPages - 1, Number.parseInt(pageRaw || '0', 10) || 0));
+        const visible = events.slice(page * pageSize, (page + 1) * pageSize);
+        const teamLabel = getTeamMeta(loadConfig(), team).label;
+        const lines = visible.length
+          ? visible.map((event, idx) => `${(page * pageSize) + idx + 1}. ${new Date(event.date).toLocaleDateString()} — ${event.title}${event.location ? ` — 📍 ${event.location}` : ''}`)
+          : ['No events currently attached to this team.'];
+        const pagerRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`admin_team_events_page:${team}:${Math.max(0, page - 1)}`).setLabel('Previous').setStyle(ButtonStyle.Secondary).setDisabled(page <= 0),
+          new ButtonBuilder().setCustomId(`admin_team_events_page:${team}:${Math.min(totalPages - 1, page + 1)}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page >= totalPages - 1)
+        );
+        await interaction.update({
+          content: [`📆 Events attached to **${teamLabel}** (page ${page + 1}/${totalPages}):`, ...lines].join('\n'),
+          embeds: [],
+          components: [pagerRow, ...createTeamConfigFixtureSettingsRows(team), createBackButtonRow(`admin_back_team_config:${team}`)]
+        });
         return;
       }
 
@@ -5687,16 +5701,16 @@ module.exports = {
       }
 
       const [, sourceMessageId = ''] = interaction.customId.split(':');
-      const rawTeamKey = interaction.fields.getTextInputValue('team_key').trim().toLowerCase();
       const teamLabel = interaction.fields.getTextInputValue('team_label').trim();
       const teamEmoji = interaction.fields.getTextInputValue('team_emoji').trim() || '🔹';
       const teamGender = interaction.fields.getTextInputValue('team_gender').trim().toLowerCase();
-      const teamKey = rawTeamKey.replace(/[^a-z0-9_-]/g, '');
-
-      if (!teamKey || teamKey.length < 2) {
-        await interaction.reply({ content: 'Team key must contain at least 2 valid characters (a-z, 0-9, _ or -).', flags: MessageFlags.Ephemeral });
-        return;
-      }
+      const existingTeamNumbers = Object.keys(config.teams || {})
+        .map((key) => /^team(\d+)$/i.exec(key)?.[1])
+        .filter(Boolean)
+        .map((num) => Number.parseInt(num, 10))
+        .filter((num) => Number.isInteger(num) && num > 0);
+      const nextTeamNumber = existingTeamNumbers.length ? Math.max(...existingTeamNumbers) + 1 : 1;
+      const teamKey = `team${nextTeamNumber}`;
 
       if (config.teams?.[teamKey]) {
         await interaction.reply({ content: `Team \`${teamKey}\` already exists.`, flags: MessageFlags.Ephemeral });
@@ -5730,7 +5744,7 @@ module.exports = {
       }
 
       await interaction.editReply({
-        content: `${renderProgressMessage(100, `Team created: **${teamLabel}** (\`${teamKey}\`).`)}\nSaved in config at \`teams.${teamKey}.label\` (team key-driven, not forced to mens).\n\n${getTeamManagementSummary()}`,
+        content: `${renderProgressMessage(100, `Team created: **${teamLabel}**.`)}\nSaved in config at \`teams.${teamKey}.label\`.\n\n${getTeamManagementSummary()}`,
         embeds: [],
         components: [...createTeamButtonsRows(loadConfig()), createTeamManagementRow()]
       });
