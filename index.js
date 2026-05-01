@@ -991,7 +991,6 @@ async function handleSetupInteraction(interaction) {
     const sourceMessageId = interaction.customId.split(':')[1] || '';
     const updated = await updateSetupMessageFromModal(interaction, sourceMessageId);
     if (updated) {
-      await interaction.deleteReply().catch(() => null);
       return true;
     }
     await interaction.followUp({
@@ -1016,7 +1015,6 @@ async function handleSetupInteraction(interaction) {
     const sourceMessageId = interaction.customId.split(':')[1] || '';
     const updated = await updateSetupMessageFromModal(interaction, sourceMessageId);
     if (updated) {
-      await interaction.deleteReply().catch(() => null);
       return true;
     }
     await interaction.followUp({
