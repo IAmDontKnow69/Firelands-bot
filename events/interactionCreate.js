@@ -3574,7 +3574,6 @@ module.exports = {
           await triggerGoogleSync(context);
           await interaction.editReply({ content: `✅ Absence confirmed for <@${playerId}>. Closing this absence chat now.` });
           const member = await interaction.guild.members.fetch(playerId).catch(() => null);
-          await member?.send(`✅ Your not-attending request for **${event.title}** (${getCompactDateLabel(event.date)}) was confirmed by **${interaction.user.tag}**.`).catch(() => null);
 
           const playerProfile = getPlayerProfile(playerId) || {};
           const playerName = playerProfile.customName || member?.displayName || member?.user?.globalName || member?.user?.username || `<@${playerId}>`;
@@ -3778,8 +3777,6 @@ module.exports = {
         });
 
         await interaction.reply({ content: `✅ Absence confirmed for <@${targetUserId}>.` });
-        const targetMember = await interaction.guild.members.fetch(targetUserId).catch(() => null);
-        await targetMember?.send(`✅ Your not-attending request for **${event.title}** (${getCompactDateLabel(event.date)}) was confirmed by **${interaction.user.tag}**.`).catch(() => null);
         await triggerGoogleSync(context);
         deleteAbsenceTicket(interaction.channelId);
         await context.sendLog(`✅ ${interaction.user.tag} confirmed absence for <@${targetUserId}> on **${event.title}**.`);
@@ -5271,15 +5268,6 @@ module.exports = {
           createdBy: interaction.user.id,
           createdAt: new Date().toISOString()
         });
-
-        await interaction.user.send({
-          content: [
-            `🧾 Your absence ticket was created for **${event.title}**.`,
-            `📅 ${eventDateLabel}`,
-            `📝 Reason: ${reason}`,
-            `🔗 Open ticket: ${ticketUrl}`
-          ].join('\n')
-        }).catch(() => null);
 
         await interaction.editReply({
           content: [

@@ -107,7 +107,7 @@ async function buildPlayerHubResponse(interaction, context) {
           ].join('\n')
         }
       )
-      .setFooter({ text: 'Use the buttons below to manage your profile, fixtures, vacations, notifications, and coach chat.' });
+      .setFooter({ text: 'Use the buttons below to manage your profile, fixtures, vacations, and coach chat.' });
 
     const row1 = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('player_profile_manager').setLabel('🪪 Profile Manager').setStyle(ButtonStyle.Primary),
@@ -116,7 +116,6 @@ async function buildPlayerHubResponse(interaction, context) {
     );
     const row2 = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('player_vacation_open').setLabel('🌴 Vacation').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId('player_delivery_mode').setLabel('🔔 Notification Settings').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('player_talk_to_coaches').setLabel('💬 Talk to your coaches').setStyle(ButtonStyle.Secondary)
     );
 
