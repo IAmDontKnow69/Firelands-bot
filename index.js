@@ -868,7 +868,7 @@ async function handleSetupInteraction(interaction) {
   if (interaction.customId === 'setup_validate_google' && interaction.isButton()) {
     await interaction.update({
       content: buildGoogleConnectionCheckProgress(0, 'Starting checks'),
-      components: []
+      components: createSetupRows()
     }).catch(() => null);
 
     const config = getConfig();
@@ -887,7 +887,7 @@ async function handleSetupInteraction(interaction) {
       const updateCheckProgress = async (percent, step) => {
         await interaction.message?.edit({
           content: buildGoogleConnectionCheckProgress(percent, step),
-          components: []
+          components: createSetupRows()
         }).catch(() => null);
       };
 
