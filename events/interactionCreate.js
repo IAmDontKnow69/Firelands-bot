@@ -3746,6 +3746,7 @@ module.exports = {
           ? getCoachAddressLabel(config, interaction.member, profile, event.team, fallbackName)
           : fallbackName;
         await interaction.editReply({ content: `:white_check_mark: You are marked as attending for ${event.title} (${getCompactDateLabel(event.date)}).` });
+        await updateAttendancePromptToConfirmation(interaction, event, attendanceName, 'attending');
         await triggerGoogleSync(context);
         await notifyCoachAndAdminOnAttending(interaction, context, parsed.eventId, event, attendanceName, responderType);
         return;
@@ -5297,6 +5298,7 @@ ${picker.text}`, embeds: [], components: picker.rows });
         content: `:red_circle: You are marked as not attending for ${event.title} (${eventDateLabel}).`,
         flags: MessageFlags.Ephemeral
       });
+      await updateAttendancePromptToConfirmation(interaction, event, playerDisplayName, 'not attending');
       await triggerGoogleSync(context);
 
       const coachTitle = isCoachResponder ? getCoachPositionLabel(getCoachPositionForTeam(profile || {}, event.team, config), config) : '';
