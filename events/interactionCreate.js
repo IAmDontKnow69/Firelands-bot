@@ -425,6 +425,7 @@ function createTeamConfigFixtureSettingsRow(team) {
     new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:fixture_team`).setLabel('🔁 Manually Assign Fixture').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:auto_assign_fixtures`).setLabel('⚡ Auto Assign Fixtures').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:show_team_events`).setLabel('📆 Show Team Events').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:remove_fixture`).setLabel('🗑️ Remove Fixture').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:force_send_attendance`).setLabel('📣 Force Send Attendance').setStyle(ButtonStyle.Secondary)
   );
 }
@@ -450,7 +451,7 @@ function getUpcomingFixtures(db = {}) {
     });
 }
 
-function createFixturePagerRows(config, team, page = 0, events = []) {
+function createFixturePagerRows(config, team, page = 0, events = [], mode = 'admin_fixture_pick') {
   const perPage = 9;
   const totalPages = Math.max(1, Math.ceil(events.length / perPage));
   const safePage = Math.min(Math.max(page, 0), totalPages - 1);
@@ -460,7 +461,7 @@ function createFixturePagerRows(config, team, page = 0, events = []) {
   pageItems.forEach((event, index) => {
     numberRow.addComponents(
       new ButtonBuilder()
-        .setCustomId(`admin_fixture_pick:${team}:${event.id}:${safePage}`)
+        .setCustomId(`${mode}:${team}:${event.id}:${safePage}`)
         .setLabel(String(index + 1))
         .setStyle(ButtonStyle.Primary)
     );
@@ -699,14 +700,9 @@ function buildLocationGroupsFromEvents(events, config) {
 
 function createForceAttendanceWindowRow(team) {
   return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId(`admin_force_attendance_window:${team}`)
-      .setPlaceholder('Choose force-send window')
-      .addOptions([
-        { label: 'Next event only', value: 'next_event', description: 'Send attendance for the next fixture only' },
-        { label: 'Next 14 days', value: 'next_14_days', description: 'Send all fixtures in the next 14 days' },
-        { label: 'Next 30 days', value: 'next_30_days', description: 'Send all fixtures in the next 30 days' }
-      ])
+    new ButtonBuilder().setCustomId(`admin_force_attendance_window:${team}:next_event`).setLabel('Next Event').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`admin_force_attendance_window:${team}:next_14_days`).setLabel('Next 14 Days').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_force_attendance_window:${team}:next_30_days`).setLabel('Next 30 Days').setStyle(ButtonStyle.Secondary)
   );
 }
 
@@ -3395,7 +3391,8 @@ module.exports = {
       }
 
       if (parsed.action === 'attend_yes') {
-        if (!hasRole(interaction.member, teamRoles.player) && !hasRole(interaction.member, teamRoles.coach)) {
+        const memberForRole = interaction.member || (interaction.guild ? await interaction.guild.members.fetch(interaction.user.id).catch(() => null) : null);
+        if (!hasRole(memberForRole, teamRoles.player) && !hasRole(memberForRole, teamRoles.coach)) {
           await interaction.reply({ content: 'Only players/coaches for this team can respond.', flags: MessageFlags.Ephemeral });
           return;
         }
@@ -3412,7 +3409,7 @@ module.exports = {
           return;
         }
 
-        const responderType = hasRole(interaction.member, teamRoles.coach) && !hasRole(interaction.member, teamRoles.player)
+        const responderType = hasRole(memberForRole, teamRoles.coach) && !hasRole(memberForRole, teamRoles.player)
           ? 'coach'
           : 'player';
         setResponse(parsed.eventId, interaction.user.id, {
@@ -3435,7 +3432,8 @@ module.exports = {
       }
 
       if (parsed.action === 'attend_no') {
-        if (!hasRole(interaction.member, teamRoles.player) && !hasRole(interaction.member, teamRoles.coach)) {
+        const memberForRole = interaction.member || (interaction.guild ? await interaction.guild.members.fetch(interaction.user.id).catch(() => null) : null);
+        if (!hasRole(memberForRole, teamRoles.player) && !hasRole(memberForRole, teamRoles.coach)) {
           await interaction.reply({ content: 'Only players/coaches for this team can respond.', flags: MessageFlags.Ephemeral });
           return;
         }
@@ -3447,7 +3445,7 @@ module.exports = {
           return;
         }
 
-        const responderType = hasRole(interaction.member, teamRoles.coach) && !hasRole(interaction.member, teamRoles.player)
+        const responderType = hasRole(memberForRole, teamRoles.coach) && !hasRole(memberForRole, teamRoles.player)
           ? 'coach'
           : 'player';
         const modalToken = `${parsed.eventId}:${interaction.user.id}`.slice(-80);
@@ -4270,17 +4268,20 @@ module.exports = {
         return;
       }
 
-      if (interaction.customId.startsWith('admin_fixture_page:')) {
+      if (interaction.customId.startsWith('admin_fixture_page:') || interaction.customId.startsWith('admin_fixture_unpick_page:')) {
         const [, team, pageRaw] = interaction.customId.split(':');
         const page = Number.parseInt(pageRaw || '0', 10) || 0;
-        const pager = createFixturePagerRows(loadConfig(), team, page, getUpcomingFixtures(loadDb()));
+        const isUnpick = interaction.customId.startsWith('admin_fixture_unpick_page:');
+        const sourceEvents = isUnpick ? getUpcomingFixtures(loadDb()).filter((event) => event.team === team) : getUpcomingFixtures(loadDb());
+        const pager = createFixturePagerRows(loadConfig(), team, page, sourceEvents, isUnpick ? 'admin_fixture_unpick' : 'admin_fixture_pick');
         await interaction.update({ content: pager.text, embeds: [], components: pager.rows });
         return;
       }
 
-      if (interaction.customId.startsWith('admin_fixture_pick:')) {
+      if (interaction.customId.startsWith('admin_fixture_pick:') || interaction.customId.startsWith('admin_fixture_unpick:')) {
         await interaction.deferUpdate();
         const [, team, eventId, pageRaw] = interaction.customId.split(':');
+        const isUnpick = interaction.customId.startsWith('admin_fixture_unpick:');
         const db = loadDb();
         const target = db.events[eventId];
 
@@ -4293,14 +4294,16 @@ module.exports = {
           return;
         }
 
-        target.team = team;
+        target.team = isUnpick ? '' : team;
         saveDb(db);
         await triggerGoogleSync(context);
 
         await interaction.editReply({
-          content: `✅ Assigned **${target.title}** to **${getTeamMeta(config, team).label}**.`,
+          content: isUnpick
+            ? `✅ Removed **${target.title}** from **${getTeamMeta(config, team).label}** fixtures.`
+            : `✅ Assigned **${target.title}** to **${getTeamMeta(config, team).label}**.`,
           embeds: [],
-          components: createFixturePagerRows(loadConfig(), team, Number.parseInt(pageRaw || '0', 10) || 0, getUpcomingFixtures(loadDb())).rows
+          components: createFixturePagerRows(loadConfig(), team, Number.parseInt(pageRaw || '0', 10) || 0, (isUnpick ? getUpcomingFixtures(loadDb()).filter((event) => event.team === team) : getUpcomingFixtures(loadDb())), isUnpick ? 'admin_fixture_unpick' : 'admin_fixture_pick').rows
         });
         return;
       }
@@ -4538,8 +4541,7 @@ module.exports = {
 
       if (interaction.customId.startsWith('admin_force_attendance_window:')) {
         await interaction.deferUpdate();
-        const team = interaction.customId.split(':')[1];
-        const window = interaction.values[0];
+        const [, team, window] = interaction.customId.split(':');
         const latestConfig = loadConfig();
         const db = loadDb();
         let remoteEvents = [];
@@ -4847,7 +4849,8 @@ module.exports = {
       }
 
       const teamRoles = teamRolesMap[event.team];
-      if (!hasRole(interaction.member, teamRoles.player) && !hasRole(interaction.member, teamRoles.coach)) {
+      const memberForRole = interaction.member || (interaction.guild ? await interaction.guild.members.fetch(interaction.user.id).catch(() => null) : null);
+        if (!hasRole(memberForRole, teamRoles.player) && !hasRole(memberForRole, teamRoles.coach)) {
         await interaction.reply({ content: 'Only players/coaches for this team can respond.', flags: MessageFlags.Ephemeral });
         return;
       }
@@ -4862,14 +4865,14 @@ module.exports = {
         await interaction.reply({ content: getGenderMismatchMessage(getTeamMeta(config, event.team).label, requiredGender), flags: MessageFlags.Ephemeral });
         return;
       }
-      const isCoachResponder = hasRole(interaction.member, teamRoles.coach) && !hasRole(interaction.member, teamRoles.player);
+      const isCoachResponder = hasRole(memberForRole, teamRoles.coach) && !hasRole(memberForRole, teamRoles.player);
       const playerDisplayName = buildRichPlayerMention(config, interaction.user, interaction.member, profile, event.team);
 
       setResponse(eventId, interaction.user.id, {
         status: 'pending_no',
         reason,
         confirmed: false,
-        responderType: hasRole(interaction.member, teamRoles.coach) && !hasRole(interaction.member, teamRoles.player) ? 'coach' : 'player',
+        responderType: hasRole(memberForRole, teamRoles.coach) && !hasRole(memberForRole, teamRoles.player) ? 'coach' : 'player',
         username: playerDisplayName,
         updatedAt: new Date().toISOString()
       });
