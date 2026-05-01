@@ -1850,7 +1850,7 @@ async function triggerGoogleSync(context) {
   }
 }
 
-async function notifyCoachAndAdminOnAttending(interaction, context, event, attendanceName, responderType) {
+async function notifyCoachAndAdminOnAttending(interaction, context, eventId, event, attendanceName, responderType) {
   await context.sendLog(`🟢 ${attendanceName} marked attending for **${event.title}** (${getEventDateLabel(event.date)}).`);
   const config = loadConfig();
   const coachChannelId = config.channels?.staffRooms?.[event.team];
@@ -1858,7 +1858,7 @@ async function notifyCoachAndAdminOnAttending(interaction, context, event, atten
   const coachChannel = await interaction.guild?.channels?.fetch(coachChannelId).catch(() => null);
   if (!coachChannel?.isTextBased()) return;
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`coach_event_attendance_list:${event.id}`).setLabel('Current attendance list').setStyle(ButtonStyle.Primary)
+    new ButtonBuilder().setCustomId(`coach_event_attendance_list:${eventId}`).setLabel('Current attendance list').setStyle(ButtonStyle.Primary)
   );
   await coachChannel.send({
     content: `🟢 ${attendanceName} (${responderType === 'coach' ? 'Coach' : 'Player'}) marked attending for **${event.title}** (${getEventDateLabel(event.date)}).`,
@@ -3709,7 +3709,7 @@ module.exports = {
           : fallbackName;
         await interaction.reply({ content: `:white_check_mark: You are marked as attending for ${event.title} (${getCompactDateLabel(event.date)}).`, flags: MessageFlags.Ephemeral });
         await triggerGoogleSync(context);
-        await notifyCoachAndAdminOnAttending(interaction, context, event, attendanceName, responderType);
+        await notifyCoachAndAdminOnAttending(interaction, context, parsed.eventId, event, attendanceName, responderType);
         return;
       }
 
@@ -3776,7 +3776,7 @@ module.exports = {
           updatedAt: new Date().toISOString()
         });
 
-        await interaction.reply({ content: `✅ Absence confirmed for <@${targetUserId}>.` });
+        await interaction.reply({ content: `✅ Absence confirmed for <@${targetUserId}>.`, flags: MessageFlags.Ephemeral });
         await triggerGoogleSync(context);
         deleteAbsenceTicket(interaction.channelId);
         await context.sendLog(`✅ ${interaction.user.tag} confirmed absence for <@${targetUserId}> on **${event.title}**.`);
@@ -5206,21 +5206,13 @@ module.exports = {
         username: playerDisplayName,
         updatedAt: new Date().toISOString()
       });
+      const eventDateLabel = getCompactDateLabel(event.date);
       await interaction.reply({
-        content: [
-          `Only you can see this.`,
-          `${playerDisplayName}, your absence for:`,
-          `📅 ${event.title}`,
-          `🕒 ${new Date(event.date).toLocaleString()}`,
-          ':exclamation: The reason why:',
-          reason,
-          'is pending coach confirmation.'
-        ].join('\n'),
+        content: `:red_circle: You are marked as not attending for ${event.title} (${eventDateLabel}).`,
         flags: MessageFlags.Ephemeral
       });
       await triggerGoogleSync(context);
 
-      const eventDateLabel = getCompactDateLabel(event.date);
       const coachTitle = isCoachResponder ? getCoachPositionLabel(getCoachPositionForTeam(profile || {}, event.team, config), config) : '';
       const baseChannelName = buildAbsenceTicketChannelName(config, event, profile, interaction.member, interaction.user);
       const channelName = isCoachResponder ? sanitizeChannelName(`${coachTitle}-${baseChannelName}`) : baseChannelName;
@@ -5271,7 +5263,6 @@ module.exports = {
 
         await interaction.editReply({
           content: [
-            'Only you can see this.',
             `:red_circle: You are marked as not attending for ${event.title} (${eventDateLabel}).`,
             `🔗 Absence chat: ${ticketUrl}`
           ].join('\n')
