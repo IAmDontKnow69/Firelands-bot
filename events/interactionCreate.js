@@ -3710,21 +3710,22 @@ module.exports = {
       }
 
       if (parsed.action === 'attend_yes') {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         const memberForRole = interaction.member || (interaction.guild ? await interaction.guild.members.fetch(interaction.user.id).catch(() => null) : null);
         if (!hasRole(memberForRole, teamRoles.player) && !hasRole(memberForRole, teamRoles.coach)) {
-          await interaction.reply({ content: 'Only players/coaches for this team can respond.', flags: MessageFlags.Ephemeral });
+          await interaction.editReply({ content: 'Only players/coaches for this team can respond.' });
           return;
         }
         const profile = getPlayerProfile(interaction.user.id) || {};
         const requiredGender = config.teams?.[event.team]?.gender;
         if (!teamAllowsGender(requiredGender, profile.gender)) {
-          await interaction.reply({ content: getGenderMismatchMessage(getTeamMeta(config, event.team).label, requiredGender), flags: MessageFlags.Ephemeral });
+          await interaction.editReply({ content: getGenderMismatchMessage(getTeamMeta(config, event.team).label, requiredGender) });
           return;
         }
 
         const existing = db.events[parsed.eventId]?.responses?.[interaction.user.id];
         if (existing?.status === 'yes') {
-          await interaction.reply({ content: 'You are already marked as attending for this event.', flags: MessageFlags.Ephemeral });
+          await interaction.editReply({ content: 'You are already marked as attending for this event.' });
           return;
         }
 
@@ -3744,7 +3745,7 @@ module.exports = {
         const attendanceName = responderType === 'coach'
           ? getCoachAddressLabel(config, interaction.member, profile, event.team, fallbackName)
           : fallbackName;
-        await interaction.reply({ content: `:white_check_mark: You are marked as attending for ${event.title} (${getCompactDateLabel(event.date)}).`, flags: MessageFlags.Ephemeral });
+        await interaction.editReply({ content: `:white_check_mark: You are marked as attending for ${event.title} (${getCompactDateLabel(event.date)}).` });
         await triggerGoogleSync(context);
         await notifyCoachAndAdminOnAttending(interaction, context, parsed.eventId, event, attendanceName, responderType);
         return;
