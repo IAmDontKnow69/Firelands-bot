@@ -1026,19 +1026,19 @@ function createPlayerOptions(guild = null, config = loadConfig()) {
 
 function createPlayerManagementRows(mode = 'player', guild = null) {
   const config = loadConfig();
-  const options = Object.keys(config.teams || {}).slice(0, 24).map((team) => ({
-    ...buildTeamOption(config, team),
-    description: `Show players for ${getTeamMeta(config, team).label}`.slice(0, 100)
-  }));
-  options.push({ label: 'Unattached Players', value: 'unattached', description: 'Players with no team assignment' });
-  return [new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId('admin_player_pick_team')
-      .setPlaceholder('Pick a team to view players')
-      .setMinValues(1)
-      .setMaxValues(1)
-      .addOptions(options)
-  )];
+  const teamKeys = [...Object.keys(config.teams || {}), 'unattached'];
+  const buttons = teamKeys.slice(0, 25).map((team) => {
+    const label = team === 'unattached' ? 'Unattached Players' : getTeamMeta(config, team).label;
+    return new ButtonBuilder()
+      .setCustomId(`admin_player_pick_team_btn:${team}`)
+      .setLabel(label.slice(0, 80))
+      .setStyle(ButtonStyle.Secondary);
+  });
+  const rows = [];
+  for (let i = 0; i < buttons.length; i += 5) {
+    rows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
+  }
+  return rows;
 }
 
 function getPlayerSortKey(userId = '') {
@@ -1146,12 +1146,12 @@ function createPlayerProfileActionRow(userId, mode = 'player') {
   );
   if (mode === 'coach') row.addComponents(new ButtonBuilder().setCustomId(`admin_player_action:set_coaching_initials:${userId}:${mode}`).setLabel('🔤 Coaching Initials').setStyle(ButtonStyle.Primary));
   else row.addComponents(new ButtonBuilder().setCustomId(`admin_player_action:set_shirt:${userId}:${mode}`).setLabel('👕 Shirt Number for Teams').setStyle(ButtonStyle.Primary));
-  row.addComponents(new ButtonBuilder().setCustomId(`admin_player_action:set_face:${userId}:${mode}`).setLabel('🖼️ Face URL').setStyle(ButtonStyle.Secondary));
   return row;
 }
 
 function createPlayerProfileActionRow2(userId, mode = 'player') {
   const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`admin_player_action:set_face:${userId}:${mode}`).setLabel('🖼️ Face URL').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`admin_player_action:set_teams:${userId}:${mode}`).setLabel('🧩 Teams').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`admin_player_action:set_gender:${userId}:${mode}`).setLabel('⚧️ Gender').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`admin_player_action:set_positions:${userId}:${mode}`).setLabel('📍 Positions').setStyle(ButtonStyle.Secondary),
@@ -3862,8 +3862,8 @@ module.exports = {
         return;
       }
 
-      if (interaction.customId === 'admin_player_pick_team') {
-        const team = interaction.values[0];
+      if (interaction.customId.startsWith('admin_player_pick_team_btn:')) {
+        const [, team] = interaction.customId.split(':');
         await interaction.guild?.members.fetch().catch(() => null);
         const picker = createPlayerNumberPickerRows(interaction.guild, loadConfig(), team, 0);
         await interaction.update({ content: picker.text, embeds: [], components: picker.rows });

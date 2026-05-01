@@ -977,7 +977,7 @@ async function handleSetupInteraction(interaction) {
     return true;
   }
   if (interaction.customId.startsWith('setup_set_calendar_id_modal') && interaction.isModalSubmit()) {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => null);
+    await interaction.deferUpdate().catch(() => null);
     const calendarInput = interaction.fields.getTextInputValue('calendar_id').trim();
     const calendarId = parseCalendarId(calendarInput);
     if (calendarId) {
@@ -994,14 +994,15 @@ async function handleSetupInteraction(interaction) {
       await interaction.deleteReply().catch(() => null);
       return true;
     }
-    await interaction.reply({
+    await interaction.followUp({
       content: buildSetupSummary(getConfig()),
-      components: createSetupRows()
+      components: createSetupRows(),
+      flags: MessageFlags.Ephemeral
     }).catch(() => null);
     return true;
   }
   if (interaction.customId.startsWith('setup_set_sheet_url_modal') && interaction.isModalSubmit()) {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => null);
+    await interaction.deferUpdate().catch(() => null);
     const input = interaction.fields.getTextInputValue('sheet_input').trim();
     const spreadsheetId = getSpreadsheetId({ googleSync: { spreadsheetId: input } }) || input;
     if (spreadsheetId) {
@@ -1018,9 +1019,10 @@ async function handleSetupInteraction(interaction) {
       await interaction.deleteReply().catch(() => null);
       return true;
     }
-    await interaction.reply({
+    await interaction.followUp({
       content: buildSetupSummary(getConfig()),
-      components: createSetupRows()
+      components: createSetupRows(),
+      flags: MessageFlags.Ephemeral
     }).catch(() => null);
     return true;
   }
@@ -1255,14 +1257,17 @@ function getAttendanceChannelId(config, team) {
 function getAttendanceConfigIssue(config, team) {
   const progress = getTeamSetupProgress(config, team);
   if (progress.isComplete) return '';
-  return `Team setup incomplete for ${team}. Missing: ${progress.missing.join(', ')}`;
+  const teamName = config.teams?.[team]?.label || team;
+  return `Team setup incomplete for ${teamName}. Missing: ${progress.missing.join(', ')}`;
 }
 
 async function warnMissingAttendanceConfig(team, issue) {
+  const config = getConfig();
+  const teamName = config.teams?.[team]?.label || team;
   const warningKey = `${team}:${issue}`;
   if (missingAttendanceConfigWarnings.has(warningKey)) return;
   missingAttendanceConfigWarnings.add(warningKey);
-  await sendLog(`⚠️ Calendar sync skipped posting for **${team}**: ${issue}`);
+  await sendLog(`⚠️ Calendar sync skipped posting for **${teamName}**: ${issue}`);
 }
 
 function clearAttendanceWarning(team, issue) {
