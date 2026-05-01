@@ -743,13 +743,16 @@ function createForceAttendancePickerRows(team, events = [], page = 0) {
   const rows = [];
 
   if (items.length) {
-    const numberRow = new ActionRowBuilder();
-    items.forEach((event, idx) => {
-      numberRow.addComponents(
-        new ButtonBuilder().setCustomId(`admin_force_attendance_pick_num:${team}:${safePage}:${idx}`).setLabel(String(idx)).setStyle(ButtonStyle.Primary)
-      );
-    });
-    rows.push(numberRow);
+    for (let start = 0; start < items.length; start += 5) {
+      const numberRow = new ActionRowBuilder();
+      items.slice(start, start + 5).forEach((event, offset) => {
+        const idx = start + offset;
+        numberRow.addComponents(
+          new ButtonBuilder().setCustomId(`admin_force_attendance_pick_num:${team}:${safePage}:${idx}`).setLabel(String(idx)).setStyle(ButtonStyle.Primary)
+        );
+      });
+      rows.push(numberRow);
+    }
   }
 
   rows.push(createForceAttendanceWindowRow(team));
