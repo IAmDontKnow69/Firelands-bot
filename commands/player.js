@@ -32,18 +32,19 @@ module.exports = {
     .setDMPermission(true),
 
   async execute(interaction, context) {
-    const config = context.getConfig();
-    const { member } = await resolveGuildMember(interaction, config);
-    const playerTeams = member ? getPlayerTeams(member, config.roles) : [];
+    try {
+      const config = context.getConfig();
+      const { member } = await resolveGuildMember(interaction, config);
+      const playerTeams = member ? getPlayerTeams(member, config.roles) : [];
 
-    if (!playerTeams.length) {
-      await interaction.reply({ content: 'You are not assigned as a player for any team.', flags: MessageFlags.Ephemeral });
-      return;
-    }
+      if (!playerTeams.length) {
+        await interaction.reply({ content: 'You are not assigned as a player for any team.', flags: MessageFlags.Ephemeral });
+        return;
+      }
 
-    const db = loadDb();
-    const now = Date.now();
-    const userId = interaction.user.id;
+      const db = loadDb();
+      const now = Date.now();
+      const userId = interaction.user.id;
 
     const events = Object.entries(db.events)
       .map(([eventId, event]) => ({ eventId, ...event }))
@@ -65,16 +66,20 @@ module.exports = {
     const profile = getPlayerProfile(userId) || {};
     const activeVacations = getActiveVacationsForUser(userId);
 
-    const nextGames = events.length
-      ? events.map((event, index) => {
+      const nextGames = events.length
+        ? events.map((event, index) => {
         const when = new Date(event.date).toLocaleString();
         const location = event.location || 'Location not set';
-        return `${index + 1}. **${event.title}**\n   Team: **${config.teams?.[event.team]?.label || event.team}** · ${eventTypeLabel(determineEventType(event, config))}\n   When: ${when}\n   Where: ${location}`;
-      }).join('\n\n')
-      : 'No upcoming games/events found for your teams.';
+        const response = event.responses?.[userId];
+        const statusText = response?.status === 'yes'
+          ? '✅ Marked as attending'
+          : (['pending_no', 'confirmed_no'].includes(response?.status) ? `❌ Marked as not attending${response?.reason ? ` — ${response.reason}` : ''}` : '❓ Not answered');
+        return `${index + 1}. **${event.title}**\n   Team: **${config.teams?.[event.team]?.label || event.team}** · ${eventTypeLabel(determineEventType(event, config))}\n   When: ${when}\n   Where: ${location}\n   Status: ${statusText}`;
+        }).join('\n\n')
+        : 'No upcoming games/events found for your teams.';
 
     const teamLabels = playerTeams.map((team) => config.teams?.[team]?.label || team);
-    const embed = new EmbedBuilder()
+      const embed = new EmbedBuilder()
       .setTitle('⚽ Player Hub')
       .setDescription([
         `Hi **${profile.customName || interaction.member?.displayName || interaction.user.username}** 👋`,
@@ -85,15 +90,16 @@ module.exports = {
         `🔴 Not Attending: **${attendanceTotals.no}**`,
         `❓ No Response: **${attendanceTotals.noResponse}**`,
         '',
+        '### Next 5 Games',
+        nextGames,
+        '',
         '### Upcoming Vacation Times',
         activeVacations.length
           ? activeVacations.map((vac) => `• **${vac.title}** (${vac.team}) ${vac.startDate} → ${vac.endDate} — ${vac.status}`).join('\n')
-          : 'No active vacations.',
-        '',
-        '### Next 5 Games',
-        nextGames
+          : 'No active vacations.'
       ].join('\n'))
       .setColor(0x2ecc71)
+      .setThumbnail(profile.faceUrl || interaction.user.displayAvatarURL())
       .addFields(
         {
           name: 'Profile',
@@ -122,6 +128,14 @@ module.exports = {
       new ButtonBuilder().setCustomId('player_talk_to_coaches').setLabel('💬 Talk to your coaches').setStyle(ButtonStyle.Secondary)
     );
 
-    await interaction.reply({ embeds: [embed], components: [row1, row2], flags: MessageFlags.Ephemeral });
+      await interaction.reply({ embeds: [embed], components: [row1, row2], flags: MessageFlags.Ephemeral });
+    } catch (error) {
+      const log = `[PLAYER_UI_ERROR] user=${interaction.user?.id} name=${interaction.user?.tag || interaction.user?.username} message="${error.message}"\n${error.stack}`;
+      context.sendLog(log);
+      await interaction.reply({
+        content: `⚠️ /player feature is currently not working.\nPlease copy this log into Codex:\n\`\`\`\n${log.slice(0, 1500)}\n\`\`\``,
+        flags: MessageFlags.Ephemeral
+      }).catch(() => null);
+    }
   }
 };
