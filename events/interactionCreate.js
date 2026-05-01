@@ -974,10 +974,10 @@ function buildAbsenceTicketChannelName(config, event, profile, member, user) {
   return sanitizeChannelName(`${teamEmoji}${captainEmoji}-${displayName}-${eventDateLabel}-${event.title}`);
 }
 
-function buildEventAttendanceSnapshot(eventId, config, guild) {
+function buildEventAttendanceSnapshot(eventId, config, guild, page = 1, pageSize = 20) {
   const db = loadDb();
   const event = db.events?.[eventId];
-  if (!event) return 'Event not found.';
+  if (!event) return { content: 'Event not found.', totalPages: 1 };
   const teamRoles = config.roles?.[event.team] || {};
   const playerRole = teamRoles.player ? guild.roles.cache.get(teamRoles.player) : null;
   const coachRole = teamRoles.coach ? guild.roles.cache.get(teamRoles.coach) : null;
@@ -985,14 +985,26 @@ function buildEventAttendanceSnapshot(eventId, config, guild) {
   const responses = event.responses || {};
   const lines = [];
   for (const userId of trackedIds) {
+    const profile = getPlayerProfile(userId) || {};
+    const positions = getSortedPositions(profile);
+    const positionLabel = positions.length ? positions.map(normalizePositionLabel).join('/') : 'No position';
     const response = responses[userId];
     const status = !response ? '❓ undecided' : response.status === 'yes' ? '✅ attending' : `🔴 not attending (${response.reason || 'No reason'})`;
-    lines.push(`• <@${userId}> — ${status}`);
+    lines.push(`• <@${userId}> — ${positionLabel} — ${status}`);
   }
-  return [
-    `📋 Attendance List — **${event.title}** (${new Date(event.date).toLocaleString()})`,
-    lines.length ? lines.join('\n') : 'No roster members found for this team.'
-  ].join('\n');
+  const totalPages = Math.max(1, Math.ceil(lines.length / pageSize));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const start = (safePage - 1) * pageSize;
+  const pageLines = lines.slice(start, start + pageSize);
+  return {
+    content: [
+      `📋 Attendance List — **${event.title}** (${new Date(event.date).toLocaleString()})`,
+      `Page ${safePage}/${totalPages}`,
+      pageLines.length ? pageLines.join('\n') : 'No roster members found for this team.'
+    ].join('\n'),
+    totalPages,
+    page: safePage
+  };
 }
 
 function createPlayerOptions(guild = null, config = loadConfig()) {
@@ -1091,15 +1103,8 @@ function createPlayerNumberPickerRows(guild, config, team = 'unattached', page =
   return { rows, text: `Pick player in **${title}** (page ${safePage + 1}/${totalPages})\n\n${list}` };
 }
 
-function createCoachManagementRow(config, guild) {
-  if (!guild) {
-    return new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId('admin_coach_pick')
-        .setPlaceholder('Select a coach to manage')
-        .addOptions([{ label: 'No coaches found', value: 'none', description: 'Assign coach roles first' }])
-    );
-  }
+function createCoachOptions(guild, config) {
+  if (!guild) return [];
   const coachIds = new Set();
   for (const teamKey of Object.keys(config.teams || {})) {
     const coachRoleId = config.roles?.[teamKey]?.coach;
@@ -1108,7 +1113,7 @@ function createCoachManagementRow(config, guild) {
     for (const memberId of role.members.keys()) coachIds.add(memberId);
   }
 
-  const options = Array.from(coachIds).slice(0, 25).map((userId) => {
+  return Array.from(coachIds).map((userId) => {
     const member = guild.members.cache.get(userId);
     const profile = getPlayerProfile(userId) || {};
     const coachedTeams = Object.keys(config.teams || {}).filter((teamKey) => {
@@ -1123,18 +1128,32 @@ function createCoachManagementRow(config, guild) {
       value: userId,
       description: `Manage coach ${member?.user?.tag || userId}`.slice(0, 100)
     };
-  });
+  }).sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
+}
 
-  if (!options.length) {
-    options.push({ label: 'No coaches found', value: 'none', description: 'Assign coach roles first' });
+function createCoachNumberPickerRows(guild, config, page = 0) {
+  const all = createCoachOptions(guild, config);
+  const perPage = 9;
+  const totalPages = Math.max(1, Math.ceil(all.length / perPage));
+  const safePage = Math.min(Math.max(page, 0), totalPages - 1);
+  const items = all.slice(safePage * perPage, safePage * perPage + perPage);
+  const rows = [];
+  if (items.length) {
+    const numberRow = new ActionRowBuilder();
+    items.forEach((item, idx) => {
+      numberRow.addComponents(
+        new ButtonBuilder().setCustomId(`admin_coach_pick_num:${safePage}:${idx}`).setLabel(String(idx + 1)).setStyle(ButtonStyle.Primary)
+      );
+    });
+    rows.push(numberRow);
   }
-
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId('admin_coach_pick')
-      .setPlaceholder('Select a coach to manage')
-      .addOptions(options)
-  );
+  rows.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`admin_coach_page:${safePage - 1}`).setLabel('<').setStyle(ButtonStyle.Secondary).setDisabled(safePage <= 0),
+    new ButtonBuilder().setCustomId(`admin_coach_page:${safePage + 1}`).setLabel('>').setStyle(ButtonStyle.Secondary).setDisabled(safePage >= totalPages - 1),
+    new ButtonBuilder().setCustomId('admin_back_to_panel').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
+  ));
+  const list = items.map((item, idx) => `${idx + 1}. ${item.label}`).join('\n') || 'No coaches found yet. Assign coach roles first.';
+  return { rows, text: `Pick coach (page ${safePage + 1}/${totalPages})\n\n${list}` };
 }
 
 function createPlayerProfileActionRow(userId, mode = 'player') {
@@ -1839,7 +1858,6 @@ async function notifyCoachAndAdminOnAttending(interaction, context, event, atten
   const coachChannel = await interaction.guild?.channels?.fetch(coachChannelId).catch(() => null);
   if (!coachChannel?.isTextBased()) return;
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`absence_open_profile:coach:${interaction.user.id}`).setLabel('Open profile in /coach').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`coach_event_attendance_list:${event.id}`).setLabel('Current attendance list').setStyle(ButtonStyle.Primary)
   );
   await coachChannel.send({
@@ -2057,7 +2075,9 @@ module.exports = {
           return;
         }
         if (action === 'coach_management') {
-          await interaction.update({ content: getCoachManagementSummary(), embeds: [], components: [createCoachManagementRow(loadConfig(), interaction.guild), createAdminBackButtonRow()] });
+          await interaction.guild?.members.fetch().catch(() => null);
+          const picker = createCoachNumberPickerRows(interaction.guild, loadConfig(), 0);
+          await interaction.update({ content: picker.text, embeds: [], components: picker.rows });
           return;
         }
         if (action === 'club_report') {
@@ -2581,10 +2601,12 @@ module.exports = {
         return;
       }
       if (interaction.customId === 'admin_back_coach_management') {
+        await interaction.guild?.members.fetch().catch(() => null);
+        const picker = createCoachNumberPickerRows(interaction.guild, loadConfig(), 0);
         await interaction.update({
-          content: getCoachManagementSummary(),
+          content: picker.text,
           embeds: [],
-          components: [createCoachManagementRow(loadConfig(), interaction.guild), createAdminBackButtonRow()]
+          components: picker.rows
         });
         return;
       }
@@ -3463,10 +3485,18 @@ module.exports = {
           await interaction.reply({ content: 'Only team coaches/admins can view this attendance list.', flags: MessageFlags.Ephemeral });
           return;
         }
+        const page = Number(interaction.customId.split(':')[2] || '1');
+        const snapshot = buildEventAttendanceSnapshot(eventId, latestConfig, interaction.guild, page);
         await interaction.reply({
-          content: buildEventAttendanceSnapshot(eventId, latestConfig, interaction.guild),
+          content: snapshot.content,
           flags: MessageFlags.Ephemeral
         });
+        if (snapshot.totalPages > 1) {
+          for (let p = 2; p <= snapshot.totalPages; p += 1) {
+            const nextSnapshot = buildEventAttendanceSnapshot(eventId, latestConfig, interaction.guild, p);
+            await interaction.followUp({ content: nextSnapshot.content, flags: MessageFlags.Ephemeral });
+          }
+        }
         return;
       }
 
@@ -3513,8 +3543,7 @@ module.exports = {
             closedReason: 'Player confirmed they can attend.'
           });
           await triggerGoogleSync(context);
-          await interaction.editReply({ content: '🟢 Marked as attending. Closing this absence chat now.' });
-          await interaction.user.send(`✅ You are now marked as attending for **${event.title}** (${getCompactDateLabel(event.date)}).`).catch(() => null);
+          await interaction.editReply({ content: `:white_check_mark: You are marked as attending for ${event.title} (${getCompactDateLabel(event.date)}).` });
           if (dmToken) pendingPlayerAttendDmTokens.delete(dmToken);
           await context.sendLog(`🟢 <@${playerId}> switched to attending for **${event.title}** from the ticket channel.`);
           await closeAbsenceTicketChannel(interaction.channel, 'Player confirmed attending');
@@ -3566,22 +3595,10 @@ module.exports = {
 
         clearResponse(eventId, playerId);
         await triggerGoogleSync(context);
-        const member = await interaction.guild.members.fetch(playerId).catch(() => null);
-        const newDmToken = Math.random().toString(36).slice(2, 12);
-        pendingPlayerAttendDmTokens.set(newDmToken, { eventId, playerId });
-        await member?.send({
-          content: `Your absence request for **${event.title}** (${getCompactDateLabel(event.date)}) was declined. Press below to confirm you can attend.`,
-          components: [new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`absence_dm_attend:${newDmToken}`)
-              .setLabel('🟢 I can attend')
-              .setStyle(ButtonStyle.Primary)
-          )]
-        }).catch(() => null);
         await interaction.editReply({
           content: [
             `↩️ Absence request declined for <@${playerId}>.`,
-            'Player has been asked in DM to confirm they can attend. Closing this absence chat now.'
+            'The player can confirm attendance using the **I can Attend** button in their absence ticket.'
           ].join('\n')
         });
         setAbsenceTicket(interaction.channelId, {
@@ -3691,7 +3708,7 @@ module.exports = {
         const attendanceName = responderType === 'coach'
           ? getCoachAddressLabel(config, interaction.member, profile, event.team, fallbackName)
           : fallbackName;
-        await interaction.reply({ content: '✅ You are marked as attending for this event.', flags: MessageFlags.Ephemeral });
+        await interaction.reply({ content: `:white_check_mark: You are marked as attending for ${event.title} (${getCompactDateLabel(event.date)}).`, flags: MessageFlags.Ephemeral });
         await triggerGoogleSync(context);
         await notifyCoachAndAdminOnAttending(interaction, context, event, attendanceName, responderType);
         return;
@@ -3837,12 +3854,26 @@ module.exports = {
         return;
       }
 
-      if (interaction.customId === 'admin_coach_pick') {
-        const userId = interaction.values[0];
-        if (userId === 'none') {
-          await interaction.reply({ content: 'No coaches found yet. Assign coach roles first.', flags: MessageFlags.Ephemeral });
+      if (interaction.customId.startsWith('admin_coach_page:')) {
+        const page = Number(interaction.customId.split(':')[1] || '0');
+        await interaction.guild?.members.fetch().catch(() => null);
+        const picker = createCoachNumberPickerRows(interaction.guild, loadConfig(), page);
+        await interaction.update({ content: picker.text, embeds: [], components: picker.rows });
+        return;
+      }
+
+      if (interaction.customId.startsWith('admin_coach_pick_num:')) {
+        const [, pageRaw, indexRaw] = interaction.customId.split(':');
+        const page = Number(pageRaw || '0');
+        const idx = Number(indexRaw || '0');
+        const perPage = 9;
+        const all = createCoachOptions(interaction.guild, loadConfig());
+        const picked = all[page * perPage + idx];
+        if (!picked) {
+          await interaction.reply({ content: 'Coach selection is no longer valid. Please try again.', flags: MessageFlags.Ephemeral });
           return;
         }
+        const userId = picked.value;
         const member = await interaction.guild.members.fetch(userId).catch(() => null);
         const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
         const existing = getPlayerProfile(userId) || {};
@@ -5253,7 +5284,7 @@ module.exports = {
         await interaction.editReply({
           content: [
             'Only you can see this.',
-            `🔴 You are marked as **not attending** for **${event.title}** (${eventDateLabel}).`,
+            `:red_circle: You are marked as not attending for ${event.title} (${eventDateLabel}).`,
             `🔗 Absence chat: ${ticketUrl}`
           ].join('\n')
         });
@@ -5270,7 +5301,6 @@ module.exports = {
           components: [
             createAbsenceTicketDecisionRow(),
             new ActionRowBuilder().addComponents(
-              new ButtonBuilder().setCustomId(`absence_open_profile:coach:${interaction.user.id}`).setLabel('Open profile in /coach').setStyle(ButtonStyle.Secondary),
               new ButtonBuilder().setCustomId(`coach_event_attendance_list:${eventId}`).setLabel('Current attendance list').setStyle(ButtonStyle.Primary)
             )
           ]
