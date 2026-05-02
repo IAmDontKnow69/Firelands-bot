@@ -1123,13 +1123,16 @@ function createPlayerNumberPickerRows(guild, config, team = 'unattached', page =
   const items = all.slice(safePage * perPage, safePage * perPage + perPage);
   const rows = [];
   if (items.length) {
-    const numberRow = new ActionRowBuilder();
-    items.forEach((item, idx) => {
-      numberRow.addComponents(
-        new ButtonBuilder().setCustomId(`admin_player_pick_num:${team}:${safePage}:${idx}`).setLabel(String(idx + 1)).setStyle(ButtonStyle.Primary)
-      );
-    });
-    rows.push(numberRow);
+    for (let start = 0; start < items.length; start += 5) {
+      const numberRow = new ActionRowBuilder();
+      items.slice(start, start + 5).forEach((item, offset) => {
+        const idx = start + offset;
+        numberRow.addComponents(
+          new ButtonBuilder().setCustomId(`admin_player_pick_num:${team}:${safePage}:${idx}`).setLabel(String(idx + 1)).setStyle(ButtonStyle.Primary)
+        );
+      });
+      rows.push(numberRow);
+    }
   }
   rows.push(new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`admin_player_team_page:${team}:${safePage - 1}`).setLabel('<').setStyle(ButtonStyle.Secondary).setDisabled(safePage <= 0),
@@ -1177,13 +1180,16 @@ function createCoachNumberPickerRows(guild, config, page = 0) {
   const items = all.slice(safePage * perPage, safePage * perPage + perPage);
   const rows = [];
   if (items.length) {
-    const numberRow = new ActionRowBuilder();
-    items.forEach((item, idx) => {
-      numberRow.addComponents(
-        new ButtonBuilder().setCustomId(`admin_coach_pick_num:${safePage}:${idx}`).setLabel(String(idx + 1)).setStyle(ButtonStyle.Primary)
-      );
-    });
-    rows.push(numberRow);
+    for (let start = 0; start < items.length; start += 5) {
+      const numberRow = new ActionRowBuilder();
+      items.slice(start, start + 5).forEach((item, offset) => {
+        const idx = start + offset;
+        numberRow.addComponents(
+          new ButtonBuilder().setCustomId(`admin_coach_pick_num:${safePage}:${idx}`).setLabel(String(idx + 1)).setStyle(ButtonStyle.Primary)
+        );
+      });
+      rows.push(numberRow);
+    }
   }
   rows.push(new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`admin_coach_page:${safePage - 1}`).setLabel('<').setStyle(ButtonStyle.Secondary).setDisabled(safePage <= 0),
