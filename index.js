@@ -45,6 +45,7 @@ const {
 } = require('./utils/googleSheetsSync');
 const { version: BOT_BUILD_VERSION = '0.0.0' } = require('./package.json');
 const { getTeamSetupProgress, getIncompleteTeamsForMember, buildIncompleteTeamMessage } = require('./utils/teamSetup');
+const { determineEventType, eventTypeLabel } = require('./utils/eventType');
 
 ensureConfig();
 
@@ -75,6 +76,10 @@ const missingAttendanceConfigWarnings = new Set();
 const REQUIRED_SETUP_TABS = ['Fixtures', 'Player and Coach Management', 'Attendance', 'Absences', 'Player and Coach Notes', 'Config', 'Command Logs', 'Backups'];
 const setupRestoreDrafts = new Map();
 const SETUP_LOGO_PATH = path.join(__dirname, 'assets', 'firelands-logo-transparent.png');
+
+function getMapsLink(location = '') {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(location || '')}`;
+}
 
 function buildSetupWelcome() {
   return [
@@ -1297,27 +1302,38 @@ async function postEventMessage(event) {
     throw new Error(`Role ID not configured for team: ${event.team}`);
   }
 
-  const attendingButton = new ButtonBuilder()
-    .setCustomId(`attend_yes:${event.id}`)
-    .setLabel('🟢 Attending')
-    .setStyle(ButtonStyle.Success);
-
-  const notAttendingButton = new ButtonBuilder()
-    .setCustomId(`attend_no:${event.id}`)
-    .setLabel('🔴 Not Attending')
-    .setStyle(ButtonStyle.Danger);
-
-  const row = new ActionRowBuilder().addComponents(attendingButton, notAttendingButton);
-
   const teamRole = channel.guild.roles.cache.get(teamRoleId);
-  const mentionLine = `<@&${teamRoleId}>`;
-  const message = await channel.send({
-    content: [mentionLine, getEventAnnouncementContent(event, '')].join('\n'),
-    components: [row]
-  });
+  const members = teamRole ? Array.from(teamRole.members.values()) : [];
+  if (!members.length) throw new Error(`No players found in configured role for team: ${event.team}`);
+  const eventTypeName = eventTypeLabel(determineEventType(event));
+  let firstMessageId = '';
 
-  setEventMessageId(event.id, message.id);
-  await sendLog(`📌 Posted event: **${event.title}** (${event.team}) • Team chat post sent.`);
+  for (const member of members) {
+    const attendingButton = new ButtonBuilder()
+      .setCustomId(`attend_yes:${event.id}:${member.id}`)
+      .setLabel('🟢 Attending')
+      .setStyle(ButtonStyle.Success);
+
+    const notAttendingButton = new ButtonBuilder()
+      .setCustomId(`attend_no:${event.id}:${member.id}`)
+      .setLabel('🔴 Not Attending')
+      .setStyle(ButtonStyle.Danger);
+
+    const row = new ActionRowBuilder().addComponents(attendingButton, notAttendingButton);
+    const message = await channel.send({
+      content: [
+        `👋 Hey <@${member.id}>,`,
+        `📣 You have a **${eventTypeName}** on **${new Date(event.date).toLocaleDateString()}** at **${new Date(event.date).toLocaleTimeString()}**.`,
+        '✅ Will you be attending?',
+        event.location ? `📍 [${event.location}](${getMapsLink(event.location)})` : null
+      ].filter(Boolean).join('\n'),
+      components: [row]
+    });
+    if (!firstMessageId) firstMessageId = message.id;
+  }
+
+  if (firstMessageId) setEventMessageId(event.id, firstMessageId);
+  await sendLog(`📌 Posted event: **${event.title}** (${event.team}) • Sent ${members.length} personalized attendance prompt(s).`);
 }
 
 async function updatePostedEventMessage(eventId, event) {
