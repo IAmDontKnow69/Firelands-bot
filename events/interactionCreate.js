@@ -783,23 +783,31 @@ async function postAttendancePromptForEvent(interaction, event, config) {
   const teamRoleId = config.roles?.[event.team]?.player;
   if (!teamRoleId || teamRoleId === 'ROLE_ID') throw new Error(`Player role is not configured for ${event.team}.`);
 
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`attend_yes:${event.id}`).setLabel('🟢 Attending').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`attend_no:${event.id}`).setLabel('🔴 Not Attending').setStyle(ButtonStyle.Danger)
-  );
+  const teamRole = interaction.guild?.roles?.cache?.get(teamRoleId)
+    || await interaction.guild.roles.fetch(teamRoleId).catch(() => null);
+  const members = teamRole ? Array.from(teamRole.members.values()) : [];
+  if (!members.length) throw new Error(`No players found in role for ${event.team}.`);
 
-  const message = await channel.send({
-    content: [
-      `<@&${teamRoleId}>`,
-      `📅 ${event.title}`,
-      `🕒 ${new Date(event.date).toLocaleString()}`,
-      event.location ? `📍 ${event.location}` : null,
-      'Please mark your availability now.'
-    ].filter(Boolean).join('\n'),
-    components: [row]
-  });
+  const eventType = eventTypeLabel(determineEventType(event));
+  let firstMessageId = '';
+  for (const member of members) {
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`attend_yes:${event.id}:${member.id}`).setLabel('🟢 Attending').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`attend_no:${event.id}:${member.id}`).setLabel('🔴 Not Attending').setStyle(ButtonStyle.Danger)
+    );
+    const message = await channel.send({
+      content: [
+        `👋 Hey <@${member.id}>,`,
+        `📣 You have a **${eventType}** on **${new Date(event.date).toLocaleDateString()}** at **${new Date(event.date).toLocaleTimeString()}**.`,
+        '✅ Will you be attending?',
+        event.location ? `📍 [${event.location}](${getMapsLink(event.location)})` : null
+      ].filter(Boolean).join('\n'),
+      components: [row]
+    });
+    if (!firstMessageId) firstMessageId = message.id;
+  }
 
-  setEventMessageId(event.id, message.id);
+  if (firstMessageId) setEventMessageId(event.id, firstMessageId);
 }
 
 async function updateAttendancePromptToConfirmation(interaction, event, responderName, statusLabel) {
@@ -3723,6 +3731,10 @@ module.exports = {
 
       if (parsed.action === 'attend_yes') {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        if (parsed.userId && parsed.userId !== interaction.user.id) {
+          await interaction.editReply({ content: 'This attendance prompt is assigned to a different player.' });
+          return;
+        }
         const memberForRole = interaction.member || (interaction.guild ? await interaction.guild.members.fetch(interaction.user.id).catch(() => null) : null);
         if (!hasRole(memberForRole, teamRoles.player) && !hasRole(memberForRole, teamRoles.coach)) {
           await interaction.editReply({ content: 'Only players/coaches for this team can respond.' });
@@ -3765,6 +3777,10 @@ module.exports = {
       }
 
       if (parsed.action === 'attend_no') {
+        if (parsed.userId && parsed.userId !== interaction.user.id) {
+          await interaction.reply({ content: 'This attendance prompt is assigned to a different player.', flags: MessageFlags.Ephemeral });
+          return;
+        }
         const memberForRole = interaction.member || (interaction.guild ? await interaction.guild.members.fetch(interaction.user.id).catch(() => null) : null);
         if (!hasRole(memberForRole, teamRoles.player) && !hasRole(memberForRole, teamRoles.coach)) {
           await interaction.reply({ content: 'Only players/coaches for this team can respond.', flags: MessageFlags.Ephemeral });
