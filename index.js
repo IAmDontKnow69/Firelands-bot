@@ -1307,6 +1307,7 @@ async function postEventMessage(event) {
   if (!members.length) throw new Error(`No players found in configured role for team: ${event.team}`);
   const eventTypeName = eventTypeLabel(determineEventType(event));
   let firstMessageId = '';
+  let deliveredCount = 0;
 
   for (const member of members) {
     const attendingButton = new ButtonBuilder()
@@ -1320,7 +1321,7 @@ async function postEventMessage(event) {
       .setStyle(ButtonStyle.Danger);
 
     const row = new ActionRowBuilder().addComponents(attendingButton, notAttendingButton);
-    const message = await channel.send({
+    const message = await member.send({
       content: [
         `👋 Hey <@${member.id}>,`,
         `📣 You have a **${eventTypeName}** on **${new Date(event.date).toLocaleDateString()}** at **${new Date(event.date).toLocaleTimeString()}**.`,
@@ -1328,12 +1329,19 @@ async function postEventMessage(event) {
         event.location ? `📍 [${event.location}](${getMapsLink(event.location)})` : null
       ].filter(Boolean).join('\n'),
       components: [row]
-    });
+    }).catch(() => null);
+
+    if (!message) {
+      await sendLog(`⚠️ Could not DM attendance prompt to <@${member.id}> for **${event.title}**.`);
+      continue;
+    }
+
+    deliveredCount += 1;
     if (!firstMessageId) firstMessageId = message.id;
   }
 
   if (firstMessageId) setEventMessageId(event.id, firstMessageId);
-  await sendLog(`📌 Posted event: **${event.title}** (${event.team}) • Sent ${members.length} personalized attendance prompt(s).`);
+  await sendLog(`📌 Posted event: **${event.title}** (${event.team}) • Sent ${deliveredCount}/${members.length} attendance prompt DM(s).`);
 }
 
 async function updatePostedEventMessage(eventId, event) {
