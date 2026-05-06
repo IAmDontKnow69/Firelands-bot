@@ -2064,6 +2064,14 @@ async function openAdminPlayerProfileFromSelection(interaction, context, userId)
   await triggerGoogleSync(context);
 }
 
+async function updateOrEditInteractionReply(interaction, payload) {
+  if (interaction.deferred || interaction.replied) {
+    await interaction.editReply(payload);
+    return;
+  }
+  await interaction.update(payload);
+}
+
 async function openAdminCoachProfileFromSelection(interaction, userId) {
   const member = await interaction.guild.members.fetch(userId).catch(() => null);
   const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
@@ -2078,7 +2086,7 @@ async function openAdminCoachProfileFromSelection(interaction, userId) {
     userId,
     coachTeams: Array.from(new Set([...(existing.coachTeams || []), ...inferredCoachTeams]))
   });
-  await interaction.update({
+  await updateOrEditInteractionReply(interaction, {
     ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, seeded, 'coach'),
     components: [createPlayerProfileActionRow(userId, 'coach'), createPlayerProfileActionRow2(userId, 'coach'), createBackButtonRow('admin_back_coach_management')]
   });
@@ -2208,9 +2216,10 @@ module.exports = {
           return;
         }
         if (action === 'coach_management') {
+          await interaction.deferUpdate();
           await interaction.guild?.members.fetch().catch(() => null);
           const picker = createCoachNumberPickerRows(interaction.guild, loadConfig(), 0);
-          await interaction.update({ content: picker.text, embeds: [], components: picker.rows });
+          await interaction.editReply({ content: picker.text, embeds: [], components: picker.rows });
           return;
         }
         if (action === 'club_report') {
@@ -2587,6 +2596,15 @@ module.exports = {
           return;
         }
       }
+      if (interaction.customId.startsWith('admin_player_pick_team_btn:')) {
+        const [, team = 'unattached'] = interaction.customId.split(':');
+        await interaction.deferUpdate();
+        await interaction.guild?.members.fetch().catch(() => null);
+        const picker = createPlayerNumberPickerRows(interaction.guild, loadConfig(), team, 0);
+        await interaction.editReply({ content: picker.text, embeds: [], components: picker.rows });
+        return;
+      }
+
       if (interaction.customId.startsWith('admin_player_team_page:')) {
         const [, team, rawPage] = interaction.customId.split(':');
         const page = Number.parseInt(rawPage || '0', 10);
@@ -2617,6 +2635,42 @@ module.exports = {
           return;
         }
         await openAdminPlayerProfileFromSelection(interaction, context, picked.value);
+        return;
+      }
+      if (interaction.customId.startsWith('admin_coach_page:')) {
+        const page = Number(interaction.customId.split(':')[1] || '0');
+        await interaction.deferUpdate();
+        await interaction.guild?.members.fetch().catch(() => null);
+        const picker = createCoachNumberPickerRows(interaction.guild, loadConfig(), Number.isNaN(page) ? 0 : page);
+        await interaction.editReply({ content: picker.text, embeds: [], components: picker.rows });
+        return;
+      }
+
+      if (interaction.customId.startsWith('admin_coach_pick_user:')) {
+        const [, userId] = interaction.customId.split(':');
+        await interaction.deferUpdate();
+        await interaction.guild?.members.fetch().catch(() => null);
+        if (!userId) {
+          await interaction.editReply({ content: 'Coach selection is no longer valid. Please try again.', embeds: [], components: [] });
+          return;
+        }
+        await openAdminCoachProfileFromSelection(interaction, userId);
+        return;
+      }
+
+      if (interaction.customId.startsWith('admin_coach_pick_num:')) {
+        const [, pageRaw, indexRaw] = interaction.customId.split(':');
+        const page = Number(pageRaw || '0');
+        const idx = Number(indexRaw || '0');
+        await interaction.deferUpdate();
+        await interaction.guild?.members.fetch().catch(() => null);
+        const all = createCoachOptions(interaction.guild, loadConfig());
+        const picked = all[(Number.isNaN(page) ? 0 : page) * 9 + (Number.isNaN(idx) ? 0 : idx)];
+        if (!picked) {
+          await interaction.editReply({ content: 'Coach selection is no longer valid. Please try again.', embeds: [], components: [] });
+          return;
+        }
+        await openAdminCoachProfileFromSelection(interaction, picked.value);
         return;
       }
       if (interaction.customId.startsWith('coach_set_team_badge:')) {
@@ -2707,9 +2761,10 @@ module.exports = {
         return;
       }
       if (interaction.customId === 'admin_back_coach_management') {
+        await interaction.deferUpdate();
         await interaction.guild?.members.fetch().catch(() => null);
         const picker = createCoachNumberPickerRows(interaction.guild, loadConfig(), 0);
-        await interaction.update({
+        await interaction.editReply({
           content: picker.text,
           embeds: [],
           components: picker.rows
@@ -3969,47 +4024,6 @@ module.exports = {
           ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, profile, 'player'),
           components: [createAttendanceOnlyRow(userId)]
         });
-        return;
-      }
-
-      if (interaction.customId.startsWith('admin_coach_page:')) {
-        const page = Number(interaction.customId.split(':')[1] || '0');
-        await interaction.guild?.members.fetch().catch(() => null);
-        const picker = createCoachNumberPickerRows(interaction.guild, loadConfig(), page);
-        await interaction.update({ content: picker.text, embeds: [], components: picker.rows });
-        return;
-      }
-
-      if (interaction.customId.startsWith('admin_coach_pick_user:')) {
-        const [, userId] = interaction.customId.split(':');
-        await interaction.guild?.members.fetch().catch(() => null);
-        if (!userId) {
-          await interaction.reply({ content: 'Coach selection is no longer valid. Please try again.', flags: MessageFlags.Ephemeral });
-          return;
-        }
-        await openAdminCoachProfileFromSelection(interaction, userId);
-        return;
-      }
-
-      if (interaction.customId.startsWith('admin_coach_pick_num:')) {
-        const [, pageRaw, indexRaw] = interaction.customId.split(':');
-        const page = Number(pageRaw || '0');
-        const idx = Number(indexRaw || '0');
-        const all = createCoachOptions(interaction.guild, loadConfig());
-        const picked = all[(Number.isNaN(page) ? 0 : page) * 9 + (Number.isNaN(idx) ? 0 : idx)];
-        if (!picked) {
-          await interaction.reply({ content: 'Coach selection is no longer valid. Please try again.', flags: MessageFlags.Ephemeral });
-          return;
-        }
-        await openAdminCoachProfileFromSelection(interaction, picked.value);
-        return;
-      }
-
-      if (interaction.customId.startsWith('admin_player_pick_team_btn:')) {
-        const [, team] = interaction.customId.split(':');
-        await interaction.guild?.members.fetch().catch(() => null);
-        const picker = createPlayerNumberPickerRows(interaction.guild, loadConfig(), team, 0);
-        await interaction.update({ content: picker.text, embeds: [], components: picker.rows });
         return;
       }
 
