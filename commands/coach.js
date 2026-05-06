@@ -9,17 +9,35 @@ const {
 } = require('discord.js');
 const { loadDb, getPlayerProfile, getActiveVacationsForUser } = require('../utils/database');
 
-function getCoachTeams(member, teamRoles) {
+function hasRole(member, storedRoles, roleId) {
+  if (!roleId || roleId === 'ROLE_ID') return false;
+  return Boolean(
+    member?.roles?.cache?.has?.(roleId)
+    || member?.roles?.cache?.get?.(roleId)
+    || (Array.isArray(member?.roles) && member.roles.includes(roleId))
+    || (Array.isArray(storedRoles) && storedRoles.includes(roleId))
+  );
+}
+
+function getCoachTeams(member, teamRoles = {}, storedRoles = []) {
   return Object.entries(teamRoles)
-    .filter(([, roles]) => member.roles.cache.has(roles.coach))
+    .filter(([, roles]) => hasRole(member, storedRoles, roles.coach))
     .map(([team]) => team);
 }
 
 async function resolveGuildMember(interaction, config) {
   if (interaction.member && interaction.guild) return { guild: interaction.guild, member: interaction.member };
-  const guildId = config.bot?.guildId;
-  if (!guildId) return { guild: null, member: null };
-  const guild = await interaction.client.guilds.fetch(guildId).catch(() => null);
+
+  const guildId = config.bot?.guildId || process.env.DISCORD_GUILD_ID || interaction.guildId || '';
+  let guild = guildId
+    ? interaction.client.guilds.cache.get(guildId) || await interaction.client.guilds.fetch(guildId).catch(() => null)
+    : null;
+
+  if (!guild) {
+    const cachedGuilds = Array.from(interaction.client.guilds.cache.values());
+    guild = cachedGuilds.length === 1 ? cachedGuilds[0] : null;
+  }
+
   const member = guild ? await guild.members.fetch(interaction.user.id).catch(() => null) : null;
   return { guild, member };
 }
@@ -35,10 +53,18 @@ function buildReport(guild, team, teamRoles) {
     .sort((a, b) => new Date(a.date) - new Date(b.date))
     .slice(0, 5);
 
-  const playerRole = guild.roles.cache.get(teamRoles[team].player);
-  const coachRole = guild.roles.cache.get(teamRoles[team].coach);
-  const playerIds = playerRole ? Array.from(playerRole.members.keys()) : [];
-  const coachIds = coachRole ? Array.from(coachRole.members.keys()) : [];
+  const playerRoleId = teamRoles[team]?.player;
+  const coachRoleId = teamRoles[team]?.coach;
+  const playerRole = guild?.roles?.cache?.get(playerRoleId);
+  const coachRole = guild?.roles?.cache?.get(coachRoleId);
+  const storedPlayers = Object.entries(db.players || {})
+    .filter(([, profile]) => Array.isArray(profile.roles) && profile.roles.includes(playerRoleId))
+    .map(([userId]) => userId);
+  const storedCoaches = Object.entries(db.players || {})
+    .filter(([, profile]) => Array.isArray(profile.roles) && profile.roles.includes(coachRoleId))
+    .map(([userId]) => userId);
+  const playerIds = Array.from(new Set([...(playerRole ? Array.from(playerRole.members.keys()) : []), ...storedPlayers]));
+  const coachIds = Array.from(new Set([...(coachRole ? Array.from(coachRole.members.keys()) : []), ...storedCoaches]));
 
   if (!events.length) return `No upcoming events for **${team}**.`;
 
@@ -69,8 +95,9 @@ module.exports = {
 
   async execute(interaction, context) {
     const config = context.getConfig();
+    const profile = getPlayerProfile(interaction.user.id) || {};
     const { guild, member } = await resolveGuildMember(interaction, config);
-    const coachTeams = member ? getCoachTeams(member, config.roles) : [];
+    const coachTeams = getCoachTeams(member, config.roles, profile.roles || []);
 
     if (!coachTeams.length) {
       await interaction.reply({ content: 'You are not assigned as a coach for any team.', flags: MessageFlags.Ephemeral });
@@ -99,14 +126,13 @@ module.exports = {
 
     const team = coachTeams[0];
     const teamLabel = config.teams?.[team]?.label || team;
-    const profile = getPlayerProfile(interaction.user.id) || {};
     const coachTitle = profile.coachPositions?.[team] || 'Coach';
     const report = buildReport(guild, team, config.roles);
 
     const embed = new EmbedBuilder()
       .setTitle(`Coach UI — ${teamLabel}`)
       .setDescription([
-        `Hi **${interaction.member?.displayName || interaction.user.username}** (${coachTitle}) 👋`,
+        `Hi **${member?.displayName || interaction.member?.displayName || interaction.user.username}** (${coachTitle}) 👋`,
         '',
         `You are viewing **${teamLabel}** status. This panel shows next-games attendance and management quick actions.`,
         '',

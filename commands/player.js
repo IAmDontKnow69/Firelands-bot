@@ -2,9 +2,19 @@ const { SlashCommandBuilder, EmbedBuilder, MessageFlags, ActionRowBuilder, Butto
 const { loadDb, getPlayerProfile, getActiveVacationsForUser } = require('../utils/database');
 const { determineEventType, eventTypeLabel } = require('../utils/eventType');
 
-function getPlayerTeams(member, teamRoles) {
+function hasRole(member, storedRoles, roleId) {
+  if (!roleId || roleId === 'ROLE_ID') return false;
+  return Boolean(
+    member?.roles?.cache?.has?.(roleId)
+    || member?.roles?.cache?.get?.(roleId)
+    || (Array.isArray(member?.roles) && member.roles.includes(roleId))
+    || (Array.isArray(storedRoles) && storedRoles.includes(roleId))
+  );
+}
+
+function getPlayerTeams(member, teamRoles = {}, storedRoles = []) {
   return Object.entries(teamRoles)
-    .filter(([, roles]) => member.roles.cache.has(roles.player))
+    .filter(([, roles]) => hasRole(member, storedRoles, roles.player))
     .map(([team]) => team);
 }
 
@@ -18,17 +28,27 @@ async function resolveGuildMember(interaction, config) {
   if (interaction.member && interaction.guild) {
     return { guild: interaction.guild, member: interaction.member };
   }
-  const guildId = config.bot?.guildId;
-  if (!guildId) return { guild: null, member: null };
-  const guild = await interaction.client.guilds.fetch(guildId).catch(() => null);
+
+  const guildId = config.bot?.guildId || process.env.DISCORD_GUILD_ID || interaction.guildId || '';
+  let guild = guildId
+    ? interaction.client.guilds.cache.get(guildId) || await interaction.client.guilds.fetch(guildId).catch(() => null)
+    : null;
+
+  if (!guild) {
+    const cachedGuilds = Array.from(interaction.client.guilds.cache.values());
+    guild = cachedGuilds.length === 1 ? cachedGuilds[0] : null;
+  }
+
   const member = guild ? await guild.members.fetch(interaction.user.id).catch(() => null) : null;
   return { guild, member };
 }
 
 async function buildPlayerHubResponse(interaction, context) {
       const config = context.getConfig();
+      const userId = interaction.user.id;
+      const profile = getPlayerProfile(userId) || {};
       const { member } = await resolveGuildMember(interaction, config);
-      const playerTeams = member ? getPlayerTeams(member, config.roles) : [];
+      const playerTeams = getPlayerTeams(member, config.roles, profile.roles || []);
 
       if (!playerTeams.length) {
         return { content: 'You are not assigned as a player for any team.', flags: MessageFlags.Ephemeral };
@@ -36,7 +56,6 @@ async function buildPlayerHubResponse(interaction, context) {
 
       const db = loadDb();
       const now = Date.now();
-      const userId = interaction.user.id;
 
     const events = Object.entries(db.events)
       .map(([eventId, event]) => ({ eventId, ...event }))
@@ -55,7 +74,6 @@ async function buildPlayerHubResponse(interaction, context) {
         return acc;
       }, { yes: 0, no: 0, noResponse: 0 });
 
-    const profile = getPlayerProfile(userId) || {};
     const activeVacations = getActiveVacationsForUser(userId);
 
       const nextGames = events.length
@@ -74,7 +92,7 @@ async function buildPlayerHubResponse(interaction, context) {
       const embed = new EmbedBuilder()
       .setTitle('⚽ Player Hub')
       .setDescription([
-        `Hi **${profile.customName || interaction.member?.displayName || interaction.user.username}** 👋`,
+        `Hi **${profile.customName || member?.displayName || interaction.member?.displayName || interaction.user.username}** 👋`,
         `Teams: **${teamLabels.join(', ')}**`,
         '',
         '### Attendance Summary',
