@@ -1053,6 +1053,46 @@ function buildEventAttendanceSnapshot(eventId, config, guild, page = 1, pageSize
   };
 }
 
+
+function getProfileNameParts(userId = '', member = null) {
+  const profile = getPlayerProfile(userId) || {};
+  const realName = `${profile.firstName || ''} ${profile.lastName || ''}`.trim()
+    || profile.customName
+    || member?.displayName
+    || member?.user?.globalName
+    || member?.user?.username
+    || userId;
+  const nickname = profile.nickName || '';
+  return { profile, realName, nickname };
+}
+
+function getManageablePersonLabel(userId = '', member = null) {
+  const { realName, nickname } = getProfileNameParts(userId, member);
+  if (nickname && nickname.localeCompare(realName, undefined, { sensitivity: 'base' }) !== 0) {
+    return `${realName} (${nickname})`.slice(0, 100);
+  }
+  return realName.slice(0, 100);
+}
+
+function compareManagedPeople(a, b) {
+  const aKey = String(a.sortName || a.label || a.value || '');
+  const bKey = String(b.sortName || b.label || b.value || '');
+  const byName = aKey.localeCompare(bKey, undefined, { sensitivity: 'base', numeric: true });
+  if (byName !== 0) return byName;
+  return String(a.value || '').localeCompare(String(b.value || ''), undefined, { sensitivity: 'base' });
+}
+
+function buildManagedPersonOption(userId = '', member = null, description = '') {
+  const { realName, nickname } = getProfileNameParts(userId, member);
+  const sortName = nickname || realName || userId;
+  return {
+    label: getManageablePersonLabel(userId, member),
+    value: userId,
+    sortName,
+    description: description.slice(0, 100)
+  };
+}
+
 function createPlayerOptions(guild = null, config = loadConfig()) {
   if (!guild) return [];
   const playerIds = new Set();
@@ -1073,13 +1113,25 @@ function createPlayerOptions(guild = null, config = loadConfig()) {
       const teamLabel = playingTeams.length
         ? playingTeams.map((team) => getTeamMeta(config, team).label).join(', ')
         : 'Does not play for a team';
-      return {
-        label: (member?.displayName || member?.user?.username || userId).slice(0, 100),
-        value: userId,
-        description: `Teams: ${teamLabel}`.slice(0, 100)
-      };
+      return buildManagedPersonOption(userId, member, `Teams: ${teamLabel}`);
     })
-    .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
+    .sort(compareManagedPeople);
+}
+
+function getPlayerPickerOptions(guild, config, team = 'unattached') {
+  return createPlayerOptions(guild, config)
+    .filter((option) => {
+      const member = guild?.members?.cache?.get(option.value);
+      if (team === 'unattached') {
+        return !Object.keys(config.teams || {}).some((teamKey) => {
+          const roleId = config.roles?.[teamKey]?.player;
+          return roleId && roleId !== 'ROLE_ID' && member?.roles?.cache?.has(roleId);
+        });
+      }
+      const teamRoleId = config.roles?.[team]?.player;
+      return Boolean(teamRoleId && teamRoleId !== 'ROLE_ID' && member?.roles?.cache?.has(teamRoleId));
+    })
+    .sort(compareManagedPeople);
 }
 
 function createPlayerManagementRows(mode = 'player', guild = null) {
@@ -1099,32 +1151,8 @@ function createPlayerManagementRows(mode = 'player', guild = null) {
   return rows;
 }
 
-function getPlayerSortKey(userId = '') {
-  const profile = getPlayerProfile(userId) || {};
-  const positions = getSortedPositions(profile);
-  const rank = positions.length ? PLAYER_POSITION_ORDER.indexOf(positions[0]) : 99;
-  return Number.isFinite(rank) && rank >= 0 ? rank : 99;
-}
-
 function createPlayerNumberPickerRows(guild, config, team = 'unattached', page = 0) {
-  const all = createPlayerOptions(guild, config)
-    .filter((option) => {
-      const member = guild?.members?.cache?.get(option.value);
-      if (team === 'unattached') {
-        return !Object.keys(config.teams || {}).some((teamKey) => {
-          const roleId = config.roles?.[teamKey]?.player;
-          return roleId && roleId !== 'ROLE_ID' && member?.roles?.cache?.has(roleId);
-        });
-      }
-      const teamRoleId = config.roles?.[team]?.player;
-      return Boolean(teamRoleId && teamRoleId !== 'ROLE_ID' && member?.roles?.cache?.has(teamRoleId));
-    })
-    .sort((a, b) => {
-      const rankDiff = getPlayerSortKey(a.value) - getPlayerSortKey(b.value);
-      if (rankDiff !== 0) return rankDiff;
-      return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
-    });
-
+  const all = getPlayerPickerOptions(guild, config, team);
   const perPage = 9;
   const totalPages = Math.max(1, Math.ceil(all.length / perPage));
   const safePage = Math.min(Math.max(page, 0), totalPages - 1);
@@ -1136,20 +1164,20 @@ function createPlayerNumberPickerRows(guild, config, team = 'unattached', page =
       items.slice(start, start + 5).forEach((item, offset) => {
         const idx = start + offset;
         numberRow.addComponents(
-          new ButtonBuilder().setCustomId(`admin_player_pick_num:${team}:${safePage}:${idx}`).setLabel(String(idx + 1)).setStyle(ButtonStyle.Primary)
+          new ButtonBuilder().setCustomId(`admin_player_pick_user:${item.value}`).setLabel(String(idx + 1)).setStyle(ButtonStyle.Primary)
         );
       });
       rows.push(numberRow);
     }
   }
   rows.push(new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`admin_player_team_page:${team}:${safePage - 1}`).setLabel('<').setStyle(ButtonStyle.Secondary).setDisabled(safePage <= 0),
-    new ButtonBuilder().setCustomId(`admin_player_team_page:${team}:${safePage + 1}`).setLabel('>').setStyle(ButtonStyle.Secondary).setDisabled(safePage >= totalPages - 1),
+    new ButtonBuilder().setCustomId(`admin_player_team_page:${team}:${safePage - 1}`).setLabel('Prev').setStyle(ButtonStyle.Secondary).setDisabled(safePage <= 0),
+    new ButtonBuilder().setCustomId(`admin_player_team_page:${team}:${safePage + 1}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(safePage >= totalPages - 1),
     new ButtonBuilder().setCustomId('admin_back_player_management').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
   ));
   const title = team === 'unattached' ? 'Unattached Players' : getTeamMeta(config, team).label;
   const list = items.map((item, idx) => `${idx + 1}. ${item.label}`).join('\n') || 'No players found for this selection.';
-  return { rows, text: `Pick player in **${title}** (page ${safePage + 1}/${totalPages})\n\n${list}` };
+  return { rows, text: `Pick player in **${title}** by real name/nickname order (page ${safePage + 1}/${totalPages})\n\n${list}` };
 }
 
 function createCoachOptions(guild, config) {
@@ -1172,12 +1200,12 @@ function createCoachOptions(guild, config) {
     const primaryTitle = coachedTeams.length
       ? getCoachPositionLabel(getCoachPositionForTeam(profile, coachedTeams[0], config), config)
       : getCoachPositionLabel(getDefaultCoachRoleId(config), config);
+    const option = buildManagedPersonOption(userId, member, `Manage coach ${member?.user?.tag || userId}`);
     return {
-      label: `${primaryTitle} ${member?.displayName || member?.user?.username || userId}`.slice(0, 100),
-      value: userId,
-      description: `Manage coach ${member?.user?.tag || userId}`.slice(0, 100)
+      ...option,
+      label: `${primaryTitle} ${option.label}`.slice(0, 100)
     };
-  }).sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
+  }).sort(compareManagedPeople);
 }
 
 function createCoachNumberPickerRows(guild, config, page = 0) {
@@ -1193,19 +1221,19 @@ function createCoachNumberPickerRows(guild, config, page = 0) {
       items.slice(start, start + 5).forEach((item, offset) => {
         const idx = start + offset;
         numberRow.addComponents(
-          new ButtonBuilder().setCustomId(`admin_coach_pick_num:${safePage}:${idx}`).setLabel(String(idx + 1)).setStyle(ButtonStyle.Primary)
+          new ButtonBuilder().setCustomId(`admin_coach_pick_user:${item.value}`).setLabel(String(idx + 1)).setStyle(ButtonStyle.Primary)
         );
       });
       rows.push(numberRow);
     }
   }
   rows.push(new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`admin_coach_page:${safePage - 1}`).setLabel('<').setStyle(ButtonStyle.Secondary).setDisabled(safePage <= 0),
-    new ButtonBuilder().setCustomId(`admin_coach_page:${safePage + 1}`).setLabel('>').setStyle(ButtonStyle.Secondary).setDisabled(safePage >= totalPages - 1),
+    new ButtonBuilder().setCustomId(`admin_coach_page:${safePage - 1}`).setLabel('Prev').setStyle(ButtonStyle.Secondary).setDisabled(safePage <= 0),
+    new ButtonBuilder().setCustomId(`admin_coach_page:${safePage + 1}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(safePage >= totalPages - 1),
     new ButtonBuilder().setCustomId('admin_back_to_panel').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
   ));
   const list = items.map((item, idx) => `${idx + 1}. ${item.label}`).join('\n') || 'No coaches found yet. Assign coach roles first.';
-  return { rows, text: `Pick coach (page ${safePage + 1}/${totalPages})\n\n${list}` };
+  return { rows, text: `Pick coach by real name/nickname order (page ${safePage + 1}/${totalPages})\n\n${list}` };
 }
 
 function createPlayerProfileActionRow(userId, mode = 'player') {
@@ -2003,6 +2031,59 @@ async function handlePanelGoogleSync(interaction) {
   }
 }
 
+
+async function openAdminPlayerProfileFromSelection(interaction, context, userId) {
+  const member = await interaction.guild.members.fetch(userId).catch(() => null);
+  const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
+  const latestConfig = loadConfig();
+  const existing = getPlayerProfile(userId) || {};
+  const inferredPlayerTeams = Object.keys(latestConfig.roles || {}).filter((teamKey) => {
+    const roleId = latestConfig.roles?.[teamKey]?.player;
+    return roleId && roleId !== 'ROLE_ID' && member?.roles?.cache?.has(roleId);
+  });
+  const inferredCoachTeams = Object.keys(latestConfig.roles || {}).filter((teamKey) => {
+    const roleId = latestConfig.roles?.[teamKey]?.coach;
+    return roleId && roleId !== 'ROLE_ID' && member?.roles?.cache?.has(roleId);
+  });
+  const seeded = upsertPlayerProfile(userId, {
+    userId,
+    customName: existing.customName || '',
+    shirtNumber: existing.shirtNumber || '',
+    teams: Array.from(new Set([...(existing.teams || []), ...inferredPlayerTeams])),
+    coachTeams: Array.from(new Set([...(existing.coachTeams || []), ...inferredCoachTeams])),
+    roles: existing.roles || (member ? Array.from(member.roles.cache.keys()).filter((id) => id !== interaction.guild.id) : []),
+    joinedDiscordAt: existing.joinedDiscordAt || (member?.joinedAt ? member.joinedAt.toISOString().slice(0, 10) : ''),
+    faceImageUrl: existing.faceImageUrl || existing.facePngUrl || '',
+    facePngUrl: existing.faceImageUrl || existing.facePngUrl || '',
+    notes: existing.notes || ''
+  });
+  await interaction.update({
+    ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, seeded, 'player'),
+    components: [createPlayerProfileActionRow(userId, 'player'), createPlayerProfileActionRow2(userId, 'player'), createBackButtonRow('admin_back_player_management')]
+  });
+  await triggerGoogleSync(context);
+}
+
+async function openAdminCoachProfileFromSelection(interaction, userId) {
+  const member = await interaction.guild.members.fetch(userId).catch(() => null);
+  const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
+  const latestConfig = loadConfig();
+  const existing = getPlayerProfile(userId) || {};
+  const inferredCoachTeams = Object.keys(latestConfig.roles || {}).filter((teamKey) => {
+    const roleId = latestConfig.roles?.[teamKey]?.coach;
+    return roleId && roleId !== 'ROLE_ID' && member?.roles?.cache?.has(roleId);
+  });
+  const seeded = upsertPlayerProfile(userId, {
+    ...existing,
+    userId,
+    coachTeams: Array.from(new Set([...(existing.coachTeams || []), ...inferredCoachTeams]))
+  });
+  await interaction.update({
+    ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, seeded, 'coach'),
+    components: [createPlayerProfileActionRow(userId, 'coach'), createPlayerProfileActionRow2(userId, 'coach'), createBackButtonRow('admin_back_coach_management')]
+  });
+}
+
 module.exports = {
   name: 'interactionCreate',
 
@@ -2507,62 +2588,35 @@ module.exports = {
         }
       }
       if (interaction.customId.startsWith('admin_player_team_page:')) {
-        const [, , team, rawPage] = interaction.customId.split(':');
+        const [, team, rawPage] = interaction.customId.split(':');
         const page = Number.parseInt(rawPage || '0', 10);
         await interaction.guild?.members.fetch().catch(() => null);
         const picker = createPlayerNumberPickerRows(interaction.guild, loadConfig(), team, Number.isNaN(page) ? 0 : page);
         await interaction.update({ content: picker.text, embeds: [], components: picker.rows });
         return;
       }
-      if (interaction.customId.startsWith('admin_player_pick_num:')) {
-        const [, , team, rawPage, rawIndex] = interaction.customId.split(':');
-        const page = Number.parseInt(rawPage || '0', 10);
-        const index = Number.parseInt(rawIndex || '0', 10);
+      if (interaction.customId.startsWith('admin_player_pick_user:')) {
+        const [, userId] = interaction.customId.split(':');
         await interaction.guild?.members.fetch().catch(() => null);
-        const config = loadConfig();
-        const picker = createPlayerNumberPickerRows(interaction.guild, config, team, Number.isNaN(page) ? 0 : page);
-        const line = picker.text.split('\n\n')[1] || '';
-        const names = line.split('\n').filter(Boolean);
-        const chosen = names[index];
-        if (!chosen) {
+        if (!userId) {
           await interaction.reply({ content: 'Invalid player selection.', flags: MessageFlags.Ephemeral });
           return;
         }
-        const selectedName = chosen.replace(/^\d+\.\s*/, '');
-        const option = createPlayerOptions(interaction.guild, config).find((entry) => entry.label === selectedName);
-        if (!option) {
-          await interaction.reply({ content: 'Could not resolve player from selection.', flags: MessageFlags.Ephemeral });
+        await openAdminPlayerProfileFromSelection(interaction, context, userId);
+        return;
+      }
+      if (interaction.customId.startsWith('admin_player_pick_num:')) {
+        const [, team, rawPage, rawIndex] = interaction.customId.split(':');
+        const page = Number.parseInt(rawPage || '0', 10);
+        const index = Number.parseInt(rawIndex || '0', 10);
+        await interaction.guild?.members.fetch().catch(() => null);
+        const options = getPlayerPickerOptions(interaction.guild, loadConfig(), team);
+        const picked = options[(Number.isNaN(page) ? 0 : page) * 9 + (Number.isNaN(index) ? 0 : index)];
+        if (!picked) {
+          await interaction.reply({ content: 'Invalid player selection.', flags: MessageFlags.Ephemeral });
           return;
         }
-        const userId = option.value;
-        const member = await interaction.guild.members.fetch(userId).catch(() => null);
-        const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
-        const existing = getPlayerProfile(userId) || {};
-        const inferredPlayerTeams = Object.keys(loadConfig().roles || {}).filter((teamKey) => {
-          const roleId = loadConfig().roles?.[teamKey]?.player;
-          return roleId && roleId !== 'ROLE_ID' && member?.roles?.cache?.has(roleId);
-        });
-        const inferredCoachTeams = Object.keys(loadConfig().roles || {}).filter((teamKey) => {
-          const roleId = loadConfig().roles?.[teamKey]?.coach;
-          return roleId && roleId !== 'ROLE_ID' && member?.roles?.cache?.has(roleId);
-        });
-        const seeded = upsertPlayerProfile(userId, {
-          userId,
-          customName: existing.customName || '',
-          shirtNumber: existing.shirtNumber || '',
-          teams: Array.from(new Set([...(existing.teams || []), ...inferredPlayerTeams])),
-          coachTeams: Array.from(new Set([...(existing.coachTeams || []), ...inferredCoachTeams])),
-          roles: existing.roles || (member ? Array.from(member.roles.cache.keys()).filter((id) => id !== interaction.guild.id) : []),
-          joinedDiscordAt: existing.joinedDiscordAt || (member?.joinedAt ? member.joinedAt.toISOString().slice(0, 10) : ''),
-          faceImageUrl: existing.faceImageUrl || existing.facePngUrl || '',
-          facePngUrl: existing.faceImageUrl || existing.facePngUrl || '',
-          notes: existing.notes || ''
-        });
-        await interaction.update({
-          ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, seeded, 'player'),
-          components: [createPlayerProfileActionRow(userId, 'player'), createPlayerProfileActionRow2(userId, 'player'), createBackButtonRow('admin_back_player_management')]
-        });
-        await triggerGoogleSync(context);
+        await openAdminPlayerProfileFromSelection(interaction, context, picked.value);
         return;
       }
       if (interaction.customId.startsWith('coach_set_team_badge:')) {
@@ -3926,34 +3980,28 @@ module.exports = {
         return;
       }
 
+      if (interaction.customId.startsWith('admin_coach_pick_user:')) {
+        const [, userId] = interaction.customId.split(':');
+        await interaction.guild?.members.fetch().catch(() => null);
+        if (!userId) {
+          await interaction.reply({ content: 'Coach selection is no longer valid. Please try again.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        await openAdminCoachProfileFromSelection(interaction, userId);
+        return;
+      }
+
       if (interaction.customId.startsWith('admin_coach_pick_num:')) {
         const [, pageRaw, indexRaw] = interaction.customId.split(':');
         const page = Number(pageRaw || '0');
         const idx = Number(indexRaw || '0');
-        const perPage = 9;
         const all = createCoachOptions(interaction.guild, loadConfig());
-        const picked = all[page * perPage + idx];
+        const picked = all[(Number.isNaN(page) ? 0 : page) * 9 + (Number.isNaN(idx) ? 0 : idx)];
         if (!picked) {
           await interaction.reply({ content: 'Coach selection is no longer valid. Please try again.', flags: MessageFlags.Ephemeral });
           return;
         }
-        const userId = picked.value;
-        const member = await interaction.guild.members.fetch(userId).catch(() => null);
-        const user = member?.user || await interaction.client.users.fetch(userId).catch(() => null);
-        const existing = getPlayerProfile(userId) || {};
-        const inferredCoachTeams = Object.keys(loadConfig().roles || {}).filter((teamKey) => {
-          const roleId = loadConfig().roles?.[teamKey]?.coach;
-          return roleId && roleId !== 'ROLE_ID' && member?.roles?.cache?.has(roleId);
-        });
-        const seeded = upsertPlayerProfile(userId, {
-          ...existing,
-          userId,
-          coachTeams: Array.from(new Set([...(existing.coachTeams || []), ...inferredCoachTeams]))
-        });
-        await interaction.update({
-          ...buildPlayerProfileView(loadConfig(), interaction.guild, user, member, seeded, 'coach'),
-          components: [createPlayerProfileActionRow(userId, 'coach'), createPlayerProfileActionRow2(userId, 'coach'), createBackButtonRow('admin_back_coach_management')]
-        });
+        await openAdminCoachProfileFromSelection(interaction, picked.value);
         return;
       }
 
