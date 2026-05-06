@@ -788,21 +788,11 @@ async function postAttendancePromptForEvent(interaction, event, config) {
   const members = teamRole ? Array.from(teamRole.members.values()) : [];
   if (!members.length) throw new Error(`No players found in role for ${event.team}.`);
 
-  const eventType = eventTypeLabel(determineEventType(event));
   let firstMessageId = '';
   for (const member of members) {
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`attend_yes:${event.id}:${member.id}`).setLabel('🟢 Attending').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`attend_no:${event.id}:${member.id}`).setLabel('🔴 Not Attending').setStyle(ButtonStyle.Danger)
-    );
     const message = await channel.send({
-      content: [
-        `👋 Hey <@${member.id}>,`,
-        `📣 You have a **${eventType}** on **${new Date(event.date).toLocaleDateString()}** at **${new Date(event.date).toLocaleTimeString()}**.`,
-        '✅ Will you be attending?',
-        event.location ? `📍 [${event.location}](${getMapsLink(event.location)})` : null
-      ].filter(Boolean).join('\n'),
-      components: [row]
+      content: buildAttendancePromptContent(event, member.id, config),
+      components: [createAttendanceResponseRow(event.id, member.id)]
     });
     if (!firstMessageId) firstMessageId = message.id;
   }
@@ -810,21 +800,86 @@ async function postAttendancePromptForEvent(interaction, event, config) {
   if (firstMessageId) setEventMessageId(event.id, firstMessageId);
 }
 
-async function updateAttendancePromptToConfirmation(interaction, event, responderName, statusLabel) {
-  if (!event?.discordMessageId) return;
-  const teamChannelId = loadConfig().channels?.teamChats?.[event.team] || loadConfig().channels?.events;
-  if (!teamChannelId) return;
-  const channel = await interaction.client.channels.fetch(teamChannelId).catch(() => null);
-  if (!channel?.isTextBased?.()) return;
-  const message = await channel.messages.fetch(event.discordMessageId).catch(() => null);
+function createAttendanceResponseRow(eventId, userId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`attend_yes:${eventId}:${userId}`).setLabel('🟢 Attending').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`attend_no:${eventId}:${userId}`).setLabel('🔴 Not Attending').setStyle(ButtonStyle.Danger)
+  );
+}
+
+function createAttendanceUndoRow(eventId, userId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`attendance_undo:${eventId}:${userId}`).setLabel('↩️ Undo Response').setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function getMemberAttendanceRoleLabel(member, teamRoles = {}) {
+  const isPlayer = hasRole(member, teamRoles.player);
+  const isCoach = hasRole(member, teamRoles.coach);
+  if (isPlayer && isCoach) return 'Player/Coach';
+  if (isCoach) return 'Coach';
+  return 'Player';
+}
+
+function getAttendanceResponderName(user, member, profile = {}) {
+  return profile?.nickName
+    || `${profile?.firstName || ''} ${profile?.lastName || ''}`.trim()
+    || profile?.customName
+    || member?.displayName
+    || user?.globalName
+    || user?.username
+    || user?.tag
+    || 'Unknown';
+}
+
+function buildAttendancePromptContent(event, memberId) {
+  const eventType = eventTypeLabel(determineEventType(event));
+  return [
+    `👋 Hey <@${memberId}>,`,
+    `📣 You have a **${eventType}** on **${new Date(event.date).toLocaleDateString()}** at **${new Date(event.date).toLocaleTimeString()}**.`,
+    '✅ Will you be attending?',
+    event.location ? `📍 [${event.location}](${getMapsLink(event.location)})` : null
+  ].filter(Boolean).join('\n');
+}
+
+function buildAttendanceConfirmationContent(event, responderTitle, responderName, statusLabel, reason = '') {
+  const lines = [
+    statusLabel === 'attending' ? '✅ Attendance confirmed' : '🔴 Not attending confirmed',
+    `${responderTitle}: **${responderName}**`,
+    `Response: **${statusLabel}**`,
+    `Event: **${event.title}**`,
+    `When: ${new Date(event.date).toLocaleString()}`
+  ];
+  if (reason) lines.push(`Reason: ${reason}`);
+  lines.push('', 'Need to change it? Use **Undo Response** below.');
+  return lines.join('\n');
+}
+
+async function resolveAttendancePromptMessage(interaction, event, messageRef = {}) {
+  if (interaction.message?.editable) return interaction.message;
+  const channelId = messageRef.channelId || loadConfig().channels?.teamChats?.[event.team] || loadConfig().channels?.events;
+  const messageId = messageRef.messageId || event?.discordMessageId;
+  if (!channelId || !messageId) return null;
+  const channel = await interaction.client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased?.()) return null;
+  return channel.messages.fetch(messageId).catch(() => null);
+}
+
+async function updateAttendancePromptToConfirmation(interaction, event, responderTitle, responderName, statusLabel, userId, reason = '', messageRef = {}) {
+  const message = await resolveAttendancePromptMessage(interaction, event, messageRef);
   if (!message) return;
   await message.edit({
-    content: [
-      `✅ Thank you ${responderName}`,
-      `You have marked yourself as **${statusLabel}**`,
-      `${event.title} — ${new Date(event.date).toLocaleString()}`
-    ].join('\n'),
-    components: []
+    content: buildAttendanceConfirmationContent(event, responderTitle, responderName, statusLabel, reason),
+    components: [createAttendanceUndoRow(messageRef.eventId || event.id, userId)]
+  }).catch(() => null);
+}
+
+async function restoreAttendancePromptMessage(interaction, event, userId, eventId = event.id) {
+  const message = await resolveAttendancePromptMessage(interaction, event);
+  if (!message) return;
+  await message.edit({
+    content: buildAttendancePromptContent(event, userId),
+    components: [createAttendanceResponseRow(eventId, userId)]
   }).catch(() => null);
 }
 
@@ -933,6 +988,7 @@ async function resolveInteractionMember(interaction, config = {}) {
 }
 
 function getResponderMeta(response = {}) {
+  if (response.responderType === 'player_coach') return { label: 'Player/Coach', emoji: '👥' };
   if (response.responderType === 'coach') return { label: 'Coach', emoji: '🧢' };
   return { label: 'Player', emoji: '👕' };
 }
@@ -1277,15 +1333,21 @@ function createPlayerProfileActionRow2(userId, mode = 'player') {
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`admin_player_action:set_face:${userId}:${mode}`).setLabel('🖼️ Face URL').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`admin_player_action:set_teams:${userId}:${mode}`).setLabel('🧩 Teams').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_player_action:set_gender:${userId}:${mode}`).setLabel('⚧️ Gender').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_player_action:set_positions:${userId}:${mode}`).setLabel('📍 Positions').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_player_view_attendance:${userId}:${mode}`).setLabel('📈 Attendance').setStyle(ButtonStyle.Success)
+    new ButtonBuilder().setCustomId(`admin_player_action:set_gender:${userId}:${mode}`).setLabel('⚧️ Gender').setStyle(ButtonStyle.Secondary)
   );
+
   if (mode === 'coach') {
     row.addComponents(
-      new ButtonBuilder().setCustomId(`admin_player_action:set_coach_positions:${userId}:${mode}`).setLabel('🎓 Coaching Title').setStyle(ButtonStyle.Primary)
+      new ButtonBuilder().setCustomId(`admin_player_action:set_coach_positions:${userId}:${mode}`).setLabel('🎓 Coaching Title').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`admin_player_view_attendance:${userId}:${mode}`).setLabel('📈 Attendance').setStyle(ButtonStyle.Success)
+    );
+  } else {
+    row.addComponents(
+      new ButtonBuilder().setCustomId(`admin_player_action:set_positions:${userId}:${mode}`).setLabel('📍 Positions').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`admin_player_view_attendance:${userId}:${mode}`).setLabel('📈 Attendance').setStyle(ButtonStyle.Success)
     );
   }
+
   return row;
 }
 
@@ -1966,7 +2028,7 @@ async function notifyCoachAndAdminOnAttending(interaction, context, eventId, eve
     new ButtonBuilder().setCustomId(`coach_event_attendance_list:${eventId}`).setLabel('Current attendance list').setStyle(ButtonStyle.Primary)
   );
   await coachChannel.send({
-    content: `🟢 ${attendanceName} (${responderType === 'coach' ? 'Coach' : 'Player'}) marked attending for **${event.title}** (${getEventDateLabel(event.date)}).`,
+    content: `🟢 ${attendanceName} marked attending for **${event.title}** (${getEventDateLabel(event.date)}).`,
     components: [row]
   }).catch(() => null);
 }
@@ -3546,6 +3608,30 @@ module.exports = {
         await triggerGoogleSync(context).catch((error) => context.sendLog(`⚠️ Google Sheets sync failed after position update: ${error.message}`));
         return;
       }
+      if (interaction.customId.startsWith('admin_player_position_toggle:')) {
+        const [, userId, mode = 'player', position] = interaction.customId.split(':');
+        const profile = getPlayerProfile(userId) || {};
+        const current = new Set(Array.isArray(profile.positions) ? profile.positions : []);
+        if (current.has(position)) current.delete(position);
+        else current.add(position);
+        upsertPlayerProfile(userId, { positions: Array.from(current) });
+        const active = PLAYER_POSITION_ORDER.filter((key) => current.has(key));
+        const buttons = PLAYER_POSITION_ORDER.map((key) => new ButtonBuilder()
+          .setCustomId(`admin_player_position_toggle:${userId}:${mode}:${key}`)
+          .setLabel(`${active.includes(key) ? '🟢' : '🔴'} ${normalizePositionLabel(key)}`)
+          .setStyle(active.includes(key) ? ButtonStyle.Success : ButtonStyle.Danger));
+        await interaction.update({
+          content: 'Toggle active positions for this player.',
+          embeds: [],
+          components: [
+            new ActionRowBuilder().addComponents(buttons.slice(0, 2)),
+            new ActionRowBuilder().addComponents(buttons.slice(2, 4)),
+            createBackButtonRow(`admin_player_back_to_profile:${userId}:${mode}`, mode === 'coach' ? '⬅️ Back to Coach' : '⬅️ Back to Player')
+          ]
+        });
+        await triggerGoogleSync(context).catch((error) => context.sendLog(`⚠️ Google Sheets sync failed after position update: ${error.message}`));
+        return;
+      }
 
       if (
         interaction.customId.startsWith('absence_open_profile:')
@@ -3805,7 +3891,7 @@ module.exports = {
       }
 
       const parsed = parseCustomId(interaction.customId);
-      if (!['attend_yes', 'attend_no', 'confirm_no'].includes(parsed.action)) return;
+      if (!['attend_yes', 'attend_no', 'attendance_undo', 'confirm_no'].includes(parsed.action)) return;
       const db = loadDb();
       let event = db.events[parsed.eventId];
 
@@ -3864,49 +3950,64 @@ module.exports = {
       }
 
       if (parsed.action === 'attend_yes') {
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
         if (parsed.userId && parsed.userId !== interaction.user.id) {
-          await interaction.editReply({ content: 'This attendance prompt is assigned to a different player.' });
+          await interaction.reply({ content: 'This attendance prompt is assigned to a different player.', flags: MessageFlags.Ephemeral });
           return;
         }
         const memberForRole = await resolveInteractionMember(interaction, config);
         if (!hasRole(memberForRole, teamRoles.player) && !hasRole(memberForRole, teamRoles.coach)) {
-          await interaction.editReply({ content: 'Only players/coaches for this team can respond.' });
+          await interaction.reply({ content: 'Only players/coaches for this team can respond.', flags: MessageFlags.Ephemeral });
           return;
         }
         const profile = getPlayerProfile(interaction.user.id) || {};
         const requiredGender = config.teams?.[event.team]?.gender;
         if (!teamAllowsGender(requiredGender, profile.gender)) {
-          await interaction.editReply({ content: getGenderMismatchMessage(getTeamMeta(config, event.team).label, requiredGender) });
+          await interaction.reply({ content: getGenderMismatchMessage(getTeamMeta(config, event.team).label, requiredGender), flags: MessageFlags.Ephemeral });
           return;
         }
 
-        const existing = db.events[parsed.eventId]?.responses?.[interaction.user.id];
-        if (existing?.status === 'yes') {
-          await interaction.editReply({ content: 'You are already marked as attending for this event.' });
-          return;
-        }
-
-        const responderType = hasRole(memberForRole, teamRoles.coach) && !hasRole(memberForRole, teamRoles.player)
-          ? 'coach'
-          : 'player';
+        const responderTitle = getMemberAttendanceRoleLabel(memberForRole, teamRoles);
+        const responderType = responderTitle.toLowerCase().replace('/', '_');
+        const attendanceName = getAttendanceResponderName(interaction.user, memberForRole, profile);
         setResponse(parsed.eventId, interaction.user.id, {
           status: 'yes',
           reason: '',
           confirmed: false,
           responderType,
-          username: getPlayerDisplayName(interaction.user.id, interaction.user.tag),
+          username: `${responderTitle} ${attendanceName}`,
           updatedAt: new Date().toISOString()
         });
 
-        const fallbackName = getPlayerDisplayName(interaction.user.id, interaction.user.tag);
-        const attendanceName = responderType === 'coach'
-          ? getCoachAddressLabel(config, memberForRole, profile, event.team, fallbackName)
-          : fallbackName;
-        await interaction.editReply({ content: `:white_check_mark: You are marked as attending for ${event.title} (${getCompactDateLabel(event.date)}).` });
-        await updateAttendancePromptToConfirmation(interaction, event, attendanceName, 'attending');
+        await interaction.deferUpdate();
+        await updateAttendancePromptToConfirmation(interaction, event, responderTitle, attendanceName, 'attending', interaction.user.id, '', { eventId: parsed.eventId });
         await triggerGoogleSync(context);
-        await notifyCoachAndAdminOnAttending(interaction, context, parsed.eventId, event, attendanceName, responderType);
+        await notifyCoachAndAdminOnAttending(interaction, context, parsed.eventId, event, `${responderTitle} ${attendanceName}`, responderType);
+        return;
+      }
+
+      if (parsed.action === 'attendance_undo') {
+        if (parsed.userId && parsed.userId !== interaction.user.id) {
+          await interaction.reply({ content: 'This attendance prompt is assigned to a different player.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        clearResponse(parsed.eventId, interaction.user.id);
+        await interaction.deferUpdate();
+        await restoreAttendancePromptMessage(interaction, event, interaction.user.id, parsed.eventId);
+        await triggerGoogleSync(context);
+        const refreshedDb = loadDb();
+        const openTickets = Object.entries(refreshedDb.absenceTickets || {})
+          .filter(([, ticket]) => ticket?.eventId === parsed.eventId && ticket?.playerId === interaction.user.id && ticket?.status === 'open');
+        const attendanceGuild = await resolveInteractionGuild(interaction, config);
+        for (const [ticketChannelId] of openTickets) {
+          setAbsenceTicket(ticketChannelId, {
+            status: 'closed',
+            closedAt: new Date().toISOString(),
+            closedReason: 'Player undid attendance response.'
+          });
+          const ticketChannel = await attendanceGuild?.channels?.fetch(ticketChannelId).catch(() => null);
+          if (ticketChannel) await closeAbsenceTicketChannel(ticketChannel, 'Player undid attendance response');
+        }
+        await context.sendLog(`↩️ <@${interaction.user.id}> cleared their attendance response for **${event.title}** (${getEventDateLabel(event.date)}).`);
         return;
       }
 
@@ -3928,11 +4029,12 @@ module.exports = {
           return;
         }
 
-        const responderType = hasRole(memberForRole, teamRoles.coach) && !hasRole(memberForRole, teamRoles.player)
-          ? 'coach'
-          : 'player';
-        const modalToken = `${parsed.eventId}:${interaction.user.id}`.slice(-80);
-        pendingAbsenceReasonModals.set(modalToken, parsed.eventId);
+        const modalToken = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+        pendingAbsenceReasonModals.set(modalToken, {
+          eventId: parsed.eventId,
+          channelId: interaction.channelId,
+          messageId: interaction.message?.id || ''
+        });
         const modal = new ModalBuilder()
           .setCustomId(`absence_reason_token:${modalToken}`)
           .setTitle('Not Attending');
@@ -4796,31 +4898,6 @@ module.exports = {
         });
         return;
       }
-      if (interaction.customId.startsWith('admin_player_position_toggle:')) {
-        const [, userId, mode = 'player', position] = interaction.customId.split(':');
-        const profile = getPlayerProfile(userId) || {};
-        const current = new Set(Array.isArray(profile.positions) ? profile.positions : []);
-        if (current.has(position)) current.delete(position);
-        else current.add(position);
-        upsertPlayerProfile(userId, { positions: Array.from(current) });
-        const active = PLAYER_POSITION_ORDER.filter((key) => current.has(key));
-        const buttons = PLAYER_POSITION_ORDER.map((key) => new ButtonBuilder()
-          .setCustomId(`admin_player_position_toggle:${userId}:${mode}:${key}`)
-          .setLabel(`${active.includes(key) ? '🟢' : '🔴'} ${normalizePositionLabel(key)}`)
-          .setStyle(active.includes(key) ? ButtonStyle.Success : ButtonStyle.Danger));
-        await interaction.update({
-          content: 'Toggle active positions for this player.',
-          embeds: [],
-          components: [
-            new ActionRowBuilder().addComponents(buttons.slice(0, 2)),
-            new ActionRowBuilder().addComponents(buttons.slice(2, 4)),
-            createBackButtonRow(`admin_player_back_to_profile:${userId}:${mode}`, mode === 'coach' ? '⬅️ Back to Coach' : '⬅️ Back to Player')
-          ]
-        });
-        await triggerGoogleSync(context).catch((error) => context.sendLog(`⚠️ Google Sheets sync failed after position update: ${error.message}`));
-        return;
-      }
-
       if (interaction.customId.startsWith('admin_player_set_teams:')) {
         const userId = interaction.customId.split(':')[1];
       const mode = interaction.customId.split(':')[2] || 'player';
@@ -5372,9 +5449,10 @@ ${picker.text}`, embeds: [], components: picker.rows });
 
     if (interaction.isModalSubmit() && (interaction.customId.startsWith('absence_reason:') || interaction.customId.startsWith('absence_reason_token:'))) {
       const parts = interaction.customId.split(':');
-      const eventId = interaction.customId.startsWith('absence_reason_token:')
+      const modalPayload = interaction.customId.startsWith('absence_reason_token:')
         ? pendingAbsenceReasonModals.get(parts.slice(1).join(':'))
-        : parts[1];
+        : null;
+      const eventId = typeof modalPayload === 'object' && modalPayload ? modalPayload.eventId : (modalPayload || parts[1]);
       const db = loadDb();
       const event = db.events[eventId];
 
@@ -5406,22 +5484,22 @@ ${picker.text}`, embeds: [], components: picker.rows });
         return;
       }
       const isCoachResponder = hasRole(memberForRole, teamRoles.coach) && !hasRole(memberForRole, teamRoles.player);
-      const playerDisplayName = buildRichPlayerMention(config, interaction.user, memberForRole, profile, event.team);
+      const responderTitle = getMemberAttendanceRoleLabel(memberForRole, teamRoles);
+      const responderType = responderTitle.toLowerCase().replace('/', '_');
+      const responderName = getAttendanceResponderName(interaction.user, memberForRole, profile || {});
+      const playerDisplayName = `${responderTitle} ${responderName}`;
 
       setResponse(eventId, interaction.user.id, {
         status: 'pending_no',
         reason,
         confirmed: false,
-        responderType: hasRole(memberForRole, teamRoles.coach) && !hasRole(memberForRole, teamRoles.player) ? 'coach' : 'player',
+        responderType,
         username: playerDisplayName,
         updatedAt: new Date().toISOString()
       });
       const eventDateLabel = getCompactDateLabel(event.date);
-      await interaction.reply({
-        content: `:red_circle: You are marked as not attending for ${event.title} (${eventDateLabel}).`,
-        flags: MessageFlags.Ephemeral
-      });
-      await updateAttendancePromptToConfirmation(interaction, event, playerDisplayName, 'not attending');
+      await interaction.deferUpdate();
+      await updateAttendancePromptToConfirmation(interaction, event, responderTitle, responderName, 'not attending', interaction.user.id, reason, { ...modalPayload, eventId });
       await triggerGoogleSync(context);
 
       const coachTitle = isCoachResponder ? getCoachPositionLabel(getCoachPositionForTeam(profile || {}, event.team, config), config) : '';
@@ -5474,18 +5552,16 @@ ${picker.text}`, embeds: [], components: picker.rows });
           createdAt: new Date().toISOString()
         });
 
-        await interaction.editReply({
-          content: [
-            `:red_circle: You are marked as not attending for ${event.title} (${eventDateLabel}).`,
-            `🔗 Absence chat: ${ticketUrl}`
-          ].join('\n')
-        });
+        await interaction.followUp({
+          content: `🔗 Absence chat for **${event.title}**: ${ticketUrl}`,
+          flags: MessageFlags.Ephemeral
+        }).catch(() => null);
 
         await ticketChannel.send({
           content: [
             `🧾 Absence ticket for <@${interaction.user.id}>`,
             `📅 ${eventDateLabel} — ${event.title}`,
-            isCoachResponder ? `🧢 Role: Coach (${coachTitle})` : '👕 Role: Player',
+            `👤 Role: ${responderTitle}${isCoachResponder ? ` (${coachTitle})` : ''}`,
             `📝 Reason: ${reason}`,
             '',
             'Staff/coaches: confirm or decline this absence request below.'
