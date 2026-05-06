@@ -23,6 +23,7 @@ const {
   setAbsenceTicket,
   deleteAbsenceTicket,
   setEventMessageId,
+  upsertVacation,
   upsertPlayerProfile,
   getPlayerProfile,
   getPlayerDisplayName
@@ -3221,8 +3222,9 @@ module.exports = {
       if (interaction.customId === 'player_profile_manager') {
         const profile = getPlayerProfile(interaction.user.id) || {};
         const configNow = loadConfig();
+        const memberForRole = await resolveInteractionMember(interaction, configNow) || { roles: profile.roles || [] };
         const teams = Object.entries(configNow.roles || {})
-          .filter(([, roles]) => interaction.member?.roles?.cache?.has(roles?.player))
+          .filter(([, roles]) => hasRole(memberForRole, roles?.player))
           .map(([team]) => configNow.teams?.[team]?.label || team);
         await interaction.reply({
           content: [
@@ -3234,7 +3236,7 @@ module.exports = {
             `• Last name: ${profile.lastName || 'not set'}`,
             `• Gender: ${profile.gender || 'not set'}`,
             `• Nickname: ${profile.nickName || 'not set'}`,
-            `• Joined discord server: ${interaction.member?.joinedAt ? interaction.member.joinedAt.toISOString().slice(0, 10) : 'unknown'}`,
+            `• Joined discord server: ${memberForRole?.joinedAt ? memberForRole.joinedAt.toISOString().slice(0, 10) : 'unknown'}`,
             `• Phone number: ${profile.phoneNumber || 'not set'}`
           ].join('\n'),
           components: [
@@ -3274,7 +3276,9 @@ module.exports = {
       if (interaction.customId.startsWith('player_fixture_manager:')) {
         const configNow = loadConfig();
         const db = loadDb();
-        const teams = Object.entries(configNow.roles || {}).filter(([, roles]) => interaction.member?.roles?.cache?.has(roles?.player)).map(([team]) => team);
+        const profile = getPlayerProfile(interaction.user.id) || {};
+        const memberForRole = await resolveInteractionMember(interaction, configNow) || { roles: profile.roles || [] };
+        const teams = Object.entries(configNow.roles || {}).filter(([, roles]) => hasRole(memberForRole, roles?.player)).map(([team]) => team);
         const lines = Object.entries(db.events || {})
           .map(([eventId, event]) => ({ eventId, ...event }))
           .filter((event) => teams.includes(event.team))
@@ -3287,36 +3291,39 @@ module.exports = {
       }
       if (interaction.customId === 'player_talk_to_coaches') {
         const configNow = loadConfig();
-        const teams = Object.entries(configNow.roles || {}).filter(([, roles]) => interaction.member?.roles?.cache?.has(roles?.player)).map(([team]) => team);
+        const profile = getPlayerProfile(interaction.user.id) || {};
+        const memberForRole = await resolveInteractionMember(interaction, configNow) || { roles: profile.roles || [] };
+        const guildForAction = await resolveInteractionGuild(interaction, configNow);
+        const teams = Object.entries(configNow.roles || {}).filter(([, roles]) => hasRole(memberForRole, roles?.player)).map(([team]) => team);
         if (!teams.length) {
           await interaction.reply({ content: 'You are not assigned to any player team.', flags: MessageFlags.Ephemeral });
           return;
         }
         if (teams.length === 1) {
           const team = teams[0];
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral });
           const coachRoleId = configNow.roles?.[team]?.coach;
           const categoryId = configNow.channels.privateChatCategories?.[team] || configNow.channels.ticket || null;
           const playerName = getPlayerDisplayName(interaction.user.id, interaction.user.tag);
-          const channel = await interaction.guild.channels.create({
+          const channel = await guildForAction?.channels.create({
             name: sanitizeChannelName(`Coach Chat - ${playerName}`),
             type: ChannelType.GuildText,
             parent: categoryId,
             permissionOverwrites: [
-              { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+              { id: guildForAction.id, deny: [PermissionFlagsBits.ViewChannel] },
               { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] },
               { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
               ...(coachRoleId ? [{ id: coachRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }] : [])
             ]
           }).catch(() => null);
           if (!channel) {
-            await interaction.reply({ content: 'Could not create coach chat.', flags: MessageFlags.Ephemeral });
+            await interaction.editReply({ content: 'Could not create coach chat.' });
             return;
           }
-          const profile = getPlayerProfile(interaction.user.id) || {};
           const notes = Array.isArray(profile.notesLog) ? profile.notesLog : [];
           upsertPlayerProfile(interaction.user.id, { ...profile, notesLog: [...notes, { id: `coachchat-${Date.now()}`, ts: new Date().toISOString(), authorId: interaction.user.id, text: `Opened coach chat for ${configNow.teams?.[team]?.label || team}: #${channel.name}` }] });
           await triggerGoogleSync(context).catch(() => null);
-          await interaction.reply({ content: `✅ Coach chat created: <#${channel.id}>`, flags: MessageFlags.Ephemeral });
+          await interaction.editReply({ content: `✅ Coach chat created: <#${channel.id}>` });
           return;
         }
         const row = new ActionRowBuilder().addComponents(
@@ -3333,8 +3340,9 @@ module.exports = {
       if (interaction.customId === 'player_next_event_address') {
         const configNow = loadConfig();
         const db = loadDb();
-        const member = interaction.member;
-        const teams = Object.entries(configNow.roles || {}).filter(([, roles]) => member?.roles?.cache?.has(roles?.player)).map(([team]) => team);
+        const profile = getPlayerProfile(interaction.user.id) || {};
+        const memberForRole = await resolveInteractionMember(interaction, configNow) || { roles: profile.roles || [] };
+        const teams = Object.entries(configNow.roles || {}).filter(([, roles]) => hasRole(memberForRole, roles?.player)).map(([team]) => team);
         const nextEvent = Object.entries(db.events || {})
           .map(([eventId, event]) => ({ eventId, ...event }))
           .filter((event) => teams.includes(event.team))
@@ -3398,23 +3406,25 @@ module.exports = {
         return;
       }
       if (interaction.customId === 'player_talk_to_coaches_pick_teams' && interaction.isStringSelectMenu()) {
+        await interaction.deferUpdate();
         const teams = interaction.values || [];
         const cfg = loadConfig();
+        const guildForAction = await resolveInteractionGuild(interaction, cfg);
         const coachRoleIds = Array.from(new Set(teams.map((team) => cfg.roles?.[team]?.coach).filter(Boolean)));
         const categoryId = cfg.channels.privateChatCategories?.[teams[0]] || cfg.channels.ticket || null;
         const playerName = getPlayerDisplayName(interaction.user.id, interaction.user.tag);
-        const channel = await interaction.guild.channels.create({
+        const channel = await guildForAction?.channels.create({
           name: sanitizeChannelName(`Coach Chat - ${playerName}`),
           type: ChannelType.GuildText,
           parent: categoryId,
           permissionOverwrites: [
-            { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+            { id: guildForAction.id, deny: [PermissionFlagsBits.ViewChannel] },
             { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] },
             { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
             ...coachRoleIds.map((id) => ({ id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }))
           ]
         }).catch(() => null);
-        await interaction.update({ content: channel ? `✅ Coach chat created: <#${channel.id}>` : 'Could not create coach chat.', components: [] });
+        await interaction.editReply({ content: channel ? `✅ Coach chat created: <#${channel.id}>` : 'Could not create coach chat.', components: [] });
         return;
       }
       if (interaction.customId === 'player_vacation_edit_pick' && interaction.isStringSelectMenu()) {
@@ -4123,8 +4133,7 @@ module.exports = {
 
       if (interaction.customId === 'coach_team_select') {
         const selectedTeam = interaction.values[0];
-        const targetGuild = interaction.guild
-          || await interaction.client.guilds.fetch(config.bot?.guildId || '').catch(() => null);
+        const targetGuild = await resolveInteractionGuild(interaction, config);
         if (!targetGuild) {
           await interaction.update({ content: 'Could not resolve the server for this coach report.', embeds: [], components: [] });
           return;
@@ -5663,8 +5672,11 @@ ${picker.text}`, embeds: [], components: picker.rows });
         return;
       }
       const requestorRole = interaction.customId.split(':')[1] === 'coach' ? 'coach' : 'player';
+      const profile = getPlayerProfile(interaction.user.id) || {};
+      const memberForRole = await resolveInteractionMember(interaction, config) || { roles: profile.roles || [] };
+      const guildForAction = await resolveInteractionGuild(interaction, config);
       const teams = Object.entries(config.roles || {})
-        .filter(([, roles]) => interaction.member?.roles?.cache?.has(requestorRole === 'coach' ? roles?.coach : roles?.player))
+        .filter(([, roles]) => hasRole(memberForRole, requestorRole === 'coach' ? roles?.coach : roles?.player))
         .map(([team]) => team);
       if (!teams.length) {
         await interaction.reply({ content: 'No eligible teams found for your account.', flags: MessageFlags.Ephemeral });
@@ -5686,12 +5698,12 @@ ${picker.text}`, embeds: [], components: picker.rows });
       });
       const coachRoleIds = Array.from(new Set(teams.map((team) => config.roles?.[team]?.coach).filter(Boolean)));
       const categoryId = config.channels.privateChatCategories?.[teams[0]] || config.channels.ticket || null;
-      const channel = await interaction.guild.channels.create({
+      const channel = await guildForAction?.channels.create({
         name: sanitizeChannelName(`Vacation - ${playerName}`),
         type: ChannelType.GuildText,
         parent: categoryId,
         permissionOverwrites: [
-          { id: interaction.guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+          { id: guildForAction.id, deny: [PermissionFlagsBits.ViewChannel] },
           { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] },
           { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
           ...coachRoleIds.map((id) => ({ id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }))
