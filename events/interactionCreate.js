@@ -904,7 +904,32 @@ function parseCustomId(customId) {
 }
 
 function hasRole(member, roleId) {
-  return !!member.roles.cache.get(roleId);
+  if (!roleId || roleId === 'ROLE_ID') return false;
+  return Boolean(
+    member?.roles?.cache?.has?.(roleId)
+    || member?.roles?.cache?.get?.(roleId)
+    || (Array.isArray(member?.roles) && member.roles.includes(roleId))
+  );
+}
+
+async function resolveInteractionGuild(interaction, config = {}) {
+  if (interaction.guild) return interaction.guild;
+  const guildId = config.bot?.guildId || process.env.DISCORD_GUILD_ID || interaction.guildId || '';
+  if (guildId) {
+    const cachedGuild = interaction.client?.guilds?.cache?.get(guildId);
+    const fetchedGuild = cachedGuild ? null : await (interaction.client?.guilds?.fetch?.(guildId) || Promise.resolve(null)).catch(() => null);
+    const configuredGuild = cachedGuild || fetchedGuild;
+    if (configuredGuild) return configuredGuild;
+  }
+  const cachedGuilds = Array.from(interaction.client?.guilds?.cache?.values?.() || []);
+  return cachedGuilds.length === 1 ? cachedGuilds[0] : null;
+}
+
+async function resolveInteractionMember(interaction, config = {}) {
+  if (interaction.member?.roles?.cache) return interaction.member;
+  const guild = await resolveInteractionGuild(interaction, config);
+  if (!guild) return null;
+  return guild.members.fetch(interaction.user.id).catch(() => null);
 }
 
 function getResponderMeta(response = {}) {
@@ -3844,7 +3869,7 @@ module.exports = {
           await interaction.editReply({ content: 'This attendance prompt is assigned to a different player.' });
           return;
         }
-        const memberForRole = interaction.member || (interaction.guild ? await interaction.guild.members.fetch(interaction.user.id).catch(() => null) : null);
+        const memberForRole = await resolveInteractionMember(interaction, config);
         if (!hasRole(memberForRole, teamRoles.player) && !hasRole(memberForRole, teamRoles.coach)) {
           await interaction.editReply({ content: 'Only players/coaches for this team can respond.' });
           return;
@@ -3876,7 +3901,7 @@ module.exports = {
 
         const fallbackName = getPlayerDisplayName(interaction.user.id, interaction.user.tag);
         const attendanceName = responderType === 'coach'
-          ? getCoachAddressLabel(config, interaction.member, profile, event.team, fallbackName)
+          ? getCoachAddressLabel(config, memberForRole, profile, event.team, fallbackName)
           : fallbackName;
         await interaction.editReply({ content: `:white_check_mark: You are marked as attending for ${event.title} (${getCompactDateLabel(event.date)}).` });
         await updateAttendancePromptToConfirmation(interaction, event, attendanceName, 'attending');
@@ -3890,7 +3915,7 @@ module.exports = {
           await interaction.reply({ content: 'This attendance prompt is assigned to a different player.', flags: MessageFlags.Ephemeral });
           return;
         }
-        const memberForRole = interaction.member || (interaction.guild ? await interaction.guild.members.fetch(interaction.user.id).catch(() => null) : null);
+        const memberForRole = await resolveInteractionMember(interaction, config);
         if (!hasRole(memberForRole, teamRoles.player) && !hasRole(memberForRole, teamRoles.coach)) {
           await interaction.reply({ content: 'Only players/coaches for this team can respond.', flags: MessageFlags.Ephemeral });
           return;
@@ -5359,8 +5384,13 @@ ${picker.text}`, embeds: [], components: picker.rows });
       }
 
       const teamRoles = teamRolesMap[event.team];
-      const memberForRole = interaction.member || (interaction.guild ? await interaction.guild.members.fetch(interaction.user.id).catch(() => null) : null);
-        if (!hasRole(memberForRole, teamRoles.player) && !hasRole(memberForRole, teamRoles.coach)) {
+      if (!teamRoles) {
+        await interaction.reply({ content: 'Team roles are not configured for this event.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const memberForRole = await resolveInteractionMember(interaction, config);
+      if (!hasRole(memberForRole, teamRoles.player) && !hasRole(memberForRole, teamRoles.coach)) {
         await interaction.reply({ content: 'Only players/coaches for this team can respond.', flags: MessageFlags.Ephemeral });
         return;
       }
@@ -5376,7 +5406,7 @@ ${picker.text}`, embeds: [], components: picker.rows });
         return;
       }
       const isCoachResponder = hasRole(memberForRole, teamRoles.coach) && !hasRole(memberForRole, teamRoles.player);
-      const playerDisplayName = buildRichPlayerMention(config, interaction.user, interaction.member, profile, event.team);
+      const playerDisplayName = buildRichPlayerMention(config, interaction.user, memberForRole, profile, event.team);
 
       setResponse(eventId, interaction.user.id, {
         status: 'pending_no',
@@ -5395,18 +5425,20 @@ ${picker.text}`, embeds: [], components: picker.rows });
       await triggerGoogleSync(context);
 
       const coachTitle = isCoachResponder ? getCoachPositionLabel(getCoachPositionForTeam(profile || {}, event.team, config), config) : '';
-      const baseChannelName = buildAbsenceTicketChannelName(config, event, profile, interaction.member, interaction.user);
+      const baseChannelName = buildAbsenceTicketChannelName(config, event, profile, memberForRole, interaction.user);
       const channelName = isCoachResponder ? sanitizeChannelName(`${coachTitle}-${baseChannelName}`) : baseChannelName;
 
+      const attendanceGuild = await resolveInteractionGuild(interaction, config);
       let ticketChannel;
       try {
-        ticketChannel = await interaction.guild.channels.create({
+        if (!attendanceGuild) throw new Error('Attendance guild could not be resolved.');
+        ticketChannel = await attendanceGuild.channels.create({
           name: channelName,
           type: ChannelType.GuildText,
           parent: config.channels.privateChatCategories?.[event.team] || config.channels.ticket || null,
           permissionOverwrites: [
             {
-              id: interaction.guild.id,
+              id: attendanceGuild.id,
               deny: [PermissionFlagsBits.ViewChannel]
             },
             {
@@ -5428,7 +5460,7 @@ ${picker.text}`, embeds: [], components: picker.rows });
       }
 
       if (ticketChannel) {
-        const ticketUrl = `https://discord.com/channels/${interaction.guild.id}/${ticketChannel.id}`;
+        const ticketUrl = `https://discord.com/channels/${attendanceGuild.id}/${ticketChannel.id}`;
         setAbsenceTicket(ticketChannel.id, {
           ticketId: ticketChannel.id,
           eventId,
@@ -5470,7 +5502,7 @@ ${picker.text}`, embeds: [], components: picker.rows });
         let staffNotification;
         let adminNotification;
         if (staffRoomId) {
-          const staffRoom = await interaction.guild.channels.fetch(staffRoomId).catch(() => null);
+          const staffRoom = await attendanceGuild.channels.fetch(staffRoomId).catch(() => null);
           if (staffRoom?.isTextBased()) {
             const staffMessage = await staffRoom.send({
               content: formatAbsenceNotification({
@@ -5485,7 +5517,7 @@ ${picker.text}`, embeds: [], components: picker.rows });
           }
         }
         if (config.channels?.admin) {
-          const adminChannel = await interaction.guild.channels.fetch(config.channels.admin).catch(() => null);
+          const adminChannel = await attendanceGuild.channels.fetch(config.channels.admin).catch(() => null);
           if (adminChannel?.isTextBased()) {
             const adminMessage = await adminChannel.send({
               content: formatAbsenceNotification({
