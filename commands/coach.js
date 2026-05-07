@@ -25,6 +25,10 @@ function getCoachTeams(member, teamRoles = {}, storedRoles = []) {
     .map(([team]) => team);
 }
 
+function getTeamLabel(config = {}, team = '') {
+  return config.teams?.[team]?.label || team;
+}
+
 async function resolveGuildMember(interaction, config) {
   if (interaction.member && interaction.guild) return { guild: interaction.guild, member: interaction.member };
 
@@ -42,7 +46,7 @@ async function resolveGuildMember(interaction, config) {
   return { guild, member };
 }
 
-function buildReport(guild, team, teamRoles) {
+function buildReport(guild, team, teamRoles, config = {}) {
   const db = loadDb();
   const now = Date.now();
 
@@ -66,7 +70,7 @@ function buildReport(guild, team, teamRoles) {
   const playerIds = Array.from(new Set([...(playerRole ? Array.from(playerRole.members.keys()) : []), ...storedPlayers]));
   const coachIds = Array.from(new Set([...(coachRole ? Array.from(coachRole.members.keys()) : []), ...storedCoaches]));
 
-  if (!events.length) return `No upcoming events for **${team}**.`;
+  if (!events.length) return `No upcoming events for **${getTeamLabel(config, team)}**.`;
 
   return events.map((event) => {
     const responses = event.responses || {};
@@ -111,7 +115,7 @@ module.exports = {
         .addOptions(coachTeams.map((team) => ({
           label: config.teams?.[team]?.label || (team[0].toUpperCase() + team.slice(1)),
           value: team,
-          description: `Open attendance + management for ${team}`
+          description: `Open attendance + management for ${getTeamLabel(config, team)}`
         })));
 
       const row = new ActionRowBuilder().addComponents(select);
@@ -127,7 +131,7 @@ module.exports = {
     const team = coachTeams[0];
     const teamLabel = config.teams?.[team]?.label || team;
     const coachTitle = profile.coachPositions?.[team] || 'Coach';
-    const report = buildReport(guild, team, config.roles);
+    const report = buildReport(guild, team, config.roles, config);
 
     const embed = new EmbedBuilder()
       .setTitle(`Coach UI — ${teamLabel}`)
