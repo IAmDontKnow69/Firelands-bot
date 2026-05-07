@@ -84,12 +84,12 @@ function buildReport(guild, team, teamRoles, config = {}) {
 
     return [
       `**${event.title}** (${new Date(event.date).toLocaleString()})`,
-      `🟢 Attending (Players): ${attendingPlayers}`,
-      `🔴 Not attending (Players): ${unavailablePlayers}`,
+      `🟢 Attending: ${attendingPlayers}`,
+      `🔴 Not attending: ${unavailablePlayers}`,
       `🌴 On Vacation: ${onVacation}`,
-      `✅ Actually Attended: ${actualAttended}`,
-      `❌ Actually Absent: ${actualAbsent}`,
-      `❓ No response (Players): ${noResponse}`,
+      `✅ Attended: ${actualAttended}`,
+      `❌ Absent: ${actualAbsent}`,
+      `❓ No response: ${noResponse}`,
       `🧢 Coaches in Team: ${coachIds.length}`
     ].join('\n');
   }).join('\n\n');
@@ -154,21 +154,21 @@ module.exports = {
 
     const row1 = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`coach_manage_profile:${team}`).setLabel('🧢 Coach Profile').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`coach_manage_players:${team}`).setLabel('👥 Player Manager').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`coach_manage_events:${team}`).setLabel('📅 Events').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`coach_team_attendance:${team}`).setLabel('📊 Team Attendance').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`coach_manage_vacation:${team}`).setLabel('🌴 Vacation').setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId(`coach_player_management:${team}`).setLabel('👥 Player Manager').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`coach_events_menu:${team}`).setLabel('📅 Events').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`coach_attendance_team_menu:${team}`).setLabel('📊 Team Attendance').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`coach_manage_vacation:${team}`).setLabel('🌴 Your Vacations').setStyle(ButtonStyle.Secondary)
     );
 
     const row2 = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`coach_team_vacations:${team}`).setLabel('🌴 Team Vacations').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId(`coach_open_player_chat:${team}`).setLabel('💬 Chat With Player').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`coach_set_captain:${team}`).setLabel('🅒 Set Captain').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`coach_next_event:${team}`).setLabel('📍 Next Event Address').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`coach_force_remind:${team}`).setLabel('🔔 Force Remind').setStyle(ButtonStyle.Primary)
+      new ButtonBuilder().setCustomId(`coach_set_captain:${team}`).setLabel('🅒 Set Captains').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`coach_next_event:${team}`).setLabel('📍 Next Event Address').setStyle(ButtonStyle.Secondary)
     );
     const row3 = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(`coach_actual_attendance:${team}`).setLabel('✅ Actual Attendance').setStyle(ButtonStyle.Success)
+      new ButtonBuilder().setCustomId(`coach_actual_attendance:${team}`).setLabel('✅ Actual Attendance').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`coach_attendance_notify:${team}`).setLabel('🔔 Attendance List Notification').setStyle(ButtonStyle.Primary)
     );
 
     await interaction.reply({ embeds: [embed], components: [row1, row2, row3], flags: MessageFlags.Ephemeral });

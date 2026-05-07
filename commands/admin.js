@@ -32,9 +32,27 @@ function createAdminPanelSecondaryRow() {
   return null;
 }
 
-function getClubNextFiveEventLines(config = {}) {
+function getEventAttendanceSummaryLine(event, config = {}, guild = null) {
+  if (!event?.team) return '✅ Attended: **0** | 🔴 Absent: **0** | ❓ Not responded: **0**';
+
+  const roleId = config.roles?.[event.team]?.player;
+  const role = roleId && roleId !== 'ROLE_ID' ? guild?.roles?.cache?.get(roleId) : null;
+  const playerIds = role ? Array.from(role.members.keys()) : [];
+  const responses = event.responses || {};
+
+  const attended = playerIds.filter((playerId) => responses[playerId]?.status === 'yes').length;
+  const absent = playerIds.filter((playerId) => {
+    const response = responses[playerId];
+    return response?.status === 'pending_no' || response?.status === 'confirmed_no' || response?.onVacation;
+  }).length;
+  const notResponded = Math.max(playerIds.length - attended - absent, 0);
+
+  return `✅ Attended: **${attended}** | 🔴 Absent: **${absent}** | ❓ Not responded: **${notResponded}**`;
+}
+
+function getClubNextFiveEventLines(config = {}, guild = null, db = loadDb()) {
   const now = Date.now();
-  const events = Object.values(loadDb().events || {})
+  const events = Object.values(db.events || {})
     .filter((event) => event?.date && new Date(event.date).getTime() >= now)
     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
     .slice(0, 5);
@@ -45,13 +63,16 @@ function getClubNextFiveEventLines(config = {}) {
     const teamLabel = event.team && config.teams?.[event.team]
       ? `${config.teams[event.team].emoji || '🔹'} ${config.teams[event.team].label || event.team}`
       : '🏟️ Club';
-    return `• ${index + 1}. ${teamLabel} — ${event.title} — ${new Date(event.date).toLocaleString()}`;
+    const attendanceSummary = getEventAttendanceSummaryLine(event, config, guild);
+    return `• ${index + 1}. ${teamLabel} — ${event.title} — ${new Date(event.date).toLocaleString()}
+  ${attendanceSummary}`;
   });
 }
 
-function buildAdminPanelEmbed(config = {}) {
+function buildAdminPanelEmbed(config = {}, guild = null) {
+  const db = loadDb();
   const teamLabels = Object.entries(config.teams || {}).map(([team, meta]) => `${meta.emoji || '🔹'} ${meta.label || team}`).join(' | ');
-  const nextEventLines = getClubNextFiveEventLines(config);
+  const nextEventLines = getClubNextFiveEventLines(config, guild, db);
   return new EmbedBuilder()
     .setTitle('🔥 Firelands Bot Admin UI')
     .setDescription([
@@ -125,7 +146,7 @@ async function handleClubReport(interaction) {
     const perPlayer = players.length
       ? players.map((id) => {
         const t = totals[id];
-        return `<@${id}> — ✅ ${t.attended} | 🔴 ${t.unavailable} | ❓ ${t.noResponse}`;
+        return `<@${id}> — ✅ Attended: **${t.attended}** | 🔴 Absent: **${t.unavailable}** | ❓ Not responded: **${t.noResponse}**`;
       }).join('\n')
       : '*No players found for configured role.*';
 
@@ -209,7 +230,7 @@ module.exports = {
       return;
     }
 
-    const view = buildAdminPanelEmbed(config);
+    const view = buildAdminPanelEmbed(config, guild);
 
     const rows = [createAdminPanelActionRow()].filter(Boolean);
     await interaction.reply({ embeds: [view], components: rows, flags: MessageFlags.Ephemeral });
