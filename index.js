@@ -30,8 +30,9 @@ const adminCommand = require('./commands/admin');
 const confirmCommand = require('./commands/confirm');
 const interactionHandler = require('./events/interactionCreate');
 const { fetchUpcomingEvents, fetchCalendarEvents, normalizeCalendarId } = require('./utils/googleCalendar');
-const { loadDb, saveDb, upsertEvent, setEventMessageId, upsertPlayerProfile, getPlayerProfile } = require('./utils/database');
+const { loadDb, saveDb, upsertEvent, setEventMessageRefs, upsertPlayerProfile, getPlayerProfile } = require('./utils/database');
 const { startReminderJobs } = require('./utils/reminders');
+const { hasAdminAccess, adminAccessMessage } = require('./utils/adminAccess');
 const { ensureConfig, loadConfig, saveConfig, updateConfig, resetConfigFresh } = require('./utils/config');
 const {
   syncAllToSheet,
@@ -723,6 +724,16 @@ function getEventAnnouncementContent(event = {}, teamRoleId = '') {
   ].filter(Boolean).join('\n');
 }
 
+function getDirectAttendancePromptContent(event = {}, userId = '', config = getConfig()) {
+  const eventTypeName = eventTypeLabel(determineEventType(event, config));
+  return [
+    userId ? `👋 Hey <@${userId}>,` : null,
+    `📣 You have a **${eventTypeName}** on **${new Date(event.date).toLocaleDateString()}** at **${new Date(event.date).toLocaleTimeString()}**.`,
+    '✅ Will you be attending?',
+    event.location ? `📍 [${event.location}](${getMapsLink(event.location)})` : null
+  ].filter(Boolean).join('\n');
+}
+
 function summarizeEventChanges(previous = {}, incoming = {}) {
   const changes = [];
   if ((previous.title || '') !== (incoming.title || '')) {
@@ -1257,6 +1268,11 @@ function isWithinDays(dateValue, days) {
   return diff >= 0 && diff <= days * 24 * 60 * 60 * 1000;
 }
 
+function getTeamAutoSendDays(config = {}, team = '') {
+  const raw = Number(config.teams?.[team]?.attendanceAutoSendDays || 14);
+  return [7, 14, 21, 28].includes(raw) ? raw : 14;
+}
+
 function getAttendanceChannelId(config, team) {
   const teamDeliveryMode = config.channels?.teamDeliveryMode?.[team] || 'team_chat';
   if (teamDeliveryMode === 'bot_commands' && config.channels?.botCommands) return config.channels.botCommands;
@@ -1305,8 +1321,7 @@ async function postEventMessage(event) {
   const teamRole = channel.guild.roles.cache.get(teamRoleId);
   const members = teamRole ? Array.from(teamRole.members.values()) : [];
   if (!members.length) throw new Error(`No players found in configured role for team: ${event.team}`);
-  const eventTypeName = eventTypeLabel(determineEventType(event));
-  let firstMessageId = '';
+  const messageRefs = [];
   let deliveredCount = 0;
 
   for (const member of members) {
@@ -1322,12 +1337,7 @@ async function postEventMessage(event) {
 
     const row = new ActionRowBuilder().addComponents(attendingButton, notAttendingButton);
     const message = await member.send({
-      content: [
-        `👋 Hey <@${member.id}>,`,
-        `📣 You have a **${eventTypeName}** on **${new Date(event.date).toLocaleDateString()}** at **${new Date(event.date).toLocaleTimeString()}**.`,
-        '✅ Will you be attending?',
-        event.location ? `📍 [${event.location}](${getMapsLink(event.location)})` : null
-      ].filter(Boolean).join('\n'),
+      content: getDirectAttendancePromptContent(event, member.id, config),
       components: [row]
     }).catch(() => null);
 
@@ -1337,28 +1347,44 @@ async function postEventMessage(event) {
     }
 
     deliveredCount += 1;
-    if (!firstMessageId) firstMessageId = message.id;
+    messageRefs.push({ channelId: message.channelId || message.channel?.id || '', messageId: message.id, userId: member.id, delivery: 'dm' });
   }
 
-  if (firstMessageId) setEventMessageId(event.id, firstMessageId);
+  if (messageRefs.length) setEventMessageRefs(event.id, messageRefs);
   await sendLog(`📌 Posted event: **${event.title}** (${event.team}) • Sent ${deliveredCount}/${members.length} attendance prompt DM(s).`);
 }
 
 async function updatePostedEventMessage(eventId, event) {
-  if (!event?.discordMessageId || !event?.team) return false;
+  if (!event?.team) return { updated: 0, attempted: 0 };
   const config = getConfig();
-  const teamChatId = config.channels?.teamChats?.[event.team];
   const teamRoleId = config.roles?.[event.team]?.player || '';
-  if (!teamChatId) return false;
-  const channel = await client.channels.fetch(teamChatId).catch(() => null);
-  if (!channel?.isTextBased()) return false;
-  const message = await channel.messages.fetch(event.discordMessageId).catch(() => null);
-  if (!message) return false;
-  await message.edit({
-    content: getEventAnnouncementContent(event, teamRoleId),
-    components: message.components || []
-  }).catch(() => null);
-  return true;
+  const refs = Array.isArray(event.attendanceMessages) ? event.attendanceMessages : [];
+  const legacyRefs = !refs.length && event.discordMessageId
+    ? [{ channelId: config.channels?.teamChats?.[event.team] || config.channels?.events || '', messageId: event.discordMessageId, userId: '', delivery: 'channel' }]
+    : [];
+  const targets = [...refs, ...legacyRefs].filter((ref) => ref?.messageId);
+  let updated = 0;
+
+  for (const ref of targets) {
+    let message = null;
+    if (ref.delivery === 'dm' && ref.userId) {
+      const user = await client.users.fetch(ref.userId).catch(() => null);
+      const dm = await user?.createDM().catch(() => null);
+      message = await dm?.messages.fetch(ref.messageId).catch(() => null);
+    } else if (ref.channelId) {
+      const channel = await client.channels.fetch(ref.channelId).catch(() => null);
+      message = await channel?.messages?.fetch(ref.messageId).catch(() => null);
+    }
+
+    if (!message) continue;
+    const content = ref.delivery === 'dm'
+      ? getDirectAttendancePromptContent(event, ref.userId, config)
+      : (ref.userId ? getEventAnnouncementContent(event, teamRoleId).replace('Please mark your availability now.', `Please mark your availability now, <@${ref.userId}>.`) : getEventAnnouncementContent(event, teamRoleId));
+    const ok = await message.edit({ content, components: message.components || [] }).then(() => true).catch(() => false);
+    if (ok) updated += 1;
+  }
+
+  return { updated, attempted: targets.length };
 }
 
 async function notifyAttendingUsersAboutChange(event = {}, changeLines = []) {
@@ -1369,6 +1395,33 @@ async function notifyAttendingUsersAboutChange(event = {}, changeLines = []) {
     .filter(([, response]) => response?.status === 'yes')
     .map(([userId]) => userId);
   void attendingIds;
+}
+
+async function sendCalendarChangeAdminNotice(event = {}, changeLines = [], updateResult = { updated: 0, attempted: 0 }) {
+  const config = getConfig();
+  const adminChannelId = config.channels?.admin || config.channels?.logs || '';
+  if (!adminChannelId || !changeLines.length) return;
+
+  const adminChannel = await client.channels.fetch(adminChannelId).catch(() => null);
+  if (!adminChannel?.isTextBased()) return;
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`admin_sync_calendar_change:${event.id}`)
+      .setLabel('🔄 Update Sheets Calendar')
+      .setStyle(ButtonStyle.Primary)
+  );
+
+  await adminChannel.send({
+    content: [
+      `📝 **Google Calendar change detected:** ${event.title || event.id}`,
+      ...changeLines.map((line) => `• ${line}`),
+      '',
+      `Updated Discord attendance message(s): **${updateResult.updated}/${updateResult.attempted}**`,
+      'Click the button below to update the Google Sheets calendar/fixtures tab with the latest calendar data.'
+    ].join('\n'),
+    components: [row]
+  }).catch(() => null);
 }
 
 async function syncCalendarEvents(options = {}) {
@@ -1424,16 +1477,14 @@ async function syncCalendarEvents(options = {}) {
       const syncedWithId = { ...syncedEvent, id: event.id };
 
       if (changeLines.length) {
-        await updatePostedEventMessage(event.id, syncedWithId);
+        const updateResult = await updatePostedEventMessage(event.id, syncedWithId);
         await notifyAttendingUsersAboutChange(syncedWithId, changeLines);
-        await sendLog([
-          `📝 Calendar event updated: **${syncedEvent.title}**`,
-          ...changeLines.map((line) => `• ${line}`)
-        ].join('\n'));
+        await sendCalendarChangeAdminNotice(syncedWithId, changeLines, updateResult);
       }
 
       if (!syncedEvent?.team || syncedEvent.discordMessageId) continue;
-      if (!isWithinDays(syncedEvent.date, 14)) continue;
+      const autoSendDays = getTeamAutoSendDays(config, syncedEvent.team);
+      if (!isWithinDays(syncedEvent.date, autoSendDays)) continue;
 
       const configIssue = getAttendanceConfigIssue(config, syncedEvent.team);
       if (configIssue) {
@@ -1465,6 +1516,31 @@ async function syncCalendarEvents(options = {}) {
 client.on('interactionCreate', async (interaction) => {
   try {
     if (await handleSetupInteraction(interaction)) return;
+    if (interaction.isButton() && interaction.customId.startsWith('admin_sync_calendar_change:')) {
+      const config = getConfig();
+      if (!hasAdminAccess(interaction.member, config)) {
+        await interaction.reply({ content: adminAccessMessage(config), flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      await interaction.deferUpdate();
+      const eventId = interaction.customId.split(':')[1] || '';
+      const result = await syncAllToSheet(config, loadDb(), { fixturesOnly: true });
+      if (!result.ok) {
+        await interaction.editReply({
+          content: `${interaction.message.content}\n\n❌ Could not update Google Sheets because spreadsheet ID is not configured.`,
+          components: interaction.message.components
+        });
+        return;
+      }
+
+      await interaction.editReply({
+        content: `${interaction.message.content}\n\n✅ Google Sheets calendar/fixtures updated for latest calendar data${eventId ? ` (event: \`${eventId}\`)` : ''}.`,
+        components: []
+      });
+      return;
+    }
+
     if (interaction.isButton() && interaction.customId.startsWith('coach_team_delivery_mode:')) {
       const team = interaction.customId.split(':')[1] || '';
       const coachRoleId = getConfig().roles?.[team]?.coach;

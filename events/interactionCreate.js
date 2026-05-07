@@ -22,7 +22,7 @@ const {
   clearResponse,
   setAbsenceTicket,
   deleteAbsenceTicket,
-  setEventMessageId,
+  setEventMessageRefs,
   upsertVacation,
   upsertPlayerProfile,
   getPlayerProfile,
@@ -46,6 +46,7 @@ const coachCommand = require('../commands/coach');
 const adminCommand = require('../commands/admin');
 const playerCommand = require('../commands/player');
 const { hasAdminAccess, adminAccessMessage } = require('../utils/adminAccess');
+const { syncProfilesForTeamRole } = require('../utils/roleRosterSync');
 const { determineEventType, eventTypeLabel, getEventTypeConfig } = require('../utils/eventType');
 
 function getTeamMeta(config = {}, team = '') {
@@ -359,6 +360,41 @@ function createFixtureSettingsRow() {
   );
 }
 
+function getTeamAutoSendDays(config = loadConfig(), team = '') {
+  const raw = Number(config.teams?.[team]?.attendanceAutoSendDays || 14);
+  return [7, 14, 21, 28].includes(raw) ? raw : 14;
+}
+
+function createAutomaticSendingRows(config = loadConfig(), team = '') {
+  const selectedDays = getTeamAutoSendDays(config, team);
+  return [
+    new ActionRowBuilder().addComponents(
+      ...[7, 14, 21, 28].map((days) => new ButtonBuilder()
+        .setCustomId(`admin_auto_send_days:${team}:${days}`)
+        .setLabel(`${days} Days`)
+        .setStyle(days === selectedDays ? ButtonStyle.Success : ButtonStyle.Danger))
+    ),
+    createBackButtonRow(`admin_back_fixture_panel:${team}`)
+  ];
+}
+
+function buildAutomaticSendingPanel(config = loadConfig(), guild = null, team = '', notice = '') {
+  const teamLabel = getTeamMeta(config, team).label;
+  const selectedDays = getTeamAutoSendDays(config, team);
+  return {
+    content: [
+      getTeamConfigSummary(config, guild, team),
+      '',
+      '📣 **Automatic Sending**',
+      `Attendance notifications for **${teamLabel}** are currently sent **${selectedDays} days** before each event.`,
+      'Pick when player attendance prompts should automatically send. The selected option is green; inactive options are red.',
+      notice ? `\n${notice}` : ''
+    ].filter(Boolean).join('\n'),
+    embeds: [],
+    components: createAutomaticSendingRows(config, team)
+  };
+}
+
 function createEventTypeRulesRow(config = loadConfig()) {
   const autoDetectEnabled = getEventTypeConfig(config).autoDetect;
   return new ActionRowBuilder().addComponents(
@@ -449,13 +485,14 @@ function createTeamConfigFixtureSettingsRows(team) {
       new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:remove_fixture`).setLabel('🗑️ Remove Fixture').setStyle(ButtonStyle.Secondary)
     ),
     new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:automatic_sending`).setLabel('⏱️ Automatic Sending').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId(`admin_team_config_action:${team}:force_send_attendance`).setLabel('📣 Force Send Attendance').setStyle(ButtonStyle.Secondary)
     )
   ];
 }
 
 function buildFixtureSettingsPanel(config, guild, team, notice = '') {
-  const content = `${getTeamConfigSummary(config, guild, team)}\n\n**Fixture settings**${notice ? `\n${notice}` : ''}`;
+  const content = `${getTeamConfigSummary(config, guild, team)}\n\n**Fixture settings**\nAutomatic sending: **${getTeamAutoSendDays(config, team)} days before events**${notice ? `\n${notice}` : ''}`;
   return {
     content,
     embeds: [],
@@ -631,9 +668,8 @@ function getTeamConfigSummary(config, guild, team) {
     }).join('\n')
     : '• none';
   const now = Date.now();
-  const nextFiveEvents = Object.values(loadDb().events || {})
-    .filter((event) => event?.team === team && new Date(event.date).getTime() >= now)
-    .sort((a, b) => new Date(a.date) - new Date(b.date))
+  const nextFiveEvents = getUpcomingFixtures(loadDb())
+    .filter((event) => fixtureHasTeam(event, team) && new Date(event.date).getTime() >= now)
     .slice(0, 5)
     .map((event, index) => `• ${index + 1}. ${event.title} — ${new Date(event.date).toLocaleString()}`);
   return [
@@ -642,7 +678,7 @@ function getTeamConfigSummary(config, guild, team) {
     '**ID Setup Progress**',
     `• **${progress.completed}/${progress.total} (${progress.percent}%)** ${progress.isComplete ? '✅ Ready' : '⚠️ Incomplete'}`,
     '',
-    '**Next 5 Team Events**',
+    '**Team Next 5 Events**',
     nextFiveEvents.length ? nextFiveEvents.join('\n') : '• none found',
     '',
     '**Coaches**',
@@ -830,16 +866,16 @@ async function postAttendancePromptForEvent(interaction, event, config, teamOver
   const members = teamRole ? Array.from(teamRole.members.values()) : [];
   if (!members.length) throw new Error(`No players found in role for ${promptEvent.team}.`);
 
-  let firstMessageId = '';
+  const messageRefs = [];
   for (const member of members) {
     const message = await channel.send({
       content: buildAttendancePromptContent(promptEvent, member.id, config),
       components: [createAttendanceResponseRow(event.id, member.id)]
     });
-    if (!firstMessageId) firstMessageId = message.id;
+    messageRefs.push({ channelId: message.channelId || message.channel?.id || '', messageId: message.id, userId: member.id, delivery: 'channel' });
   }
 
-  if (firstMessageId) setEventMessageId(event.id, firstMessageId);
+  if (messageRefs.length) setEventMessageRefs(event.id, messageRefs);
 }
 
 function createAttendanceResponseRow(eventId, userId) {
@@ -929,6 +965,97 @@ async function restoreAttendancePromptMessage(interaction, event, userId, eventI
   }).catch(() => null);
 }
 
+function getPlayerFixtureEvents(userId, memberForRole, config = loadConfig(), db = loadDb()) {
+  const teams = Object.entries(config.roles || {})
+    .filter(([, roles]) => hasRole(memberForRole, roles?.player))
+    .map(([team]) => team);
+
+  return Object.entries(db.events || {})
+    .map(([eventId, event]) => ({ eventId, id: eventId, ...event }))
+    .filter((event) => teams.includes(event.team) || teams.some((team) => fixtureHasTeam(event, team)))
+    .filter((event) => new Date(event.date).getTime() >= Date.now())
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+}
+
+function getPlayerEventStatusLabel(event = {}, userId = '') {
+  const response = event.responses?.[userId];
+  if (response?.status === 'yes') return '✅ Attending';
+  if (response?.status === 'pending_no') return '🔴 Not attending (waiting for coach confirmation)';
+  if (response?.status === 'confirmed_no') return '🔴 Not attending';
+  return '❓ Not answered yet';
+}
+
+function createPlayerFixturePickerPayload(interaction, page = 0) {
+  const config = loadConfig();
+  const db = loadDb();
+  const profile = getPlayerProfile(interaction.user.id) || {};
+  const memberForRole = interaction.member || { roles: profile.roles || [] };
+  const events = getPlayerFixtureEvents(interaction.user.id, memberForRole, config, db);
+  const perPage = 9;
+  const totalPages = Math.max(1, Math.ceil(events.length / perPage));
+  const safePage = Math.min(Math.max(Number(page) || 0, 0), totalPages - 1);
+  const items = events.slice(safePage * perPage, safePage * perPage + perPage);
+  const rows = [];
+
+  for (let start = 0; start < items.length; start += 5) {
+    const row = new ActionRowBuilder();
+    items.slice(start, start + 5).forEach((event, offset) => {
+      const index = start + offset;
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`player_fixture_pick:${safePage}:${index}`)
+          .setLabel(String(index + 1))
+          .setStyle(ButtonStyle.Primary)
+      );
+    });
+    rows.push(row);
+  }
+
+  rows.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`player_fixture_page:${Math.max(0, safePage - 1)}`).setLabel('Previous').setStyle(ButtonStyle.Secondary).setDisabled(safePage <= 0),
+    new ButtonBuilder().setCustomId(`player_fixture_page:${Math.min(totalPages - 1, safePage + 1)}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(safePage >= totalPages - 1),
+    new ButtonBuilder().setCustomId('player_back_to_hub').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
+  ));
+
+  const list = items.length
+    ? items.map((event, index) => {
+      const number = index + 1;
+      const teamLabel = getTeamMeta(config, event.team).label || event.team || 'Team not set';
+      return `**${number}. ${event.title}**\n🕒 ${new Date(event.date).toLocaleString()} • ${teamLabel}\n${getPlayerEventStatusLabel(event, interaction.user.id)}`;
+    }).join('\n\n')
+    : 'No upcoming events/fixtures found for your teams.';
+
+  return {
+    content: `📅 **Your Events/Fixtures** (page ${safePage + 1}/${totalPages})\nPick a fixture by pressing its number.\n\n${list}`,
+    embeds: [],
+    components: rows
+  };
+}
+
+function buildPlayerFixtureDetailPayload(event, eventId, userId, page = 0) {
+  const config = loadConfig();
+  const teamLabel = getTeamMeta(config, event.team).label || event.team || 'Team not set';
+  return {
+    content: [
+      `📅 **${event.title}**`,
+      `Team: **${teamLabel}**`,
+      `🕒 ${new Date(event.date).toLocaleString()}`,
+      `📍 ${event.location || 'Location not set'}`,
+      '',
+      `Your current status: **${getPlayerEventStatusLabel(event, userId)}**`,
+      event.location ? `[Open in Maps](${getMapsLink(event.location)})` : ''
+    ].filter(Boolean).join('\n'),
+    embeds: [],
+    components: [
+      createAttendanceResponseRow(eventId, userId),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`player_fixture_page:${page}`).setLabel('⬅️ Back to fixtures').setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId('player_back_to_hub').setLabel('Back to /player').setStyle(ButtonStyle.Secondary)
+      )
+    ]
+  };
+}
+
 function buildMonthGroupedEventLines(events, db, guild, teamRolesMap, config) {
   const sorted = [...events].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   if (!sorted.length) return ['No upcoming events found.'];
@@ -987,8 +1114,9 @@ function renderProgressBar(percent = 0) {
   return `${'🟩'.repeat(filled)}${'⬜'.repeat(10 - filled)} ${normalized}%`;
 }
 
-function renderProgressMessage(percent = 0, label = 'Working...') {
-  return `⏳ ${label}\n${renderProgressBar(percent)}${percent >= 100 ? '\n✅' : ''}`;
+function renderProgressMessage(percent = 0, label = 'Working...', eta = '') {
+  const etaLine = eta ? `\nEstimated time remaining: **${eta}**` : '';
+  return `⏳ ${label}\n${renderProgressBar(percent)}${etaLine}${percent >= 100 ? '\n✅' : ''}`;
 }
 
 async function setProgressReply(interaction, percent, label, options = {}) {
@@ -1973,6 +2101,146 @@ function createAbsenceTicketDecisionRow() {
   );
 }
 
+function createCoachChatFinishRow(channelId = '') {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`coach_chat_finish:${channelId}`)
+      .setLabel('✅ Finish Chat')
+      .setStyle(ButtonStyle.Success)
+  );
+}
+
+function createCoachChatConfirmRow(channelId = '') {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`coach_chat_finish_yes:${channelId}`)
+      .setLabel('Yes, close chat')
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId(`coach_chat_finish_cancel:${channelId}`)
+      .setLabel('Cancel')
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
+
+async function buildChannelChatLog(channel) {
+  const fetched = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+  if (!fetched) return [];
+  return Array.from(fetched.values())
+    .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+    .filter((msg) => !msg.author?.bot || msg.content)
+    .map((msg) => {
+      const iso = new Date(msg.createdTimestamp).toISOString();
+      const displayName = getPlayerDisplayName(msg.author?.id || '', msg.member?.displayName || msg.author?.username || '') || msg.member?.displayName || msg.author?.username || 'unknown';
+      return {
+        ts: iso,
+        userId: msg.author?.id || '',
+        name: displayName,
+        message: msg.content || '(no text)'
+      };
+    });
+}
+
+async function sendCoachChatLogAndClose(interaction, context, reason = 'Coach chat finished') {
+  const channel = interaction.channel;
+  if (!channel?.isTextBased?.()) return;
+  const db = loadDb();
+  const ticket = db.absenceTickets?.[channel.id] || {};
+  const teams = Array.isArray(ticket.teams) && ticket.teams.length ? ticket.teams : [ticket.team].filter(Boolean);
+  const playerName = ticket.playerName || `<@${ticket.playerId || interaction.user.id}>`;
+  const chatLog = await buildChannelChatLog(channel);
+  setAbsenceTicket(channel.id, {
+    ...ticket,
+    recordType: 'coach_chat',
+    status: 'closed',
+    closedAt: new Date().toISOString(),
+    closedReason: reason,
+    closedBy: interaction.user.id,
+    chatLog
+  });
+
+  const logLines = chatLog.length
+    ? chatLog.map((entry) => `[${entry.ts}] ${entry.name}: ${entry.message}`).join('\n').slice(0, 3500)
+    : 'No chat messages were captured.';
+  const cfg = loadConfig();
+  const sentChannels = new Set();
+  for (const team of teams) {
+    const staffRoomId = cfg.channels?.staffRooms?.[team];
+    if (!staffRoomId || sentChannels.has(staffRoomId)) continue;
+    sentChannels.add(staffRoomId);
+    const staffRoom = await interaction.guild.channels.fetch(staffRoomId).catch(() => null);
+    if (!staffRoom?.isTextBased()) continue;
+    await staffRoom.send({
+      content: [
+        `💬 Coaches had a chat with **${playerName}**.`,
+        `Closed by: <@${interaction.user.id}>`,
+        `Team(s): ${teams.map((teamKey) => cfg.teams?.[teamKey]?.label || teamKey).join(', ') || 'unknown'}`,
+        '',
+        '**Chat log:**',
+        '```',
+        logLines,
+        '```'
+      ].join('\n')
+    }).catch(() => null);
+  }
+  if (!sentChannels.size) {
+    await context.sendLog(`💬 Coaches had a chat with **${playerName}**.\n\n${logLines}`);
+  }
+
+  await interaction.editReply({ content: '✅ Coach chat closed. A log was sent to the staff chat.', components: [] }).catch(() => null);
+  await channel.delete(reason).catch(() => null);
+}
+
+async function createCoachChatForPlayer(interaction, context, teams = [], cfg = loadConfig()) {
+  const profile = getPlayerProfile(interaction.user.id) || {};
+  const guildForAction = await resolveInteractionGuild(interaction, cfg);
+  const coachRoleIds = Array.from(new Set(teams.map((team) => cfg.roles?.[team]?.coach).filter(Boolean)));
+  const categoryId = cfg.channels.privateChatCategories?.[teams[0]] || cfg.channels.ticket || null;
+  const playerName = getPlayerDisplayName(interaction.user.id, interaction.user.tag);
+  const channel = await guildForAction?.channels.create({
+    name: sanitizeChannelName(`Coach Chat - ${playerName}`),
+    type: ChannelType.GuildText,
+    parent: categoryId,
+    permissionOverwrites: [
+      { id: guildForAction.id, deny: [PermissionFlagsBits.ViewChannel] },
+      { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] },
+      { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+      ...coachRoleIds.map((id) => ({ id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }))
+    ]
+  }).catch(() => null);
+
+  if (!channel) return null;
+
+  setAbsenceTicket(channel.id, {
+    ticketId: channel.id,
+    recordType: 'coach_chat',
+    playerId: interaction.user.id,
+    playerName,
+    team: teams[0] || '',
+    teams,
+    status: 'open',
+    chatLog: [],
+    createdBy: interaction.user.id,
+    createdAt: new Date().toISOString()
+  });
+
+  await channel.send({
+    content: [
+      `💬 **${playerName}** has requested a chat with their coach(es).`,
+      `Player: <@${interaction.user.id}>`,
+      `Team(s): ${teams.map((team) => cfg.teams?.[team]?.label || team).join(', ')}`,
+      '',
+      'When the conversation is finished, either the player or a coach can press **Finish Chat** below.'
+    ].join('\n'),
+    components: [createCoachChatFinishRow(channel.id)]
+  }).catch(() => null);
+
+  const notes = Array.isArray(profile.notesLog) ? profile.notesLog : [];
+  upsertPlayerProfile(interaction.user.id, { ...profile, notesLog: [...notes, { id: `coachchat-${Date.now()}`, ts: new Date().toISOString(), authorId: interaction.user.id, text: `Opened coach chat for ${teams.map((team) => cfg.teams?.[team]?.label || team).join(', ')}: #${channel.name}` }] });
+  await triggerGoogleSync(context).catch(() => null);
+  return channel;
+}
+
 async function closeAbsenceTicketChannel(channel, reason = 'Absence ticket resolved') {
   if (!channel) return;
   const db = loadDb();
@@ -2073,19 +2341,29 @@ async function triggerGoogleSync(context) {
 }
 
 async function notifyCoachAndAdminOnAttending(interaction, context, eventId, event, attendanceName, responderType) {
-  await context.sendLog(`🟢 ${attendanceName} marked attending for **${event.title}** (${getEventDateLabel(event.date)}).`);
+  void responderType;
+  const message = `🟢 ${attendanceName} marked attending for **${event.title}** (${getEventDateLabel(event.date)}).`;
   const config = loadConfig();
-  const coachChannelId = config.channels?.staffRooms?.[event.team];
-  if (!coachChannelId) return;
-  const coachChannel = await interaction.guild?.channels?.fetch(coachChannelId).catch(() => null);
-  if (!coachChannel?.isTextBased()) return;
+  const guild = await resolveInteractionGuild(interaction, config);
+  const teamKeys = getFixtureTeams(event);
+  const staffChannelIds = Array.from(new Set(teamKeys.map((team) => config.channels?.staffRooms?.[team]).filter(Boolean)));
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`coach_event_attendance_list:${eventId}`).setLabel('Current attendance list').setStyle(ButtonStyle.Primary)
   );
-  await coachChannel.send({
-    content: `🟢 ${attendanceName} marked attending for **${event.title}** (${getEventDateLabel(event.date)}).`,
-    components: [row]
-  }).catch(() => null);
+
+  let sentToStaff = false;
+  for (const staffChannelId of staffChannelIds) {
+    const staffChannel = await guild?.channels?.fetch(staffChannelId).catch(() => null);
+    if (!staffChannel?.isTextBased()) continue;
+    const sent = await staffChannel.send({ content: message, components: [row] }).catch(() => null);
+    if (sent) sentToStaff = true;
+  }
+
+  if (!sentToStaff) {
+    await context.sendLog(`${message}\n⚠️ No staff chat was configured for this event's team.`);
+  } else {
+    await context.sendLog(message);
+  }
 }
 
 async function logAdminUiAction(interaction, command, subcommand = '', options = {}) {
@@ -2116,6 +2394,7 @@ async function syncConfigSnapshotIfEnabled() {
 
 async function handlePanelGoogleSync(interaction) {
   await interaction.deferUpdate();
+  await interaction.editReply({ content: renderProgressMessage(10, 'Syncing Google Calendar fixtures...', '15–30s'), embeds: [], components: [] });
   const latestConfig = loadConfig();
   updateConfig('googleSync.enabled', true);
   const db = loadDb();
@@ -2145,6 +2424,7 @@ async function handlePanelGoogleSync(interaction) {
         responses: existing.responses || {}
       });
     }
+    await interaction.editReply({ content: renderProgressMessage(55, 'Saving fixtures to Google Sheets...', '8–15s'), embeds: [], components: [] });
     const latestDb = loadDb();
     const result = await syncAllToSheet({ ...latestConfig, googleSync: { ...latestConfig.googleSync, enabled: true } }, latestDb, { fixturesOnly: true });
     const refreshedConfig = loadConfig();
@@ -2291,6 +2571,26 @@ module.exports = {
           embeds: [],
           components: [createFixtureSettingsRow()]
         });
+        return;
+      }
+      if (interaction.customId.startsWith('admin_back_fixture_panel:')) {
+        const team = interaction.customId.split(':')[1];
+        await interaction.update(buildFixtureSettingsPanel(loadConfig(), interaction.guild, team));
+        return;
+      }
+      if (interaction.customId.startsWith('admin_auto_send_days:')) {
+        const [, team, daysRaw] = interaction.customId.split(':');
+        const days = Number.parseInt(daysRaw || '14', 10);
+        if (![7, 14, 21, 28].includes(days)) {
+          await interaction.reply({ content: 'Invalid automatic sending window.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        await interaction.deferUpdate();
+        updateConfig(`teams.${team}.attendanceAutoSendDays`, days);
+        await logAdminUiAction(interaction, 'admin', 'set-automatic-sending', { team, days });
+        await syncConfigSnapshotIfEnabled().catch((error) => context.sendLog(`⚠️ Google Sheets sync failed after automatic sending update: ${error.message}`));
+        const refreshed = loadConfig();
+        await interaction.editReply(buildAutomaticSendingPanel(refreshed, interaction.guild, team, `✅ Automatic sending is now set to **${days} days** before events.`));
         return;
       }
       if (interaction.customId === 'admin_back_player_management') {
@@ -2978,6 +3278,10 @@ module.exports = {
         const [, team, selectedAction] = interaction.customId.split(':');
         const latestConfig = loadConfig();
         const teamLabel = getTeamMeta(latestConfig, team).label || team;
+        if (selectedAction === 'automatic_sending') {
+          await interaction.update(buildAutomaticSendingPanel(latestConfig, interaction.guild, team));
+          return;
+        }
         if (selectedAction === 'id_settings') {
           await interaction.update({
             content: `${getTeamConfigSummary(latestConfig, interaction.guild, team)}\n\n${buildTeamIdSettingsSummary(latestConfig, interaction.guild, team)}\n\n**ID settings**`,
@@ -3239,6 +3543,125 @@ module.exports = {
         return;
       }
 
+
+
+      if (interaction.customId.startsWith('admin_fixture_page:') || interaction.customId.startsWith('admin_fixture_unpick_page:')) {
+        const [, team, pageRaw] = interaction.customId.split(':');
+        const page = Number.parseInt(pageRaw || '0', 10) || 0;
+        const isUnpick = interaction.customId.startsWith('admin_fixture_unpick_page:');
+        const sourceEvents = isUnpick ? getUpcomingFixtures(loadDb()).filter((event) => fixtureHasTeam(event, team)) : getUpcomingFixtures(loadDb());
+        const pager = createFixturePagerRows(loadConfig(), team, page, sourceEvents, isUnpick ? 'admin_fixture_unpick' : 'admin_fixture_pick');
+        await interaction.update({ content: pager.text, embeds: [], components: pager.rows });
+        return;
+      }
+
+      if (interaction.customId.startsWith('admin_team_events_page:')) {
+        const [, team, pageRaw] = interaction.customId.split(':');
+        const pageSize = 20;
+        const events = getUpcomingFixtures(loadDb()).filter((event) => fixtureHasTeam(event, team));
+        const totalPages = Math.max(1, Math.ceil(events.length / pageSize));
+        const page = Math.max(0, Math.min(totalPages - 1, Number.parseInt(pageRaw || '0', 10) || 0));
+        const visible = events.slice(page * pageSize, (page + 1) * pageSize);
+        const teamLabel = getTeamMeta(loadConfig(), team).label;
+        const lines = visible.length
+          ? visible.map((event, idx) => `${(page * pageSize) + idx + 1}. ${new Date(event.date).toLocaleDateString()} — ${event.title}${event.location ? ` — 📍 ${event.location}` : ''}`)
+          : ['No events currently attached to this team.'];
+        const pagerRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`admin_team_events_page:${team}:${Math.max(0, page - 1)}`).setLabel('Previous').setStyle(ButtonStyle.Secondary).setDisabled(page <= 0),
+          new ButtonBuilder().setCustomId(`admin_team_events_page:${team}:${Math.min(totalPages - 1, page + 1)}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(page >= totalPages - 1)
+        );
+        await interaction.update({
+          content: [`📆 Events attached to **${teamLabel}** (page ${page + 1}/${totalPages}):`, ...lines].join('\n'),
+          embeds: [],
+          components: [pagerRow, ...createTeamConfigFixtureSettingsRows(team), createBackButtonRow(`admin_back_team_config:${team}`)]
+        });
+        return;
+      }
+
+      if (interaction.customId.startsWith('admin_fixture_conflict:')) {
+        await interaction.deferUpdate();
+        const [, team, eventId, pageRaw, decision] = interaction.customId.split(':');
+        const db = loadDb();
+        const target = db.events[eventId];
+
+        if (!target) {
+          await interaction.editReply({
+            content: 'Fixture was not found in synced events.',
+            embeds: [],
+            components: [createTeamConfigActionRow(config, team), createBackButtonRow('admin_back_team_management')]
+          });
+          return;
+        }
+
+        if (decision === 'replace') replaceFixtureTeam(target, team);
+        else addFixtureTeam(target, team);
+
+        saveDb(db);
+        await triggerGoogleSync(context);
+
+        const pager = createFixturePagerRows(loadConfig(), team, Number.parseInt(pageRaw || '0', 10) || 0, getUpcomingFixtures(loadDb()));
+        await interaction.editReply({
+          content: decision === 'replace'
+            ? `✅ Replaced fixture team for **${target.title}** with **${getTeamMeta(config, team).label}**.`
+            : `✅ Added **${getTeamMeta(config, team).label}** to **${target.title}** while keeping existing team assignment(s).`,
+          embeds: [],
+          components: pager.rows
+        });
+        return;
+      }
+
+      if (interaction.customId.startsWith('admin_fixture_pick:') || interaction.customId.startsWith('admin_fixture_unpick:')) {
+        await interaction.deferUpdate();
+        const [, team, eventId, pageRaw] = interaction.customId.split(':');
+        const isUnpick = interaction.customId.startsWith('admin_fixture_unpick:');
+        const db = loadDb();
+        const target = db.events[eventId];
+
+        if (!target) {
+          await interaction.editReply({
+            content: 'Fixture was not found in synced events.',
+            embeds: [],
+            components: [createTeamConfigActionRow(config, team), createBackButtonRow('admin_back_team_management')]
+          });
+          return;
+        }
+
+        if (isUnpick) {
+          removeFixtureTeam(target, team);
+        } else if (fixtureHasTeam(target, team) || !getFixtureTeams(target).length) {
+          addFixtureTeam(target, team);
+        } else {
+          const existingTeams = getFixtureTeamSummary(config, target);
+          const teamLabel = getTeamMeta(config, team).label;
+          await interaction.editReply({
+            content: `**${target.title}** is already attached to **${existingTeams}**. Replace the existing team assignment with **${teamLabel}**, or add **${teamLabel}** to this fixture too?`,
+            embeds: [],
+            components: [
+              new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId(`admin_fixture_conflict:${team}:${eventId}:${pageRaw || 0}:replace`).setLabel('Replace Team').setStyle(ButtonStyle.Danger),
+                new ButtonBuilder().setCustomId(`admin_fixture_conflict:${team}:${eventId}:${pageRaw || 0}:add`).setLabel('Add Team').setStyle(ButtonStyle.Success),
+                new ButtonBuilder().setCustomId(`admin_fixture_page:${team}:${pageRaw || 0}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+              )
+            ]
+          });
+          return;
+        }
+
+        saveDb(db);
+        await triggerGoogleSync(context);
+
+        const refreshedEvents = isUnpick
+          ? getUpcomingFixtures(loadDb()).filter((event) => fixtureHasTeam(event, team))
+          : getUpcomingFixtures(loadDb());
+        await interaction.editReply({
+          content: isUnpick
+            ? `✅ Removed **${target.title}** from **${getTeamMeta(config, team).label}** fixtures.`
+            : `✅ Assigned **${target.title}** to **${getTeamMeta(config, team).label}**.`,
+          embeds: [],
+          components: createFixturePagerRows(loadConfig(), team, Number.parseInt(pageRaw || '0', 10) || 0, refreshedEvents, isUnpick ? 'admin_fixture_unpick' : 'admin_fixture_pick').rows
+        });
+        return;
+      }
       
       if (interaction.customId === 'player_delivery_mode') {
         upsertPlayerProfile(interaction.user.id, { attendanceDeliveryMode: 'team_chat' });
@@ -3309,19 +3732,30 @@ module.exports = {
         return;
       }
       if (interaction.customId.startsWith('player_fixture_manager:')) {
+        const page = Number.parseInt(interaction.customId.split(':')[1] || '0', 10) || 0;
+        await interaction.reply({ ...createPlayerFixturePickerPayload(interaction, page), flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (interaction.customId.startsWith('player_fixture_page:')) {
+        const page = Number.parseInt(interaction.customId.split(':')[1] || '0', 10) || 0;
+        await interaction.update(createPlayerFixturePickerPayload(interaction, page));
+        return;
+      }
+      if (interaction.customId.startsWith('player_fixture_pick:')) {
+        const [, pageRaw, indexRaw] = interaction.customId.split(':');
+        const page = Number.parseInt(pageRaw || '0', 10) || 0;
+        const index = Number.parseInt(indexRaw || '0', 10) || 0;
         const configNow = loadConfig();
         const db = loadDb();
         const profile = getPlayerProfile(interaction.user.id) || {};
         const memberForRole = await resolveInteractionMember(interaction, configNow) || { roles: profile.roles || [] };
-        const teams = Object.entries(configNow.roles || {}).filter(([, roles]) => hasRole(memberForRole, roles?.player)).map(([team]) => team);
-        const lines = Object.entries(db.events || {})
-          .map(([eventId, event]) => ({ eventId, ...event }))
-          .filter((event) => teams.includes(event.team))
-          .filter((event) => new Date(event.date).getTime() >= Date.now())
-          .sort((a, b) => new Date(a.date) - new Date(b.date))
-          .slice(0, 10)
-          .map((event, i) => `**${i + 1}. ${event.title}**\n🕒 ${new Date(event.date).toLocaleString()}\n📍 ${event.location || 'Location not set'}`);
-        await interaction.reply({ content: lines.length ? lines.join('\n\n') : 'No upcoming events/fixtures found.', flags: MessageFlags.Ephemeral });
+        const events = getPlayerFixtureEvents(interaction.user.id, memberForRole, configNow, db);
+        const picked = events[(page * 9) + index];
+        if (!picked) {
+          await interaction.update(createPlayerFixturePickerPayload(interaction, page));
+          return;
+        }
+        await interaction.update(buildPlayerFixtureDetailPayload(picked, picked.eventId || picked.id, interaction.user.id, page));
         return;
       }
       if (interaction.customId === 'player_talk_to_coaches') {
@@ -3335,30 +3769,9 @@ module.exports = {
           return;
         }
         if (teams.length === 1) {
-          const team = teams[0];
           await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-          const coachRoleId = configNow.roles?.[team]?.coach;
-          const categoryId = configNow.channels.privateChatCategories?.[team] || configNow.channels.ticket || null;
-          const playerName = getPlayerDisplayName(interaction.user.id, interaction.user.tag);
-          const channel = await guildForAction?.channels.create({
-            name: sanitizeChannelName(`Coach Chat - ${playerName}`),
-            type: ChannelType.GuildText,
-            parent: categoryId,
-            permissionOverwrites: [
-              { id: guildForAction.id, deny: [PermissionFlagsBits.ViewChannel] },
-              { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] },
-              { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-              ...(coachRoleId ? [{ id: coachRoleId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }] : [])
-            ]
-          }).catch(() => null);
-          if (!channel) {
-            await interaction.editReply({ content: 'Could not create coach chat.' });
-            return;
-          }
-          const notes = Array.isArray(profile.notesLog) ? profile.notesLog : [];
-          upsertPlayerProfile(interaction.user.id, { ...profile, notesLog: [...notes, { id: `coachchat-${Date.now()}`, ts: new Date().toISOString(), authorId: interaction.user.id, text: `Opened coach chat for ${configNow.teams?.[team]?.label || team}: #${channel.name}` }] });
-          await triggerGoogleSync(context).catch(() => null);
-          await interaction.editReply({ content: `✅ Coach chat created: <#${channel.id}>` });
+          const channel = await createCoachChatForPlayer(interaction, context, [teams[0]], configNow);
+          await interaction.editReply({ content: channel ? `✅ Coach chat created: <#${channel.id}>` : 'Could not create coach chat.' });
           return;
         }
         const row = new ActionRowBuilder().addComponents(
@@ -3444,21 +3857,7 @@ module.exports = {
         await interaction.deferUpdate();
         const teams = interaction.values || [];
         const cfg = loadConfig();
-        const guildForAction = await resolveInteractionGuild(interaction, cfg);
-        const coachRoleIds = Array.from(new Set(teams.map((team) => cfg.roles?.[team]?.coach).filter(Boolean)));
-        const categoryId = cfg.channels.privateChatCategories?.[teams[0]] || cfg.channels.ticket || null;
-        const playerName = getPlayerDisplayName(interaction.user.id, interaction.user.tag);
-        const channel = await guildForAction?.channels.create({
-          name: sanitizeChannelName(`Coach Chat - ${playerName}`),
-          type: ChannelType.GuildText,
-          parent: categoryId,
-          permissionOverwrites: [
-            { id: guildForAction.id, deny: [PermissionFlagsBits.ViewChannel] },
-            { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] },
-            { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-            ...coachRoleIds.map((id) => ({ id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }))
-          ]
-        }).catch(() => null);
+        const channel = await createCoachChatForPlayer(interaction, context, teams, cfg);
         await interaction.editReply({ content: channel ? `✅ Coach chat created: <#${channel.id}>` : 'Could not create coach chat.', components: [] });
         return;
       }
@@ -3735,6 +4134,42 @@ module.exports = {
         }
         await triggerGoogleSync(context).catch(() => null);
         await interaction.editReply({ content: `✅ Vacation ${isApprove ? 'approved' : 'declined'} for <@${targetUserId}>.` });
+        return;
+      }
+
+      if (interaction.customId.startsWith('coach_chat_finish')) {
+        await interaction.deferUpdate();
+        const db = loadDb();
+        const ticket = db.absenceTickets?.[interaction.channelId];
+        if (!ticket || ticket.recordType !== 'coach_chat') {
+          await interaction.editReply({ content: 'This coach chat record was not found.', components: [] });
+          return;
+        }
+        const teams = Array.isArray(ticket.teams) && ticket.teams.length ? ticket.teams : [ticket.team].filter(Boolean);
+        const isPlayer = interaction.user.id === ticket.playerId;
+        const isCoach = teams.some((team) => {
+          const coachRoleId = loadConfig().roles?.[team]?.coach;
+          return coachRoleId && interaction.member?.roles?.cache?.has(coachRoleId);
+        });
+        if (!isPlayer && !isCoach) {
+          await interaction.editReply({ content: 'Only the player or one of their coaches can close this chat.', components: [createCoachChatFinishRow(interaction.channelId)] });
+          return;
+        }
+
+        if (interaction.customId.startsWith('coach_chat_finish_cancel:')) {
+          await interaction.editReply({ content: 'Close cancelled. Press **Finish Chat** when this conversation is done.', components: [createCoachChatFinishRow(interaction.channelId)] });
+          return;
+        }
+
+        if (interaction.customId.startsWith('coach_chat_finish_yes:')) {
+          await sendCoachChatLogAndClose(interaction, context, 'Coach chat finished');
+          return;
+        }
+
+        await interaction.editReply({
+          content: 'Are you sure you want to close this coach chat? A transcript will be sent to the staff chat.',
+          components: [createCoachChatConfirmRow(interaction.channelId)]
+        });
         return;
       }
 
@@ -4592,6 +5027,11 @@ module.exports = {
         const [, team, selectedAction] = interaction.customId.split(':');
         const teamLabel = getTeamMeta(config, team).label || team;
 
+        if (selectedAction === 'automatic_sending') {
+          await interaction.update(buildAutomaticSendingPanel(loadConfig(), interaction.guild, team));
+          return;
+        }
+
         if (selectedAction === 'player_role' || selectedAction === 'coach_role') {
           const label = selectedAction === 'player_role' ? `${teamLabel} Player Role` : `${teamLabel} Coach Role`;
           const path = selectedAction === 'player_role' ? `roles.${team}.player` : `roles.${team}.coach`;
@@ -5367,7 +5807,11 @@ ${picker.text}`, embeds: [], components: picker.rows });
       await setProgressReply(interaction, 0, 'Updating role setting...');
       updateConfig(configPath, roleId);
       await setProgressReply(interaction, 40, 'Saving role ID...');
-      await logAdminUiAction(interaction, 'admin-config', 'set', { field: configPath, value: roleId });
+      const roleScan = await syncProfilesForTeamRole(interaction.guild, loadConfig(), configPath);
+      if (roleScan.scanned) {
+        await setProgressReply(interaction, 60, `Scanning ${roleScan.roleType} role members (${roleScan.count} found)...`);
+      }
+      await logAdminUiAction(interaction, 'admin-config', 'set', { field: configPath, value: roleId, scannedMembers: roleScan.count || 0 });
       await setProgressReply(interaction, 70, 'Syncing configuration...');
 
       try {
@@ -5381,8 +5825,9 @@ ${picker.text}`, embeds: [], components: picker.rows });
         return;
       }
 
+      const scanLine = roleScan.scanned ? `\nSynced **${roleScan.count}** Discord member(s) from that ${roleScan.roleType} role into player profiles.` : '';
       await interaction.editReply({
-        content: `${renderProgressMessage(100, `Updated ${configPath} to <@&${roleId}>.`)}\n\n${getTeamConfigSummary(loadConfig(), interaction.guild, team)}\n\n${buildTeamIdSettingsSummary(loadConfig(), interaction.guild, team)}\n\n**ID settings**`,
+        content: `${renderProgressMessage(100, `Updated ${configPath} to <@&${roleId}>.`)}${scanLine}\n\n${getTeamConfigSummary(loadConfig(), interaction.guild, team)}\n\n${buildTeamIdSettingsSummary(loadConfig(), interaction.guild, team)}\n\n**ID settings**`,
         embeds: [],
         components: [...createTeamConfigIdSettingsRows(team, loadConfig()), createBackButtonRow(`admin_back_team_config:${team}`)]
       });
@@ -5634,7 +6079,6 @@ ${picker.text}`, embeds: [], components: picker.rows });
       }
 
       if (ticketChannel) {
-        const ticketUrl = `https://discord.com/channels/${attendanceGuild.id}/${ticketChannel.id}`;
         setAbsenceTicket(ticketChannel.id, {
           ticketId: ticketChannel.id,
           eventId,
@@ -5647,11 +6091,6 @@ ${picker.text}`, embeds: [], components: picker.rows });
           createdBy: interaction.user.id,
           createdAt: new Date().toISOString()
         });
-
-        await interaction.followUp({
-          content: `🔗 Absence chat for **${event.title}**: ${ticketUrl}`,
-          flags: MessageFlags.Ephemeral
-        }).catch(() => null);
 
         await ticketChannel.send({
           content: [
@@ -5768,8 +6207,9 @@ ${picker.text}`, embeds: [], components: picker.rows });
       const startDate = interaction.fields.getTextInputValue('start_date').trim();
       const endDate = interaction.fields.getTextInputValue('end_date').trim();
       const reason = interaction.fields.getTextInputValue('reason').trim();
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate) || endDate < startDate) {
-        await interaction.reply({ content: 'Please provide valid dates in YYYY-MM-DD format and ensure end date is after start date.', flags: MessageFlags.Ephemeral });
+        await interaction.editReply({ content: 'Please provide valid dates in YYYY-MM-DD format and ensure end date is after start date.' });
         return;
       }
       const requestorRole = interaction.customId.split(':')[1] === 'coach' ? 'coach' : 'player';
@@ -5780,7 +6220,7 @@ ${picker.text}`, embeds: [], components: picker.rows });
         .filter(([, roles]) => hasRole(memberForRole, requestorRole === 'coach' ? roles?.coach : roles?.player))
         .map(([team]) => team);
       if (!teams.length) {
-        await interaction.reply({ content: 'No eligible teams found for your account.', flags: MessageFlags.Ephemeral });
+        await interaction.editReply({ content: 'No eligible teams found for your account.' });
         return;
       }
       const vacationId = `${interaction.user.id}-${Date.now()}`;
@@ -5811,7 +6251,7 @@ ${picker.text}`, embeds: [], components: picker.rows });
         ]
       }).catch(() => null);
       await triggerGoogleSync(context).catch(() => null);
-      await interaction.reply({ content: `✅ Vacation request submitted for ${startDate} to ${endDate}.`, flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: `✅ Vacation request submitted for ${startDate} to ${endDate}.` });
       if (channel) {
         await channel.send({
           content: [
@@ -5899,7 +6339,7 @@ ${picker.text}`, embeds: [], components: picker.rows });
       updateConfig('bot.calendarId', calendarId);
       await interaction.editReply({ content: renderProgressMessage(40, 'Saving calendar ID...') });
       await logAdminUiAction(interaction, 'admin', 'set-calendar-id', { calendarId });
-      await interaction.editReply({ content: renderProgressMessage(70, 'Syncing configuration...') });
+      await interaction.editReply({ content: renderProgressMessage(70, 'Syncing configuration...', '3–8s'), embeds: [], components: [] });
       try {
         await syncConfigSnapshotIfEnabled();
       } catch (error) {
@@ -6414,44 +6854,36 @@ ${picker.text}`, embeds: [], components: picker.rows });
         return;
       }
 
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      await interaction.editReply({ content: renderProgressMessage(0, 'Creating new team...') });
+      if (sourceMessageId) await interaction.deferUpdate();
+      else await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await interaction.editReply({ content: renderProgressMessage(0, 'Creating new team...', '10–20s'), embeds: [], components: [] });
       updateConfig(`teams.${teamKey}`, { emoji: teamEmoji, label: teamLabel, gender: teamGender, eventNamePhrases: [] });
       updateConfig(`googleSync.teamFixturesRanges.${teamKey}`, getTeamFixturesRangeByLabel(teamLabel));
       updateConfig(`roles.${teamKey}`, { player: 'ROLE_ID', coach: 'ROLE_ID' });
       updateConfig(`channels.teamChats.${teamKey}`, '');
       updateConfig(`channels.staffRooms.${teamKey}`, '');
       updateConfig(`channels.privateChatCategories.${teamKey}`, '');
-      await interaction.editReply({ content: renderProgressMessage(40, 'Saving team configuration...') });
+      await interaction.editReply({ content: renderProgressMessage(40, 'Saving team configuration...', '6–12s'), embeds: [], components: [] });
       await logAdminUiAction(interaction, 'admin', 'new-team', { teamKey, teamLabel });
 
       try {
-        await interaction.editReply({ content: renderProgressMessage(70, 'Syncing configuration...') });
+        await interaction.editReply({ content: renderProgressMessage(70, 'Syncing configuration...', '3–8s'), embeds: [], components: [] });
         await syncConfigSnapshotIfEnabled();
         await triggerGoogleSync(context);
       } catch (error) {
         await interaction.editReply({
-          content: `✅ Team created: **${teamLabel}**. Configure roles/chats from Admin panel. ⚠️ Sync warning: ${error.message}`
+          content: `✅ Team created: **${teamLabel}**. Configure roles/chats from Admin panel. ⚠️ Sync warning: ${error.message}\n\n${getTeamManagementSummary()}`,
+          embeds: [],
+          components: [...createTeamButtonsRows(loadConfig()), createTeamManagementRow()]
         });
         return;
       }
 
       await interaction.editReply({
-        content: `${renderProgressMessage(100, `Team created: **${teamLabel}**.`)}\n\n${getTeamManagementSummary()}`,
+        content: `${renderProgressMessage(100, `Team created: **${teamLabel}**.`, '0s')}\n\n${getTeamManagementSummary()}`,
         embeds: [],
         components: [...createTeamButtonsRows(loadConfig()), createTeamManagementRow()]
       });
-      if (sourceMessageId && interaction.channel?.isTextBased()) {
-        const source = await interaction.channel.messages.fetch(sourceMessageId).catch(() => null);
-        if (source) {
-          const refreshed = loadConfig();
-          await source.edit({
-            content: getTeamManagementSummary(),
-            embeds: [],
-            components: [...createTeamButtonsRows(refreshed), createTeamManagementRow()]
-          }).catch(() => null);
-        }
-      }
     }
   }
 };
