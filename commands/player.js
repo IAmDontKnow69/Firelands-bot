@@ -93,6 +93,16 @@ async function buildPlayerHubResponse(interaction, context) {
         `Hi **${profile.customName || member?.displayName || interaction.member?.displayName || interaction.user.username}** 👋`,
         `Teams: **${teamLabels.join(', ')}**`,
         '',
+        '### Profile',
+        `• Discord: <@${userId}>`,
+        `• Full name: ${profile.customName || interaction.user.username}`,
+        `• First name: ${profile.firstName || 'not set'}`,
+        `• Last name: ${profile.lastName || 'not set'}`,
+        `• Gender: ${profile.gender || 'not set'}`,
+        `• Nickname: ${profile.nickName || 'not set'}`,
+        `• Joined discord server: ${member?.joinedAt ? member.joinedAt.toISOString().slice(0, 10) : 'unknown'}`,
+        `• Phone number: ${formatPhoneLink(profile.phoneNumber)}`,
+        '',
         '### Attendance Summary',
         `✅ Attending: **${attendanceTotals.yes}**`,
         `🔴 Not Attending: **${attendanceTotals.no}**`,
@@ -108,21 +118,6 @@ async function buildPlayerHubResponse(interaction, context) {
       ].join('\n'))
       .setColor(0x2ecc71)
       .setThumbnail(playerPhotoUrl)
-      .addFields(
-        {
-          name: 'Profile',
-          value: [
-            `• Discord: <@${userId}>`,
-            `• Full name: ${profile.customName || interaction.user.username}`,
-            `• First name: ${profile.firstName || 'not set'}`,
-            `• Last name: ${profile.lastName || 'not set'}`,
-            `• Gender: ${profile.gender || 'not set'}`,
-            `• Nickname: ${profile.nickName || 'not set'}`,
-            `• Joined discord server: ${member?.joinedAt ? member.joinedAt.toISOString().slice(0, 10) : 'unknown'}`,
-            `• Phone number: ${formatPhoneLink(profile.phoneNumber)}`
-          ].join('\n')
-        }
-      )
       .setFooter({ text: 'Use the buttons below to manage your profile, fixtures, vacations, and coach chat.' });
 
     const row1 = new ActionRowBuilder().addComponents(
