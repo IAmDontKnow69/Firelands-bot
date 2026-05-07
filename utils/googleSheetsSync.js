@@ -170,7 +170,7 @@ function mapAttendanceRow(row = []) {
   };
 }
 
-async function loadAttendanceFromSheet(config = {}, range = 'Attendance!A2:F') {
+async function loadAttendanceFromSheet(config = {}, range = 'Attendance!A2:I') {
   const spreadsheetId = getSpreadsheetId(config);
   if (!spreadsheetId) return [];
 
@@ -238,7 +238,7 @@ async function loadConfigFromSheet(config = {}) {
   return merged;
 }
 
-async function appendAttendanceRow(config = {}, attendance = {}, range = 'Attendance!A2:F') {
+async function appendAttendanceRow(config = {}, attendance = {}, range = 'Attendance!A2:I') {
   const spreadsheetId = getSpreadsheetId(config);
   if (!spreadsheetId) return false;
 
@@ -249,12 +249,15 @@ async function appendAttendanceRow(config = {}, attendance = {}, range = 'Attend
     attendance.username || '',
     attendance.team || '',
     attendance.status || '',
+    attendance.actualAttended === true ? 'yes' : attendance.actualAttended === false ? 'no' : (attendance.actualAttended || ''),
+    attendance.actualVerifiedAt || '',
+    attendance.actualVerifiedBy || '',
     attendance.updatedAt || toIso()
   ];
 
   await sheets.spreadsheets.values.append({
     spreadsheetId,
-    range: normalizeA1Range(range, 'Attendance!A2:F'),
+    range: normalizeA1Range(range, 'Attendance!A2:I'),
     valueInputOption: 'RAW',
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: [row] }
@@ -401,12 +404,15 @@ function buildAttendanceRows(db = {}) {
         response.username || '',
         event.team || '',
         normalizeAttendanceStatus(response.status || ''),
+        response.actualAttended === true ? 'yes' : response.actualAttended === false ? 'no' : '',
+        response.actualVerifiedAt || '',
+        response.actualVerifiedBy || '',
         response.updatedAt || toIso()
       ]);
     }
   }
 
-  return rows.sort((a, b) => new Date(a[5] || 0).getTime() - new Date(b[5] || 0).getTime());
+  return rows.sort((a, b) => new Date(a[8] || 0).getTime() - new Date(b[8] || 0).getTime());
 }
 
 function flattenConfig(config = {}, prefix = '') {
@@ -591,7 +597,14 @@ function buildPlayerCoachNoteRows(db = {}, notesSheetId) {
       const openLink = Number.isInteger(notesSheetId)
         ? `=HYPERLINK("#gid=${notesSheetId}&range=${noteCol}${rowIndex}", "Open Note")`
         : 'Open Note';
-      const fullNote = note.text || '';
+      const chatLogText = Array.isArray(note.chatLog) && note.chatLog.length
+        ? note.chatLog
+          .map((entry) => (typeof entry === 'string'
+            ? entry
+            : `[${entry.ts || ''}] ${entry.name || entry.userId || 'unknown'}: ${entry.message || ''}`))
+          .join('\n')
+        : '';
+      const fullNote = [note.text || '', chatLogText ? `\n--- Chat Log ---\n${chatLogText}` : ''].join('').trim();
       const summary = fullNote.length > 90 ? `${fullNote.slice(0, 87)}...` : fullNote;
       rows.push([
         truncateId(note.id || ''),
@@ -1195,7 +1208,7 @@ async function syncAllToSheet(config = {}, db = {}, options = {}) {
   const commandLogRange = options.setupFreshWipe
     ? "'Command Logs'!A2:I"
     : normalizeA1Range(config.googleSync?.commandLogRange, "'Command Logs'!A2:I");
-  const attendanceRange = normalizeA1Range(config.googleSync?.attendanceRange, 'Attendance!A2:F');
+  const attendanceRange = normalizeA1Range(config.googleSync?.attendanceRange, 'Attendance!A2:I');
   const configRange = normalizeA1Range(config.googleSync?.configRange, 'Config!A2:C');
   const configBackupsRange = normalizeA1Range(config.googleSync?.configBackupsRange, 'Config Backups!A2:F');
   const playersRange = options.setupFreshWipe
@@ -1229,7 +1242,7 @@ async function syncAllToSheet(config = {}, db = {}, options = {}) {
       ? [
         { range: fixturesRange, headers: fixtureHeaders, description: 'All events imported from Google Calendar plus address nicknames.' },
         { range: playersRange, headers: ['userIdPreview', 'customName', 'nickName', 'phoneNumber', 'gender', 'shirtNumber', 'shirtNumbersByTeam', 'teams', 'coachTeams', 'captainTeams', 'viceCaptainTeams', 'isGoalkeeper', 'isDefender', 'isMidfielder', 'isAttacker', 'coachPositionsByTeam', 'roles', 'joinedDiscordAt', 'notes', 'faceImageUrl', 'notesLog', 'updatedAt', 'userId', 'profileJson'], description: 'All player and coach data, including notes.' },
-        { range: attendanceRange, headers: ['eventId', 'userId', 'username', 'team', 'status', 'updatedAt'], description: 'Attendance record of attending/not attending responses.' },
+        { range: attendanceRange, headers: ['eventId', 'userId', 'username', 'team', 'status', 'actualAttended', 'actualVerifiedAt', 'actualVerifiedBy', 'updatedAt'], description: 'Attendance record of attending/not attending responses.' },
         { range: absencesRange, headers: ['ticketPreview', 'channelPreview', 'eventPreview', 'eventTitle', 'eventDate', 'eventLocation', 'team', 'playerPreview', 'playerName', 'attendanceStatus', 'reason', 'coachDecision', 'coachPreview', 'coachName', 'closedAt', 'createdAt', 'closedReason', 'ticketId', 'channelId', 'eventId', 'playerId', 'coachId', 'recordType'], description: 'Logs for not-attending reasons and coach outcomes.' },
         { range: configRange, headers: ['key', 'value', 'updatedAt'], description: 'Bot configuration values.' },
         { range: commandLogRange, headers: ['timestamp', 'source', 'command', 'subcommand', 'options', 'guildId', 'channelId', 'userId', 'username'], description: 'Log of all commands used in the bot.' },
@@ -1241,7 +1254,7 @@ async function syncAllToSheet(config = {}, db = {}, options = {}) {
         { range: fixturesRange, headers: fixtureHeaders, description: 'All fixtures synced from events.' },
         { range: commandLogRange, headers: ['timestamp', 'source', 'command', 'subcommand', 'options', 'guildId', 'channelId', 'userId', 'username'], description: 'Slash command activity log.' },
         ...teamFixtureSections,
-        { range: attendanceRange, headers: ['eventId', 'userId', 'username', 'team', 'status', 'updatedAt'], description: 'Attendance responses by event.' },
+        { range: attendanceRange, headers: ['eventId', 'userId', 'username', 'team', 'status', 'actualAttended', 'actualVerifiedAt', 'actualVerifiedBy', 'updatedAt'], description: 'Attendance responses by event.' },
         { range: configRange, headers: ['key', 'value', 'updatedAt'], description: 'Flattened runtime configuration.' },
         { range: configBackupsRange, headers: ['backupOrder', 'timestamp', 'changedPath', 'reason', 'snapshotPreview', 'snapshot'], description: 'Last 5 config states before changes.' },
         { range: playersRange, headers: ['userIdPreview', 'customName', 'nickName', 'phoneNumber', 'gender', 'shirtNumber', 'shirtNumbersByTeam', 'teams', 'coachTeams', 'captainTeams', 'viceCaptainTeams', 'isGoalkeeper', 'isDefender', 'isMidfielder', 'isAttacker', 'coachPositionsByTeam', 'roles', 'joinedDiscordAt', 'notes', 'faceImageUrl', 'notesLog', 'updatedAt', 'userId', 'profileJson'], description: 'Player + coach management profiles, including team assignments, titles, and saved profile fields.' },

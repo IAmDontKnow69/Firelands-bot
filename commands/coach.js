@@ -77,6 +77,8 @@ function buildReport(guild, team, teamRoles, config = {}) {
     const attendingPlayers = Object.entries(responses).filter(([userId, value]) => playerIds.includes(userId) && value.status === 'yes').length;
     const unavailablePlayers = Object.entries(responses).filter(([userId, value]) => playerIds.includes(userId) && ['pending_no', 'confirmed_no'].includes(value.status)).length;
     const noResponse = Math.max(playerIds.length - Object.keys(responses).filter((id) => playerIds.includes(id)).length, 0);
+    const actualAttended = Object.entries(responses).filter(([userId, value]) => playerIds.includes(userId) && value.actualAttended === true).length;
+    const actualAbsent = Object.entries(responses).filter(([userId, value]) => playerIds.includes(userId) && value.actualAttended === false).length;
 
     const onVacation = playerIds.filter((id) => getActiveVacationsForUser(id).some((vac) => vac.team === team)).length;
 
@@ -85,6 +87,8 @@ function buildReport(guild, team, teamRoles, config = {}) {
       `🟢 Attending (Players): ${attendingPlayers}`,
       `🔴 Not attending (Players): ${unavailablePlayers}`,
       `🌴 On Vacation: ${onVacation}`,
+      `✅ Actually Attended: ${actualAttended}`,
+      `❌ Actually Absent: ${actualAbsent}`,
       `❓ No response (Players): ${noResponse}`,
       `🧢 Coaches in Team: ${coachIds.length}`
     ].join('\n');
@@ -151,19 +155,23 @@ module.exports = {
     const row1 = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`coach_manage_profile:${team}`).setLabel('🧢 Coach Profile').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`coach_manage_players:${team}`).setLabel('👥 Player Manager').setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`coach_manage_events:${team}`).setLabel('📅 Event Manager').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`coach_next_event:${team}`).setLabel('➡️ Next Event').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`coach_manage_events:${team}`).setLabel('📅 Events').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`coach_team_attendance:${team}`).setLabel('📊 Team Attendance').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId(`coach_manage_vacation:${team}`).setLabel('🌴 Vacation').setStyle(ButtonStyle.Secondary)
     );
 
     const row2 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`coach_team_vacations:${team}`).setLabel('🌴 Team Vacations').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId(`coach_open_player_chat:${team}`).setLabel('💬 Chat With Player').setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder().setCustomId(`coach_set_team_badge:${team}`).setLabel('🛡️ Team Badge').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId(`coach_set_captain:${team}`).setLabel('🅒 Set Captain').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId(`coach_set_vice_captain:${team}`).setLabel('🅥 Set Vice Captain').setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId(`coach_next_event:${team}`).setLabel('📍 Next Event Address').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`coach_force_remind:${team}`).setLabel('🔔 Force Remind').setStyle(ButtonStyle.Primary)
+    );
+    const row3 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`coach_actual_attendance:${team}`).setLabel('✅ Actual Attendance').setStyle(ButtonStyle.Success)
     );
 
-    await interaction.reply({ embeds: [embed], components: [row1, row2], flags: MessageFlags.Ephemeral });
+    await interaction.reply({ embeds: [embed], components: [row1, row2, row3], flags: MessageFlags.Ephemeral });
   },
 
   buildReport

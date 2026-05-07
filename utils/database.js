@@ -7,7 +7,7 @@ function ensureDb() {
   if (!fs.existsSync(DB_PATH)) {
     fs.writeFileSync(
       DB_PATH,
-      JSON.stringify({ events: {}, futureAvailability: {}, absenceTickets: {}, vacations: {}, players: {}, meta: { postEventCoachReminders: {}, setupWizard: {} } }, null, 2)
+      JSON.stringify({ events: {}, futureAvailability: {}, absenceTickets: {}, vacations: {}, players: {}, meta: { postEventCoachReminders: {}, attendanceNoResponseReminders: {}, setupWizard: {} } }, null, 2)
     );
   }
 }
@@ -26,12 +26,13 @@ function loadDb() {
     if (!parsed.players) parsed.players = {};
     if (!parsed.meta) parsed.meta = {};
     if (!parsed.meta.postEventCoachReminders) parsed.meta.postEventCoachReminders = {};
+    if (!parsed.meta.attendanceNoResponseReminders) parsed.meta.attendanceNoResponseReminders = {};
     if (!parsed.meta.setupWizard) parsed.meta.setupWizard = {};
 
     return parsed;
   } catch (error) {
     console.error('Failed to load database:', error);
-    return { events: {}, futureAvailability: {}, absenceTickets: {}, vacations: {}, players: {}, meta: { postEventCoachReminders: {}, setupWizard: {} } };
+    return { events: {}, futureAvailability: {}, absenceTickets: {}, vacations: {}, players: {}, meta: { postEventCoachReminders: {}, attendanceNoResponseReminders: {}, setupWizard: {} } };
   }
 }
 
@@ -107,6 +108,15 @@ function clearResponse(eventId, userId) {
 function markPostEventReminder(eventId, marked = true) {
   const db = loadDb();
   db.meta.postEventCoachReminders[eventId] = marked;
+  saveDb(db);
+}
+
+function markAttendanceNoResponseReminder(eventId, userId, sentAt = new Date().toISOString()) {
+  const db = loadDb();
+  if (!db.meta) db.meta = {};
+  if (!db.meta.attendanceNoResponseReminders) db.meta.attendanceNoResponseReminders = {};
+  if (!db.meta.attendanceNoResponseReminders[eventId]) db.meta.attendanceNoResponseReminders[eventId] = {};
+  db.meta.attendanceNoResponseReminders[eventId][userId] = sentAt;
   saveDb(db);
 }
 
@@ -202,6 +212,7 @@ module.exports = {
   setResponse,
   clearResponse,
   markPostEventReminder,
+  markAttendanceNoResponseReminder,
   setFutureAvailability,
   setAbsenceTicket,
   deleteAbsenceTicket,
