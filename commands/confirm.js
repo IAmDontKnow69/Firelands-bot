@@ -23,13 +23,9 @@ function formatClosedAbsenceNotification(ticket = {}, event = {}) {
   const playerName = ticket.playerName || `<@${ticket.playerId}>`;
   const eventLabel = event?.title || ticket.eventId || 'Unknown event';
   const dateLabel = event?.date ? getCompactDateLabel(event.date) : 'unknown date';
-  return [
-    '✅ Absence Ticket Closed',
-    `👤 ${playerName}`,
-    `📅 ${dateLabel} — ${eventLabel}`,
-    `🔴 Not attending confirmed for ${playerName} by ${ticket.coachName || 'staff'} on ${eventLabel}.`
-  ].join('\n');
+  return `✅ Not attending confirmed for ${playerName} by ${ticket.coachName || 'staff'} on ${eventLabel} (${dateLabel}).`;
 }
+
 
 async function collectChatLog(channel) {
   const fetched = await channel.messages.fetch({ limit: 100 }).catch(() => null);
@@ -132,9 +128,11 @@ module.exports = {
     await updateAbsenceNotifications(interaction, closedTicket, event);
 
     await interaction.editReply({ content: `✅ Confirmed absence for <@${ticket.playerId}>.` });
-    await context.sendLog(
-      `🔴 Not attending confirmed for ${closedTicket.playerName || `<@${ticket.playerId}>`} by ${coachName} on **${event.title}**.`
-    );
+    if (!closedTicket.adminNotification) {
+      await context.sendLog(
+        `🔴 Not attending confirmed for ${closedTicket.playerName || `<@${ticket.playerId}>`} by ${coachName} on **${event.title}**.`
+      );
+    }
 
     setTimeout(async () => {
       try {

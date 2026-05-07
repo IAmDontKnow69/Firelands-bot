@@ -48,6 +48,7 @@ const playerCommand = require('../commands/player');
 const { hasAdminAccess, adminAccessMessage } = require('../utils/adminAccess');
 const { syncProfilesForTeamRole } = require('../utils/roleRosterSync');
 const { determineEventType, eventTypeLabel, getEventTypeConfig } = require('../utils/eventType');
+const { normalizePhoneNumber, formatPhoneLink } = require('../utils/phone');
 
 function getTeamMeta(config = {}, team = '') {
   const teamConfig = config.teams?.[team] || {};
@@ -656,8 +657,9 @@ function getTeamConfigSummary(config, guild, team) {
     const bucket = picked[0] || 'unknown';
     const shortName = profile.nickName || profile.firstName || profile.customName || member.displayName || member.user?.username || member.id;
     const positionLabel = picked.length ? picked.map(normalizePositionLabel).join('/') : 'No position';
+    const shirtLabel = formatShirtNumberForList(profile, team);
     rosterByBucket[bucket] = rosterByBucket[bucket] || [];
-    rosterByBucket[bucket].push(`• ${shortName} — ${positionLabel}`);
+    rosterByBucket[bucket].push(`• ${shortName} — ${shirtLabel} — ${positionLabel}`);
   }
   const orderedRoster = [...rosterByBucket.goalkeeper, ...rosterByBucket.defender, ...rosterByBucket.midfielder, ...rosterByBucket.attacker, ...rosterByBucket.unknown];
   const coachLines = coachMembers.length
@@ -752,12 +754,6 @@ function normalizeLocation(value = '') {
 
 function getMapsLink(location = '') {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(location)}`;
-}
-
-function normalizePhoneNumber(value = '') {
-  const digits = String(value || '').replace(/\D/g, '');
-  if (digits.length !== 10) return '';
-  return `(${digits.slice(0, 3)})${digits.slice(3, 6)}-${digits.slice(6)}`;
 }
 
 function encodeAliasKey(eventType = 'any', location = '') {
@@ -981,8 +977,29 @@ function getPlayerEventStatusLabel(event = {}, userId = '') {
   const response = event.responses?.[userId];
   if (response?.status === 'yes') return '✅ Attending';
   if (response?.status === 'pending_no') return '🔴 Not attending (waiting for coach confirmation)';
+  if (response?.status === 'confirmed_no' && response?.onVacation) return `🌴 On vacation / 🔴 Not attending${response.reason ? ` — ${response.reason}` : ''}`;
   if (response?.status === 'confirmed_no') return '🔴 Not attending';
   return '❓ Not answered yet';
+}
+
+function getPlayerEventStatusShort(event = {}, userId = '') {
+  const response = event.responses?.[userId];
+  if (response?.status === 'yes') return '✅ Yes';
+  if (response?.status === 'pending_no') return '🔴 No (pending)';
+  if (response?.status === 'confirmed_no' && response?.onVacation) return '🌴 Vacation';
+  if (response?.status === 'confirmed_no') return '🔴 No';
+  return '❓ Open';
+}
+
+function formatFixtureListDate(value = '') {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'date TBD';
+  return date.toLocaleString('en-US', {
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  });
 }
 
 function createPlayerFixturePickerPayload(interaction, page = 0) {
@@ -1020,13 +1037,14 @@ function createPlayerFixturePickerPayload(interaction, page = 0) {
   const list = items.length
     ? items.map((event, index) => {
       const number = index + 1;
-      const teamLabel = getTeamMeta(config, event.team).label || event.team || 'Team not set';
-      return `**${number}. ${event.title}**\n🕒 ${new Date(event.date).toLocaleString()} • ${teamLabel}\n${getPlayerEventStatusLabel(event, interaction.user.id)}`;
-    }).join('\n\n')
+      const teamLabel = getTeamMeta(config, event.team).label || event.team || 'Team';
+      const status = getPlayerEventStatusShort(event, interaction.user.id);
+      return `**${number}.** ${formatFixtureListDate(event.date)} • **${event.title}** • ${teamLabel} • ${status}`;
+    }).join('\n')
     : 'No upcoming events/fixtures found for your teams.';
 
   return {
-    content: `📅 **Your Events/Fixtures** (page ${safePage + 1}/${totalPages})\nPick a fixture by pressing its number.\n\n${list}`,
+    content: `📅 **Events/Fixtures** (${safePage + 1}/${totalPages}) — tap a number\n${list}`,
     embeds: [],
     components: rows
   };
@@ -1037,12 +1055,9 @@ function buildPlayerFixtureDetailPayload(event, eventId, userId, page = 0) {
   const teamLabel = getTeamMeta(config, event.team).label || event.team || 'Team not set';
   return {
     content: [
-      `📅 **${event.title}**`,
-      `Team: **${teamLabel}**`,
-      `🕒 ${new Date(event.date).toLocaleString()}`,
-      `📍 ${event.location || 'Location not set'}`,
-      '',
-      `Your current status: **${getPlayerEventStatusLabel(event, userId)}**`,
+      `📅 **${event.title}** • ${teamLabel}`,
+      `🕒 ${new Date(event.date).toLocaleString()}${event.location ? ` • 📍 ${event.location}` : ''}`,
+      `Status: **${getPlayerEventStatusLabel(event, userId)}**`,
       event.location ? `[Open in Maps](${getMapsLink(event.location)})` : ''
     ].filter(Boolean).join('\n'),
     embeds: [],
@@ -1176,6 +1191,15 @@ function createAbsenceLogRow(ticketChannelId) {
   );
 }
 
+function createCoachChatLogRow(ticketChannelId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`absence_ticket_log:${ticketChannelId}`)
+      .setLabel('💬 Show Chat Log')
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
+
 function createAbsenceNotificationRow(ticketChannelId, userId, mode = 'coach', closed = false) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -1185,31 +1209,213 @@ function createAbsenceNotificationRow(ticketChannelId, userId, mode = 'coach', c
   );
 }
 
-function formatAbsenceNotification(ticket = {}, event = {}, status = 'open') {
+function formatAbsenceNotification(ticket = {}, event = {}, status = 'open', mode = 'coach') {
   const playerName = ticket.playerName || `<@${ticket.playerId}>`;
   const eventLabel = event?.title || ticket.eventId || 'Unknown event';
   const dateLabel = event?.date ? getCompactDateLabel(event.date) : 'unknown date';
+  const reasonLabel = ticket.reason || 'not provided';
+  const ticketChannelId = ticket.ticketId || ticket.ticketChannelId || '';
+
   if (status === 'closed') {
-    const lines = [
-      '✅ Absence Ticket Closed',
-      `👤 ${playerName}`,
-      `📅 ${dateLabel} — ${eventLabel}`
-    ];
     if (ticket.coachDecision === 'confirmed_not_attending') {
-      lines.push(`🔴 Not attending confirmed for ${playerName} by ${ticket.coachName || 'staff'} on ${eventLabel}.`);
-    } else if (ticket.closedReason) {
-      lines.push(`Status: ${ticket.closedReason}`);
+      return `✅ Not attending confirmed for ${playerName} by ${ticket.coachName || 'staff'} on ${eventLabel} (${dateLabel}).`;
     }
-    return lines.join('\n');
+    if (ticket.coachDecision === 'declined_asked_to_attend') {
+      return `↩️ Not-attending request declined for ${playerName} on ${eventLabel} (${dateLabel}).`;
+    }
+    if (ticket.coachDecision === 'player_attending') {
+      return `🟢 ${playerName} switched to attending for ${eventLabel} (${dateLabel}).`;
+    }
+    return `✅ Absence ticket closed for ${playerName} on ${eventLabel} (${dateLabel}).${ticket.closedReason ? ` ${ticket.closedReason}` : ''}`;
   }
-  return [
-    `🚨 Attendance update: marked **not attending**`,
-    `👤 ${playerName}`,
-    `📅 ${dateLabel} — ${eventLabel}`,
-    ticket.reason ? `📝 Reason: ${ticket.reason}` : '📝 Reason: not provided',
-    `Status: OPEN`
-  ].join('\n');
+
+  const lines = [`🔴 ${playerName} marked not attending for ${eventLabel} (${dateLabel}). Reason: ${reasonLabel}`];
+  if (mode === 'admin' && ticketChannelId) lines.push(`Ticket: <#${ticketChannelId}>`);
+  return lines.join('\n');
 }
+
+
+function formatVacationNotification(vacation = {}, config = loadConfig(), status = vacation.status || 'pending') {
+  const playerName = vacation.playerName || `<@${vacation.userId || vacation.playerId || 'unknown'}>`;
+  const teamLabels = (vacation.teams?.length ? vacation.teams : [vacation.team].filter(Boolean))
+    .map((team) => config.teams?.[team]?.label || team)
+    .filter(Boolean)
+    .join(', ') || 'team not set';
+  const reason = vacation.reason || 'not provided';
+  const range = `${vacation.startDate || 'unknown'} → ${vacation.endDate || 'unknown'}`;
+  const ticketId = vacation.ticketId || vacation.ticketChannelId || '';
+
+  if (status === 'approved') {
+    return `✅ ${playerName} vacation approved for ${range} (${teamLabels}). Reason: ${reason}`;
+  }
+  if (status === 'declined') {
+    return `❌ ${playerName} vacation declined for ${range} (${teamLabels}). Reason: ${reason}`;
+  }
+  if (status === 'withdrawn') {
+    return `↩️ ${playerName} vacation removed for ${range} (${teamLabels}). Reason: ${reason}`;
+  }
+
+  const lines = [`🌴 ${playerName} requested vacation for ${range} (${teamLabels}). Reason: ${reason}`];
+  if (ticketId) lines.push(`Ticket: <#${ticketId}>`);
+  return lines.join('\n');
+}
+
+async function sendVacationStaffNotifications(guild, config = {}, vacation = {}) {
+  const refs = [];
+  const teams = vacation.teams?.length ? vacation.teams : [vacation.team].filter(Boolean);
+  const sentChannelIds = new Set();
+  for (const team of teams) {
+    const staffRoomId = config.channels?.staffRooms?.[team];
+    if (!staffRoomId || sentChannelIds.has(staffRoomId)) continue;
+    sentChannelIds.add(staffRoomId);
+    const staffRoom = await guild?.channels?.fetch(staffRoomId).catch(() => null);
+    if (!staffRoom?.isTextBased()) continue;
+    const message = await staffRoom.send({ content: formatVacationNotification(vacation, config, vacation.status || 'pending') }).catch(() => null);
+    if (message) refs.push({ team, channelId: staffRoom.id, messageId: message.id });
+  }
+  return refs;
+}
+
+async function updateVacationStaffNotifications(guild, config = {}, vacation = {}) {
+  const refs = Array.isArray(vacation.staffNotifications) ? vacation.staffNotifications : [];
+  let edited = 0;
+  for (const ref of refs) {
+    const staffRoom = await guild?.channels?.fetch(ref.channelId).catch(() => null);
+    if (!staffRoom?.isTextBased()) continue;
+    const message = await staffRoom.messages.fetch(ref.messageId).catch(() => null);
+    if (!message) continue;
+    await message.edit({ content: formatVacationNotification(vacation, config, vacation.status || 'pending') }).catch(() => null);
+    edited += 1;
+  }
+  return edited;
+}
+
+
+function getUserVacationList(userId = '', db = loadDb()) {
+  return Object.values(db.vacations?.[userId] || {})
+    .filter((vac) => vac.status !== 'withdrawn')
+    .sort((a, b) => new Date(b.createdAt || b.updatedAt || 0) - new Date(a.createdAt || a.updatedAt || 0));
+}
+
+function createVacationManagePayload(userId = '', page = 0, config = loadConfig(), db = loadDb()) {
+  const all = getUserVacationList(userId, db);
+  const perPage = 9;
+  const totalPages = Math.max(1, Math.ceil(all.length / perPage));
+  const safePage = Math.min(Math.max(page, 0), totalPages - 1);
+  const items = all.slice(safePage * perPage, safePage * perPage + perPage);
+  const lines = items.map((vac, idx) => {
+    const teams = (vac.teams?.length ? vac.teams : [vac.team].filter(Boolean)).map((team) => config.teams?.[team]?.label || team).join(', ') || 'team not set';
+    return `${idx + 1}. ${vac.startDate || '?'} → ${vac.endDate || '?'} • ${teams}\n   Reason: ${vac.reason || 'not provided'}\n   Status: ${vac.status || 'pending'}`;
+  });
+  const rows = [];
+  for (let start = 0; start < items.length; start += 5) {
+    const row = new ActionRowBuilder();
+    items.slice(start, start + 5).forEach((vac, offset) => {
+      row.addComponents(new ButtonBuilder().setCustomId(`player_vacation_pick:${safePage}:${start + offset}`).setLabel(String(start + offset + 1)).setStyle(ButtonStyle.Primary));
+    });
+    rows.push(row);
+  }
+  rows.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`player_vacation_page:${safePage - 1}`).setLabel('Prev').setStyle(ButtonStyle.Secondary).setDisabled(safePage <= 0),
+    new ButtonBuilder().setCustomId(`player_vacation_page:${safePage + 1}`).setLabel('Forward').setStyle(ButtonStyle.Secondary).setDisabled(safePage >= totalPages - 1),
+    new ButtonBuilder().setCustomId('player_vacation_open').setLabel('Back').setStyle(ButtonStyle.Secondary)
+  ));
+  return {
+    content: [`🌴 **Manage Vacations** (page ${safePage + 1}/${totalPages})`, 'Pick a vacation by number.', '', lines.length ? lines.join('\n\n') : 'No current vacations found.'].join('\n'),
+    components: rows,
+    flags: MessageFlags.Ephemeral
+  };
+}
+
+function createVacationDetailPayload(vacation = {}, page = 0, config = loadConfig()) {
+  const teams = (vacation.teams?.length ? vacation.teams : [vacation.team].filter(Boolean)).map((team) => config.teams?.[team]?.label || team).join(', ') || 'team not set';
+  return {
+    content: [
+      '🌴 **Vacation Details**',
+      `Dates: **${vacation.startDate || '?'} → ${vacation.endDate || '?'}**`,
+      `Teams: **${teams}**`,
+      `Reason: ${vacation.reason || 'not provided'}`,
+      `Status: **${vacation.status || 'pending'}**`
+    ].join('\n'),
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`player_vacation_edit_dates:${vacation.vacationId}:${page}`).setLabel('Change dates/reason').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`player_vacation_remove:${vacation.vacationId}:${page}`).setLabel('Remove').setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`player_vacation_page:${page}`).setLabel('Back').setStyle(ButtonStyle.Secondary)
+    )],
+    flags: MessageFlags.Ephemeral
+  };
+}
+
+function markApprovedVacationAttendance(userId = '', vacation = {}, db = loadDb()) {
+  const affected = [];
+  for (const [eventId, event] of Object.entries(db.events || {})) {
+    const eventDay = new Date(event.date).toISOString().slice(0, 10);
+    if ((vacation.teams || []).includes(event.team) && eventDay >= vacation.startDate && eventDay <= vacation.endDate) {
+      setResponse(eventId, userId, {
+        status: 'confirmed_no',
+        reason: `Vacation: ${vacation.reason || 'not provided'}`,
+        confirmed: true,
+        responderType: vacation.requestedByRole || 'player',
+        username: vacation.playerName || 'Player',
+        onVacation: true,
+        vacationId: vacation.vacationId,
+        updatedAt: new Date().toISOString()
+      });
+      affected.push(eventId);
+    }
+  }
+  return affected;
+}
+
+function clearVacationAttendance(userId = '', vacationId = '') {
+  const db = loadDb();
+  let cleared = 0;
+  for (const [eventId, event] of Object.entries(db.events || {})) {
+    const response = event.responses?.[userId];
+    if (response?.onVacation && (!vacationId || response.vacationId === vacationId)) {
+      if (clearResponse(eventId, userId)) cleared += 1;
+    }
+  }
+  return cleared;
+}
+
+
+async function createVacationReviewChannel(interaction, config = {}, vacation = {}, targetUserId = '', mode = 'request') {
+  const guild = await resolveInteractionGuild(interaction, config);
+  if (!guild) return null;
+  const teams = vacation.teams?.length ? vacation.teams : [vacation.team].filter(Boolean);
+  const coachRoleIds = Array.from(new Set(teams.map((team) => config.roles?.[team]?.coach).filter(Boolean)));
+  const categoryId = config.channels?.privateChatCategories?.[teams[0]] || config.channels?.ticket || null;
+  const playerName = vacation.playerName || getPlayerDisplayName(targetUserId, `<@${targetUserId}>`);
+  const channel = await guild.channels.create({
+    name: sanitizeChannelName(`${mode === 'edit' ? 'Vacation Edit' : 'Vacation'} - ${playerName}`),
+    type: ChannelType.GuildText,
+    parent: categoryId,
+    permissionOverwrites: [
+      { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+      { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] },
+      { id: targetUserId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+      ...coachRoleIds.map((id) => ({ id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }))
+    ]
+  }).catch(() => null);
+  if (!channel) return null;
+  await channel.send({
+    content: [
+      mode === 'edit' ? `📝 Edit to vacation request for <@${targetUserId}>` : `🌴 Vacation request for <@${targetUserId}>`,
+      `Range: ${vacation.startDate} → ${vacation.endDate}`,
+      `Reason: ${vacation.reason}`,
+      `Teams: ${teams.map((team) => config.teams?.[team]?.label || team).join(', ')}`,
+      '',
+      'Coaches: approve or decline below.'
+    ].join('\n'),
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`vacation_ticket_approve:${vacation.vacationId}:${targetUserId}`).setLabel('✅ Approve').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`vacation_ticket_decline:${vacation.vacationId}:${targetUserId}`).setLabel('❌ Decline').setStyle(ButtonStyle.Danger)
+    )]
+  }).catch(() => null);
+  return channel;
+}
+
 
 function sanitizeChannelName(name) {
   return name
@@ -1268,7 +1474,7 @@ function buildRichPlayerMention(config, user, member, profile, team) {
   const resolvedTeam = team || getUserTeamFromMember(member, config, 'player');
   const teamEmoji = config.teams?.[resolvedTeam]?.emoji || '🔹';
   const captainEmoji = getCaptainSuffix(config, resolvedTeam, member);
-  const shirt = profile?.shirtNumber ? `#${profile.shirtNumber}` : '#--';
+  const shirt = formatShirtNumberForList(profile, resolvedTeam);
   const baseName = getPlayerNameForUi(user, member, profile);
   return `${teamEmoji}${captainEmoji ? ` ${captainEmoji}` : ''} ${shirt} ${baseName}`.trim();
 }
@@ -1288,17 +1494,44 @@ function buildEventAttendanceSnapshot(eventId, config, guild, page = 1, pageSize
   const teamRoles = config.roles?.[event.team] || {};
   const playerRole = teamRoles.player ? guild.roles.cache.get(teamRoles.player) : null;
   const coachRole = teamRoles.coach ? guild.roles.cache.get(teamRoles.coach) : null;
-  const trackedIds = new Set([...(playerRole ? Array.from(playerRole.members.keys()) : []), ...(coachRole ? Array.from(coachRole.members.keys()) : [])]);
+  const playerIds = playerRole ? Array.from(playerRole.members.keys()) : [];
+  const coachIds = coachRole ? Array.from(coachRole.members.keys()) : [];
   const responses = event.responses || {};
-  const lines = [];
-  for (const userId of trackedIds) {
+
+  function formatStatus(response) {
+    if (!response) return '❓ undecided';
+    const status = response.status === 'yes'
+      ? '✅ attending'
+      : response.onVacation
+        ? `🌴 on vacation / 🔴 not attending (${response.reason || 'No reason'})`
+        : `🔴 not attending (${response.reason || 'No reason'})`;
+    const actual = response.actualAttended === true ? ' • actual: ✅ attended' : response.actualAttended === false ? ' • actual: ❌ absent' : '';
+    return `${status}${actual}`;
+  }
+
+  function getCoachTitle(userId) {
+    const profile = getPlayerProfile(userId) || {};
+    return getCoachPositionLabel(getCoachPositionForTeam(profile, event.team, config), config);
+  }
+
+  const playerLines = playerIds.map((userId) => {
     const profile = getPlayerProfile(userId) || {};
     const positions = getSortedPositions(profile);
     const positionLabel = positions.length ? positions.map(normalizePositionLabel).join('/') : 'No position';
-    const response = responses[userId];
-    const status = !response ? '❓ undecided' : response.status === 'yes' ? '✅ attending' : `🔴 not attending (${response.reason || 'No reason'})`;
-    lines.push(`• <@${userId}> — ${positionLabel} — ${status}`);
-  }
+    const shirtLabel = formatShirtNumberForList(profile, event.team);
+    const coachTitle = coachIds.includes(userId) ? ` (${getCoachTitle(userId)})` : '';
+    return `• <@${userId}>${coachTitle} — ${shirtLabel} — ${positionLabel} — ${formatStatus(responses[userId])}`;
+  });
+
+  const coachLines = coachIds.map((userId) => `• <@${userId}> — ${getCoachTitle(userId)} — ${formatStatus(responses[userId])}`);
+
+  const lines = [
+    '👕 **Players**',
+    ...(playerLines.length ? playerLines : ['*None*']),
+    '',
+    '🧢 **Coaches**',
+    ...(coachLines.length ? coachLines : ['*None*'])
+  ];
   const totalPages = Math.max(1, Math.ceil(lines.length / pageSize));
   const safePage = Math.min(Math.max(1, page), totalPages);
   const start = (safePage - 1) * pageSize;
@@ -1312,6 +1545,118 @@ function buildEventAttendanceSnapshot(eventId, config, guild, page = 1, pageSize
     totalPages,
     page: safePage
   };
+}
+
+function isCoachForTeam(member, config = loadConfig(), team = '') {
+  const coachRoleId = config.roles?.[team]?.coach;
+  return Boolean(coachRoleId && member?.roles?.cache?.has(coachRoleId));
+}
+
+function getTeamPlayerMembers(guild, config = loadConfig(), team = '') {
+  const roleId = config.roles?.[team]?.player;
+  const role = roleId ? guild?.roles?.cache?.get(roleId) : null;
+  return role ? Array.from(role.members.values()).sort((a, b) => a.displayName.localeCompare(b.displayName)) : [];
+}
+
+function buildCoachTeamRows(team = '') {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`coach_manage_profile:${team}`).setLabel('🧢 Coach Profile').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`coach_manage_players:${team}:0`).setLabel('👥 Player Profiles').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`coach_manage_events:${team}:future`).setLabel('📅 Events').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`coach_team_attendance:${team}`).setLabel('📊 Team Attendance').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`coach_manage_vacation:${team}`).setLabel('🌴 My Vacation').setStyle(ButtonStyle.Secondary)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`coach_team_vacations:${team}`).setLabel('🌴 Team Vacations').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`coach_open_player_chat:${team}:0`).setLabel('💬 Chat Player').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`coach_next_event:${team}`).setLabel('📍 Next Event').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`coach_force_remind:${team}:0`).setLabel('🔔 Force Remind').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`coach_actual_attendance:${team}:0`).setLabel('✅ Actual Attendance').setStyle(ButtonStyle.Success)
+    )
+  ];
+}
+
+function buildCoachPlayerPickerPayload(guild, config = loadConfig(), team = '', page = 0, action = 'profile') {
+  const members = getTeamPlayerMembers(guild, config, team);
+  const perPage = 9;
+  const totalPages = Math.max(1, Math.ceil(members.length / perPage));
+  const safePage = Math.min(Math.max(page, 0), totalPages - 1);
+  const items = members.slice(safePage * perPage, safePage * perPage + perPage);
+  const rows = [];
+  for (let start = 0; start < items.length; start += 5) {
+    const row = new ActionRowBuilder();
+    items.slice(start, start + 5).forEach((member, offset) => {
+      row.addComponents(new ButtonBuilder().setCustomId(`coach_player_pick:${action}:${team}:${safePage}:${start + offset}`).setLabel(String(start + offset + 1)).setStyle(ButtonStyle.Primary));
+    });
+    rows.push(row);
+  }
+  rows.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`coach_manage_players:${team}:${safePage - 1}:${action}`).setLabel('Prev').setStyle(ButtonStyle.Secondary).setDisabled(safePage <= 0),
+    new ButtonBuilder().setCustomId(`coach_manage_players:${team}:${safePage + 1}:${action}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(safePage >= totalPages - 1),
+    new ButtonBuilder().setCustomId(`coach_back_team:${team}`).setLabel('Back').setStyle(ButtonStyle.Secondary)
+  ));
+  const lines = items.map((member, index) => {
+    const profile = getPlayerProfile(member.id) || {};
+    const positions = getSortedPositions(profile).map(normalizePositionLabel).join('/') || 'No position';
+    return `${index + 1}. ${member.displayName} — ${formatShirtNumberForList(profile, team)} — ${positions}`;
+  });
+  return { content: `👥 **${getTeamMeta(config, team).label} Players** (page ${safePage + 1}/${totalPages})\nPick a player by number.\n\n${lines.join('\n') || 'No players found.'}`, components: rows, flags: MessageFlags.Ephemeral };
+}
+
+function getTeamEvents(config = loadConfig(), team = '', scope = 'future') {
+  const now = Date.now();
+  return Object.entries(loadDb().events || {})
+    .map(([eventId, event]) => ({ eventId, id: eventId, ...event }))
+    .filter((event) => fixtureHasTeam(event, team))
+    .filter((event) => scope === 'past' ? new Date(event.date).getTime() < now : new Date(event.date).getTime() >= now - 2 * 60 * 60 * 1000)
+    .sort((a, b) => scope === 'past' ? new Date(b.date) - new Date(a.date) : new Date(a.date) - new Date(b.date));
+}
+
+function buildCoachEventPickerPayload(config = loadConfig(), team = '', page = 0, action = 'view', scope = 'future') {
+  const all = getTeamEvents(config, team, scope);
+  const perPage = 9;
+  const totalPages = Math.max(1, Math.ceil(all.length / perPage));
+  const safePage = Math.min(Math.max(page, 0), totalPages - 1);
+  const items = all.slice(safePage * perPage, safePage * perPage + perPage);
+  const rows = [];
+  for (let start = 0; start < items.length; start += 5) {
+    const row = new ActionRowBuilder();
+    items.slice(start, start + 5).forEach((event, offset) => row.addComponents(new ButtonBuilder().setCustomId(`coach_event_pick:${action}:${team}:${scope}:${safePage}:${start + offset}`).setLabel(String(start + offset + 1)).setStyle(ButtonStyle.Primary)));
+    rows.push(row);
+  }
+  rows.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`coach_event_page:${action}:${team}:${scope}:${safePage - 1}`).setLabel('Prev').setStyle(ButtonStyle.Secondary).setDisabled(safePage <= 0),
+    new ButtonBuilder().setCustomId(`coach_event_page:${action}:${team}:${scope}:${safePage + 1}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(safePage >= totalPages - 1),
+    new ButtonBuilder().setCustomId(`coach_back_team:${team}`).setLabel('Back').setStyle(ButtonStyle.Secondary)
+  ));
+  const lines = items.map((event, i) => `${i + 1}. ${new Date(event.date).toLocaleString()} — ${event.title}`);
+  return { content: `📅 **${getTeamMeta(config, team).label} Events** (${scope}, page ${safePage + 1}/${totalPages})\n${lines.join('\n') || 'No events found.'}`, components: rows, flags: MessageFlags.Ephemeral };
+}
+
+async function createCoachChatForTarget(interaction, context, teams = [], targetUserId = '', cfg = loadConfig()) {
+  const guild = await resolveInteractionGuild(interaction, cfg);
+  const target = await guild?.members.fetch(targetUserId).catch(() => null);
+  if (!target) return null;
+  const playerName = getPlayerDisplayName(targetUserId, target.displayName || target.user?.username || targetUserId);
+  const coachRoleIds = Array.from(new Set(teams.map((team) => cfg.roles?.[team]?.coach).filter(Boolean)));
+  const categoryId = cfg.channels.privateChatCategories?.[teams[0]] || cfg.channels.ticket || null;
+  const channel = await guild.channels.create({
+    name: sanitizeChannelName(`Coach Chat - ${playerName}`),
+    type: ChannelType.GuildText,
+    parent: categoryId,
+    permissionOverwrites: [
+      { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
+      { id: interaction.client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels] },
+      { id: targetUserId, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+      ...coachRoleIds.map((id) => ({ id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }))
+    ]
+  }).catch(() => null);
+  if (!channel) return null;
+  setAbsenceTicket(channel.id, { ticketId: channel.id, recordType: 'coach_chat', playerId: targetUserId, playerName, team: teams[0] || '', teams, status: 'open', chatLog: [], createdBy: interaction.user.id, createdAt: new Date().toISOString() });
+  await channel.send({ content: [`💬 A coach opened a chat with **${playerName}**.`, `Player: <@${targetUserId}>`, `Coach: <@${interaction.user.id}>`, `Team(s): ${teams.map((team) => cfg.teams?.[team]?.label || team).join(', ')}`, '', 'When finished, press **Finish Chat** below.'].join('\n'), components: [createCoachChatFinishRow(channel.id)] }).catch(() => null);
+  await triggerGoogleSync(context).catch(() => null);
+  return channel;
 }
 
 
@@ -1538,6 +1883,45 @@ function getProfileNotes(profile = {}) {
   return Array.isArray(profile.notesLog) ? profile.notesLog : [];
 }
 
+function getNoteTimestamp(note = {}) {
+  return note.createdAt || note.ts || note.updatedAt || '';
+}
+
+function formatNoteDate(note = {}, fallback = 'unknown-date') {
+  const timestamp = getNoteTimestamp(note);
+  if (!timestamp) return fallback;
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return fallback;
+  return date.toISOString().slice(0, 10);
+}
+
+function renderNoteSummary(note = {}, index = 0) {
+  const date = formatNoteDate(note);
+  const author = note.authorDisplayName || note.authorTag || note.authorId || 'unknown';
+  const marker = Array.isArray(note.chatLog) && note.chatLog.length ? ' 💬' : '';
+  return `${index + 1}. [${date}]${marker} ${author} — ${note.text || ''}`;
+}
+
+function formatChatLogLines(chatLog = []) {
+  const lines = [];
+  let lastDay = '';
+  for (const entry of chatLog) {
+    if (typeof entry === 'string') {
+      lines.push(entry);
+      continue;
+    }
+    const day = entry.day || String(entry.ts || '').slice(0, 10) || 'unknown-day';
+    const time = entry.time || String(entry.ts || '').slice(11, 19) || '??:??:??';
+    const name = entry.name || entry.userId || 'unknown';
+    if (day !== lastDay) {
+      lines.push(`\n📅 ${day}`);
+      lastDay = day;
+    }
+    lines.push(`${time} — ${name}: ${entry.message || '(no text)'}`);
+  }
+  return lines;
+}
+
 function createPlayerNotesActionRows(userId, mode = 'player', isAdmin = false, profile = {}) {
   const notes = getProfileNotes(profile);
   const visibleNotes = notes.filter((note) => !note.hidden);
@@ -1555,7 +1939,7 @@ function createPlayerNotesActionRows(userId, mode = 'player', isAdmin = false, p
         .setCustomId(`admin_player_note_toggle:${userId}:${mode}:hide`)
         .setPlaceholder('Hide a visible note')
         .addOptions(visibleNotes.slice(0, 25).map((note) => ({
-          label: `${new Date(note.createdAt).toLocaleDateString()} · ${(note.authorDisplayName || note.authorTag || note.authorId || 'unknown')}`.slice(0, 100),
+          label: `${formatNoteDate(note)} · ${(note.authorDisplayName || note.authorTag || note.authorId || 'unknown')}`.slice(0, 100),
           value: note.id,
           description: String(note.text || '').slice(0, 100)
         })))
@@ -1568,7 +1952,21 @@ function createPlayerNotesActionRows(userId, mode = 'player', isAdmin = false, p
         .setCustomId(`admin_player_note_toggle:${userId}:${mode}:unhide`)
         .setPlaceholder('Restore a hidden note')
         .addOptions(hiddenNotes.slice(0, 25).map((note) => ({
-          label: `${new Date(note.createdAt).toLocaleDateString()} · ${(note.authorDisplayName || note.authorTag || note.authorId || 'unknown')}`.slice(0, 100),
+          label: `${formatNoteDate(note)} · ${(note.authorDisplayName || note.authorTag || note.authorId || 'unknown')}`.slice(0, 100),
+          value: note.id,
+          description: String(note.text || '').slice(0, 100)
+        })))
+    ));
+  }
+
+  const chatNotes = notes.filter((note) => Array.isArray(note.chatLog) && note.chatLog.length && !note.hidden);
+  if (chatNotes.length) {
+    rows.push(new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`admin_player_note_chat_log:${userId}:${mode}`)
+        .setPlaceholder('Show a saved chat log')
+        .addOptions(chatNotes.slice(0, 25).map((note) => ({
+          label: `${formatNoteDate(note)} · Coach chat`.slice(0, 100),
           value: note.id,
           description: String(note.text || '').slice(0, 100)
         })))
@@ -1666,6 +2064,11 @@ function getShirtForTeam(profile = {}, team = '') {
     return profile.shirtNumbers[team] || '';
   }
   return profile.shirtNumber || '';
+}
+
+function formatShirtNumberForList(profile = {}, team = '') {
+  const shirt = getShirtForTeam(profile, team);
+  return shirt ? `#${shirt}` : '#--';
 }
 
 const PLAYER_POSITION_ORDER = ['goalkeeper', 'defender', 'midfielder', 'attacker'];
@@ -1836,7 +2239,7 @@ async function handleAdminPlayerAction(interaction, selectedAction, userId, mode
       content: [
         `Notes for <@${userId}> (${mode} profile):`,
         visibleNotes.length
-          ? visibleNotes.map((note, idx) => `${idx + 1}. [${new Date(note.createdAt).toISOString().slice(0, 10)}] ${note.authorDisplayName || note.authorTag || note.authorId || 'unknown'} — ${note.text}`).join('\n')
+          ? visibleNotes.map(renderNoteSummary).join('\n')
           : '*No visible notes yet.*',
         isAdminViewer ? '' : '_Hidden notes are admin-only._'
       ].join('\n'),
@@ -1926,7 +2329,7 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
   const notesPreview = visibleNotes.length
     ? visibleNotes
       .slice(-5)
-      .map((note) => `  - ${new Date(note.createdAt).toISOString().slice(0, 10)} · ${note.authorDisplayName || note.authorTag || note.authorId || 'unknown'}: ${note.text}`)
+      .map((note) => `  - ${formatNoteDate(note)} · ${note.authorDisplayName || note.authorTag || note.authorId || 'unknown'}: ${note.text}`)
       .join('\n')
     : '  - none';
 
@@ -1957,7 +2360,7 @@ function buildPlayerProfileSummary(config, guild, user, member, profile = {}, mo
     `• Last name: ${profile.lastName || 'not set'}`,
     `• Gender: ${profile.gender || 'not set'}`,
     `• Nickname: ${nickname || 'not set'}`,
-    `• Phone number: ${profile.phoneNumber || 'not set'}`,
+    `• Phone number: ${formatPhoneLink(profile.phoneNumber)}`,
     `• Joined discord server: ${joined}`,
     '',
     '**Teams**',
@@ -2159,10 +2562,28 @@ async function sendCoachChatLogAndClose(interaction, context, reason = 'Coach ch
     chatLog
   });
 
-  const logLines = chatLog.length
-    ? chatLog.map((entry) => `[${entry.ts}] ${entry.name}: ${entry.message}`).join('\n').slice(0, 3500)
-    : 'No chat messages were captured.';
   const cfg = loadConfig();
+  const teamLabel = teams.map((teamKey) => cfg.teams?.[teamKey]?.label || teamKey).join(', ') || 'unknown';
+  const closedAt = new Date().toISOString();
+  const playerId = ticket.playerId || interaction.user.id;
+  const profile = getPlayerProfile(playerId) || {};
+  const notes = getProfileNotes(profile);
+  const note = {
+    id: `coachchat-${channel.id}`,
+    text: `Coach chat closed ${closedAt.slice(0, 10)} for ${teamLabel}. ${chatLog.length} message(s) saved.`,
+    hidden: false,
+    profileType: 'player',
+    noteType: 'coach_chat',
+    chatLog,
+    channelId: channel.id,
+    teams,
+    createdAt: closedAt,
+    authorId: interaction.user.id,
+    authorTag: interaction.user.tag,
+    authorDisplayName: interaction.member?.displayName || interaction.user.tag
+  };
+  upsertPlayerProfile(playerId, { ...profile, notesLog: [...notes.filter((entry) => entry.id !== note.id), note] });
+
   const sentChannels = new Set();
   for (const team of teams) {
     const staffRoomId = cfg.channels?.staffRooms?.[team];
@@ -2174,20 +2595,21 @@ async function sendCoachChatLogAndClose(interaction, context, reason = 'Coach ch
       content: [
         `💬 Coaches had a chat with **${playerName}**.`,
         `Closed by: <@${interaction.user.id}>`,
-        `Team(s): ${teams.map((teamKey) => cfg.teams?.[teamKey]?.label || teamKey).join(', ') || 'unknown'}`,
+        `Team(s): ${teamLabel}`,
+        `Messages saved: **${chatLog.length}**`,
         '',
-        '**Chat log:**',
-        '```',
-        logLines,
-        '```'
-      ].join('\n')
+        'Use the button below to show the saved chat log.'
+      ].join('\n'),
+      components: [createCoachChatLogRow(channel.id)]
     }).catch(() => null);
   }
   if (!sentChannels.size) {
-    await context.sendLog(`💬 Coaches had a chat with **${playerName}**.\n\n${logLines}`);
+    await context.sendLog(`💬 Coaches had a chat with **${playerName}**. ${chatLog.length} message(s) saved to player notes.`);
   }
 
-  await interaction.editReply({ content: '✅ Coach chat closed. A log was sent to the staff chat.', components: [] }).catch(() => null);
+  await triggerGoogleSync(context).catch(() => null);
+  await interaction.editReply({ content: '✅ Coach chat closed. The log was saved to player notes and staff chat received a view-log button.', components: [] }).catch(() => null);
+
   await channel.delete(reason).catch(() => null);
 }
 
@@ -2235,8 +2657,6 @@ async function createCoachChatForPlayer(interaction, context, teams = [], cfg = 
     components: [createCoachChatFinishRow(channel.id)]
   }).catch(() => null);
 
-  const notes = Array.isArray(profile.notesLog) ? profile.notesLog : [];
-  upsertPlayerProfile(interaction.user.id, { ...profile, notesLog: [...notes, { id: `coachchat-${Date.now()}`, ts: new Date().toISOString(), authorId: interaction.user.id, text: `Opened coach chat for ${teams.map((team) => cfg.teams?.[team]?.label || team).join(', ')}: #${channel.name}` }] });
   await triggerGoogleSync(context).catch(() => null);
   return channel;
 }
@@ -2282,7 +2702,7 @@ async function closeAbsenceTicketChannel(channel, reason = 'Absence ticket resol
       if (!message) continue;
       const mode = notice.mode === 'admin' ? 'admin' : 'coach';
       await message.edit({
-        content: formatAbsenceNotification(ticket, event, 'closed'),
+        content: formatAbsenceNotification(ticket, event, 'closed', mode),
         components: [createAbsenceNotificationRow(channel.id, ticket.playerId, mode, true)]
       }).catch(() => null);
     }
@@ -3695,7 +4115,7 @@ module.exports = {
             `• Gender: ${profile.gender || 'not set'}`,
             `• Nickname: ${profile.nickName || 'not set'}`,
             `• Joined discord server: ${memberForRole?.joinedAt ? memberForRole.joinedAt.toISOString().slice(0, 10) : 'unknown'}`,
-            `• Phone number: ${profile.phoneNumber || 'not set'}`
+            `• Phone number: ${formatPhoneLink(profile.phoneNumber)}`
           ].join('\n'),
           components: [
             new ActionRowBuilder().addComponents(
@@ -3835,37 +4255,31 @@ module.exports = {
         return;
       }
       if (interaction.customId === 'player_vacation_manage') {
-        const mine = Object.values(loadDb().vacations?.[interaction.user.id] || {}).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-        if (!mine.length) {
-          await interaction.reply({ content: 'You do not have any vacations saved yet.', flags: MessageFlags.Ephemeral });
-          return;
-        }
-        const row = new ActionRowBuilder().addComponents(
-          new StringSelectMenuBuilder()
-            .setCustomId('player_vacation_edit_pick')
-            .setPlaceholder('Choose a vacation to edit')
-            .addOptions(mine.slice(0, 25).map((vac) => ({
-              label: `${vac.startDate} → ${vac.endDate} (${vac.status || 'pending'})`.slice(0, 100),
-              value: vac.vacationId,
-              description: (vac.reason || 'no reason').slice(0, 100)
-            })))
-        );
-        await interaction.reply({ content: 'Your current vacations:', components: [row], flags: MessageFlags.Ephemeral });
+        await interaction.reply(createVacationManagePayload(interaction.user.id, 0, loadConfig(), loadDb()));
         return;
       }
-      if (interaction.customId === 'player_talk_to_coaches_pick_teams' && interaction.isStringSelectMenu()) {
-        await interaction.deferUpdate();
-        const teams = interaction.values || [];
-        const cfg = loadConfig();
-        const channel = await createCoachChatForPlayer(interaction, context, teams, cfg);
-        await interaction.editReply({ content: channel ? `✅ Coach chat created: <#${channel.id}>` : 'Could not create coach chat.', components: [] });
+      if (interaction.customId.startsWith('player_vacation_page:')) {
+        const page = Number.parseInt(interaction.customId.split(':')[1] || '0', 10) || 0;
+        await interaction.update(createVacationManagePayload(interaction.user.id, page, loadConfig(), loadDb()));
         return;
       }
-      if (interaction.customId === 'player_vacation_edit_pick' && interaction.isStringSelectMenu()) {
-        const vacationId = interaction.values?.[0];
-        const vacation = loadDb().vacations?.[interaction.user.id]?.[vacationId];
+      if (interaction.customId.startsWith('player_vacation_pick:')) {
+        const [, pageRaw, indexRaw] = interaction.customId.split(':');
+        const page = Number.parseInt(pageRaw || '0', 10) || 0;
+        const index = Number.parseInt(indexRaw || '0', 10) || 0;
+        const vacation = getUserVacationList(interaction.user.id, loadDb()).slice(page * 9, page * 9 + 9)[index];
         if (!vacation) {
           await interaction.update({ content: 'Vacation no longer exists.', components: [] });
+          return;
+        }
+        await interaction.update(createVacationDetailPayload(vacation, page, loadConfig()));
+        return;
+      }
+      if (interaction.customId.startsWith('player_vacation_edit_dates:')) {
+        const [, vacationId] = interaction.customId.split(':');
+        const vacation = loadDb().vacations?.[interaction.user.id]?.[vacationId];
+        if (!vacation) {
+          await interaction.reply({ content: 'Vacation no longer exists.', flags: MessageFlags.Ephemeral });
           return;
         }
         const modal = new ModalBuilder().setCustomId(`vacation_edit_modal:${vacationId}`).setTitle('Edit Vacation');
@@ -3877,7 +4291,30 @@ module.exports = {
         await interaction.showModal(modal);
         return;
       }
-
+      if (interaction.customId.startsWith('player_vacation_remove:')) {
+        const [, vacationId, pageRaw] = interaction.customId.split(':');
+        const page = Number.parseInt(pageRaw || '0', 10) || 0;
+        const existing = loadDb().vacations?.[interaction.user.id]?.[vacationId];
+        if (!existing) {
+          await interaction.update({ content: 'Vacation no longer exists.', components: [] });
+          return;
+        }
+        const updatedVacation = upsertVacation(interaction.user.id, vacationId, { status: 'withdrawn', coachDecision: 'withdrawn', closedAt: new Date().toISOString(), closedReason: 'Player removed vacation.' });
+        clearVacationAttendance(interaction.user.id, vacationId);
+        const vacationGuild = await resolveInteractionGuild(interaction, config);
+        await updateVacationStaffNotifications(vacationGuild, config, updatedVacation);
+        await triggerGoogleSync(context).catch(() => null);
+        await interaction.update(createVacationManagePayload(interaction.user.id, page, loadConfig(), loadDb()));
+        return;
+      }
+      if (interaction.customId === 'player_talk_to_coaches_pick_teams' && interaction.isStringSelectMenu()) {
+        await interaction.deferUpdate();
+        const teams = interaction.values || [];
+        const cfg = loadConfig();
+        const channel = await createCoachChatForPlayer(interaction, context, teams, cfg);
+        await interaction.editReply({ content: channel ? `✅ Coach chat created: <#${channel.id}>` : 'Could not create coach chat.', components: [] });
+        return;
+      }
       if (interaction.customId.startsWith('admin_player_action:')) {
         if (!canManagePlayerProfiles()) {
           await denyAdminAccess();
@@ -4028,6 +4465,25 @@ module.exports = {
         });
         return;
       }
+      if (interaction.customId.startsWith('admin_player_notes_back:')) {
+        const [, userId, mode = 'player'] = interaction.customId.split(':');
+        const profile = getPlayerProfile(userId) || {};
+        const canAdmin = hasAdminAccess(interaction.member, config);
+        const visibleNotes = getProfileNotes(profile).filter((note) => !note.hidden);
+        await interaction.update({
+          content: [
+            `Notes for <@${userId}> (${mode} profile):`,
+            visibleNotes.length
+              ? visibleNotes.map(renderNoteSummary).join('\n')
+              : '*No visible notes yet.*',
+            canAdmin ? '' : '_Hidden notes are admin-only._'
+          ].join('\n'),
+          embeds: [],
+          components: createPlayerNotesActionRows(userId, mode, canAdmin, profile)
+        });
+        return;
+      }
+
       if (interaction.customId.startsWith('admin_player_back_to_profile:')) {
         const [, userId, mode = 'player'] = interaction.customId.split(':');
         const member = await interaction.guild.members.fetch(userId).catch(() => null);
@@ -4109,7 +4565,7 @@ module.exports = {
           return;
         }
         const isApprove = action === 'vacation_ticket_approve';
-        upsertVacation(targetUserId, vacationId, {
+        const updatedVacation = upsertVacation(targetUserId, vacationId, {
           status: isApprove ? 'approved' : 'declined',
           coachDecision: isApprove ? 'approved_vacation' : 'declined_vacation',
           coachId: interaction.user.id,
@@ -4117,21 +4573,18 @@ module.exports = {
           closedAt: new Date().toISOString()
         });
         if (isApprove) {
-          const allEvents = Object.entries(db.events || {}).map(([eventId, event]) => ({ eventId, ...event }));
-          for (const event of allEvents) {
-            const eventDay = new Date(event.date).toISOString().slice(0, 10);
-            if ((vacation.teams || []).includes(event.team) && eventDay >= vacation.startDate && eventDay <= vacation.endDate) {
-              setResponse(event.eventId, targetUserId, {
-                status: 'confirmed_no',
-                reason: `Vacation: ${vacation.reason}`,
-                confirmed: true,
-                responderType: vacation.requestedByRole || 'player',
-                username: vacation.playerName || 'Player',
-                updatedAt: new Date().toISOString()
-              });
-            }
-          }
+          markApprovedVacationAttendance(targetUserId, updatedVacation, db);
         }
+        const vacationGuild = await resolveInteractionGuild(interaction, config);
+        const editedStaffNotifications = await updateVacationStaffNotifications(vacationGuild, config, updatedVacation);
+        if (!editedStaffNotifications && !(Array.isArray(updatedVacation.staffNotifications) && updatedVacation.staffNotifications.length)) {
+          const fallbackNotifications = await sendVacationStaffNotifications(vacationGuild, config, updatedVacation);
+          if (fallbackNotifications.length) upsertVacation(targetUserId, vacationId, { staffNotifications: fallbackNotifications });
+        }
+        await interaction.message?.edit({
+          content: formatVacationNotification(updatedVacation, config, updatedVacation.status),
+          components: []
+        }).catch(() => null);
         await triggerGoogleSync(context).catch(() => null);
         await interaction.editReply({ content: `✅ Vacation ${isApprove ? 'approved' : 'declined'} for <@${targetUserId}>.` });
         return;
@@ -4185,8 +4638,11 @@ module.exports = {
         }
 
         const canAdmin = hasAdminAccess(interaction.member, config);
-        const teamCoachRole = config.roles?.[ticket.team]?.coach;
-        const canCoach = teamCoachRole && interaction.member?.roles?.cache?.has(teamCoachRole);
+        const ticketTeams = Array.isArray(ticket.teams) && ticket.teams.length ? ticket.teams : [ticket.team].filter(Boolean);
+        const canCoach = ticketTeams.some((team) => {
+          const teamCoachRole = config.roles?.[team]?.coach;
+          return teamCoachRole && interaction.member?.roles?.cache?.has(teamCoachRole);
+        });
         if (!canAdmin && !canCoach) {
           await interaction.reply({ content: 'Only team coaches/admins can view this ticket log.', flags: MessageFlags.Ephemeral });
           return;
@@ -4213,11 +4669,11 @@ module.exports = {
         }
         await interaction.reply({
           content: [
-            '📜 Absence Ticket Log',
+            ticket.recordType === 'coach_chat' ? '💬 Coach Chat Log' : '📜 Absence Ticket Log',
             `Player: ${ticket.playerName || `<@${ticket.playerId}>`}`,
-            `Event: ${loadDb().events?.[ticket.eventId]?.title || ticket.eventId}`,
-            `Event Date: ${loadDb().events?.[ticket.eventId]?.date ? new Date(loadDb().events[ticket.eventId].date).toLocaleString() : 'unknown'}`,
-            `Event Location: ${loadDb().events?.[ticket.eventId]?.location || 'not set'}`,
+            ticket.recordType === 'coach_chat' ? `Team(s): ${(ticket.teams || [ticket.team]).filter(Boolean).join(', ') || 'unknown'}` : `Event: ${loadDb().events?.[ticket.eventId]?.title || ticket.eventId}`,
+            ticket.recordType === 'coach_chat' ? `Closed: ${ticket.closedAt ? new Date(ticket.closedAt).toLocaleString() : 'unknown'}` : `Event Date: ${loadDb().events?.[ticket.eventId]?.date ? new Date(loadDb().events[ticket.eventId].date).toLocaleString() : 'unknown'}`,
+            ticket.recordType === 'coach_chat' ? `Messages: ${entries.length}` : `Event Location: ${loadDb().events?.[ticket.eventId]?.location || 'not set'}`,
             `Status: ${ticket.status || 'unknown'}`,
             '',
             lines.length ? lines.join('\n') : 'No saved chat log entries.'
@@ -4336,8 +4792,11 @@ module.exports = {
           });
           await triggerGoogleSync(context);
           await interaction.editReply({ content: `✅ Absence confirmed for <@${playerId}>. Closing this absence chat now.` });
-          const confirmMessage = `🔴 Not attending confirmed for ${playerName} by ${coachName} on ${event.title}.`;
-          await context.sendLog(confirmMessage);
+          const refreshedTicket = loadDb().absenceTickets?.[interaction.channelId] || {};
+          if (!refreshedTicket.adminNotification) {
+            const confirmMessage = `🔴 Not attending confirmed for ${playerName} by ${coachName} on ${event.title}.`;
+            await context.sendLog(confirmMessage);
+          }
 
           await closeAbsenceTicketChannel(interaction.channel, 'Absence confirmed by coach');
           return;
@@ -4359,7 +4818,10 @@ module.exports = {
           closedAt: new Date().toISOString(),
           closedReason: 'Coach declined absence and asked player to attend.'
         });
-        await context.sendLog(`↩️ ${interaction.user.tag} declined not-attending request for <@${playerId}> on **${event.title}**.`);
+        const refreshedTicket = loadDb().absenceTickets?.[interaction.channelId] || {};
+        if (!refreshedTicket.adminNotification) {
+          await context.sendLog(`↩️ ${interaction.user.tag} declined not-attending request for <@${playerId}> on **${event.title}**.`);
+        }
         await closeAbsenceTicketChannel(interaction.channel, 'Absence declined by coach');
         return;
       }
@@ -4596,6 +5058,199 @@ module.exports = {
         return;
       }
 
+      if (interaction.customId.startsWith('coach_back_team:')) {
+        const team = interaction.customId.split(':')[1];
+        const latestConfig = loadConfig();
+        if (!isCoachForTeam(interaction.member, latestConfig, team)) {
+          await interaction.reply({ content: 'Only coaches assigned to this team can use this panel.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const report = coachCommand.buildReport(interaction.guild, team, teamRolesMap, latestConfig);
+        await interaction.update({ content: `Coach panel for **${getTeamMeta(latestConfig, team).label}**\n\n${report}`, embeds: [], components: buildCoachTeamRows(team) });
+        return;
+      }
+
+      if (interaction.customId.startsWith('coach_manage_profile:')) {
+        const team = interaction.customId.split(':')[1];
+        if (!isCoachForTeam(interaction.member, loadConfig(), team)) {
+          await interaction.reply({ content: 'Only coaches assigned to this team can view this profile.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const profile = upsertPlayerProfile(interaction.user.id, { userId: interaction.user.id });
+        await interaction.reply({ ...buildPlayerProfileView(loadConfig(), interaction.guild, interaction.user, interaction.member, profile, 'coach'), components: [createBackButtonRow(`coach_back_team:${team}`)], flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      if (interaction.customId.startsWith('coach_manage_players:')) {
+        const [, team, pageRaw, action = 'profile'] = interaction.customId.split(':');
+        if (!isCoachForTeam(interaction.member, loadConfig(), team)) {
+          await interaction.reply({ content: 'Only coaches assigned to this team can view players.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const page = Number.parseInt(pageRaw || '0', 10) || 0;
+        const payload = buildCoachPlayerPickerPayload(interaction.guild, loadConfig(), team, page, action);
+        if (interaction.replied || interaction.deferred) await interaction.editReply(payload);
+        else if (interaction.message) await interaction.update(payload).catch(() => interaction.reply(payload));
+        else await interaction.reply(payload);
+        return;
+      }
+
+      if (interaction.customId.startsWith('coach_open_player_chat:')) {
+        const [, team, pageRaw = '0'] = interaction.customId.split(':');
+        if (!isCoachForTeam(interaction.member, loadConfig(), team)) {
+          await interaction.reply({ content: 'Only coaches assigned to this team can chat with players.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const payload = buildCoachPlayerPickerPayload(interaction.guild, loadConfig(), team, Number.parseInt(pageRaw, 10) || 0, 'chat');
+        await interaction.reply(payload).catch(() => interaction.update(payload));
+        return;
+      }
+
+      if (interaction.customId.startsWith('coach_player_pick:')) {
+        const [, action, team, pageRaw, indexRaw] = interaction.customId.split(':');
+        const latestConfig = loadConfig();
+        if (!isCoachForTeam(interaction.member, latestConfig, team)) {
+          await interaction.reply({ content: 'Only coaches assigned to this team can select players.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const page = Number.parseInt(pageRaw || '0', 10) || 0;
+        const index = Number.parseInt(indexRaw || '0', 10) || 0;
+        const member = getTeamPlayerMembers(interaction.guild, latestConfig, team)[page * 9 + index];
+        if (!member) {
+          await interaction.update({ content: 'Player selection is no longer valid.', components: [] });
+          return;
+        }
+        if (action.startsWith('actualadd_')) {
+          const eventId = action.replace('actualadd_', '');
+          setResponse(eventId, member.id, { status: 'yes', actualAttended: true, actualVerifiedAt: new Date().toISOString(), actualVerifiedBy: interaction.user.id, username: member.displayName, updatedAt: new Date().toISOString() });
+          await triggerGoogleSync(context).catch(() => null);
+          await interaction.update({ content: `✅ Marked ${member.displayName} as actually attended.`, components: [] });
+          return;
+        }
+        if (action === 'chat') {
+          await interaction.deferUpdate();
+          const channel = await createCoachChatForTarget(interaction, context, [team], member.id, latestConfig);
+          await interaction.editReply({ content: channel ? `✅ Coach chat created: <#${channel.id}>` : 'Could not create coach chat.', components: [] });
+          return;
+        }
+        const profile = upsertPlayerProfile(member.id, { userId: member.id });
+        await interaction.update({ ...buildPlayerProfileView(latestConfig, interaction.guild, member.user, member, profile, 'player'), components: [createBackButtonRow(`coach_manage_players:${team}:${page}:profile`, '⬅️ Back to Players')] });
+        return;
+      }
+
+      if (interaction.customId.startsWith('coach_manage_events:')) {
+        const [, team, scope = 'future'] = interaction.customId.split(':');
+        if (!isCoachForTeam(interaction.member, loadConfig(), team)) {
+          await interaction.reply({ content: 'Only coaches assigned to this team can view events.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        await interaction.reply(buildCoachEventPickerPayload(loadConfig(), team, 0, 'view', scope));
+        return;
+      }
+
+      if (interaction.customId.startsWith('coach_event_page:')) {
+        const [, action, team, scope, pageRaw] = interaction.customId.split(':');
+        await interaction.update(buildCoachEventPickerPayload(loadConfig(), team, Number.parseInt(pageRaw || '0', 10) || 0, action, scope));
+        return;
+      }
+
+      if (interaction.customId.startsWith('coach_event_pick:')) {
+        const [, action, team, scope, pageRaw, indexRaw] = interaction.customId.split(':');
+        const latestConfig = loadConfig();
+        if (!isCoachForTeam(interaction.member, latestConfig, team)) {
+          await interaction.reply({ content: 'Only coaches assigned to this team can use events.', flags: MessageFlags.Ephemeral });
+          return;
+        }
+        const event = getTeamEvents(latestConfig, team, scope)[(Number.parseInt(pageRaw || '0', 10) || 0) * 9 + (Number.parseInt(indexRaw || '0', 10) || 0)];
+        if (!event) { await interaction.update({ content: 'Event selection is no longer valid.', components: [] }); return; }
+        if (action === 'force') {
+          await interaction.deferUpdate();
+          await postAttendancePromptForEvent(interaction, event, latestConfig, team);
+          await interaction.editReply({ content: `✅ Attendance reminders sent for **${event.title}**.`, components: [] });
+          return;
+        }
+        if (action === 'actual') {
+          const attending = Object.entries(event.responses || {}).filter(([, r]) => r.status === 'yes');
+          const rows = [];
+          for (let i = 0; i < attending.length; i += 5) {
+            rows.push(new ActionRowBuilder().addComponents(attending.slice(i, i + 5).map(([userId], offset) => new ButtonBuilder().setCustomId(`coach_actual_absent:${event.eventId}:${userId}`).setLabel(`Not there ${i + offset + 1}`).setStyle(ButtonStyle.Danger))));
+          }
+          rows.push(new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId(`coach_actual_add:${event.eventId}:0`).setLabel('Add attended from roster').setStyle(ButtonStyle.Success), new ButtonBuilder().setCustomId(`coach_actual_done:${event.eventId}`).setLabel('Done').setStyle(ButtonStyle.Primary)));
+          await interaction.update({ content: [`✅ **Actual Attendance — ${event.title}**`, 'Players who said attending:', attending.length ? attending.map(([id], i) => `${i + 1}. <@${id}>`).join('\n') : 'None', '', 'Mark anyone who said they would attend but was not there, then add any roster player who attended but had not said yes.'].join('\n'), components: rows });
+          return;
+        }
+        const snapshot = buildEventAttendanceSnapshot(event.eventId, latestConfig, interaction.guild, 1);
+        await interaction.update({ content: snapshot.content, components: [createBackButtonRow(`coach_manage_events:${team}:${scope}`)] });
+        return;
+      }
+
+      if (interaction.customId.startsWith('coach_team_attendance:')) {
+        const team = interaction.customId.split(':')[1];
+        if (!isCoachForTeam(interaction.member, loadConfig(), team)) { await interaction.reply({ content: 'Only coaches assigned to this team can view attendance.', flags: MessageFlags.Ephemeral }); return; }
+        await interaction.reply({ content: coachCommand.buildReport(interaction.guild, team, teamRolesMap, loadConfig()), flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      if (interaction.customId.startsWith('coach_team_vacations:')) {
+        const team = interaction.customId.split(':')[1];
+        if (!isCoachForTeam(interaction.member, loadConfig(), team)) { await interaction.reply({ content: 'Only coaches assigned to this team can view vacations.', flags: MessageFlags.Ephemeral }); return; }
+        const db = loadDb();
+        const vacations = Object.values(db.vacations || {}).flatMap((byUser) => Object.values(byUser || {})).filter((vac) => (vac.teams || [vac.team]).includes(team) && vac.status !== 'withdrawn').sort((a, b) => String(a.startDate).localeCompare(String(b.startDate)));
+        const lines = vacations.map((vac, i) => `${i + 1}. ${vac.playerName || vac.userId} — ${vac.startDate} → ${vac.endDate} — ${vac.status || 'pending'} — ${vac.reason || 'no reason'}`);
+        await interaction.reply({ content: `🌴 **${getTeamMeta(loadConfig(), team).label} Vacations**\n${lines.join('\n') || 'No vacations found.'}`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      if (interaction.customId.startsWith('coach_next_event:')) {
+        const team = interaction.customId.split(':')[1];
+        const event = getTeamEvents(loadConfig(), team, 'future')[0];
+        await interaction.reply({ content: event ? `📍 **${event.title}**\n🕒 ${new Date(event.date).toLocaleString()}\n${event.location || 'Location not set'}\n${event.location ? `[Open in Maps](${getMapsLink(event.location)})` : ''}` : 'No next event found.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      if (interaction.customId.startsWith('coach_force_remind:')) {
+        const [, team, pageRaw = '0'] = interaction.customId.split(':');
+        if (!isCoachForTeam(interaction.member, loadConfig(), team)) { await interaction.reply({ content: 'Only coaches assigned to this team can force reminders.', flags: MessageFlags.Ephemeral }); return; }
+        await interaction.reply(buildCoachEventPickerPayload(loadConfig(), team, Number.parseInt(pageRaw, 10) || 0, 'force', 'future'));
+        return;
+      }
+
+      if (interaction.customId.startsWith('coach_actual_attendance:')) {
+        const [, team, pageRaw = '0'] = interaction.customId.split(':');
+        if (!isCoachForTeam(interaction.member, loadConfig(), team)) { await interaction.reply({ content: 'Only coaches assigned to this team can verify attendance.', flags: MessageFlags.Ephemeral }); return; }
+        await interaction.reply(buildCoachEventPickerPayload(loadConfig(), team, Number.parseInt(pageRaw, 10) || 0, 'actual', 'past'));
+        return;
+      }
+
+      if (interaction.customId.startsWith('coach_actual_absent:')) {
+        const [, eventId, userId] = interaction.customId.split(':');
+        setResponse(eventId, userId, { actualAttended: false, actualVerifiedAt: new Date().toISOString(), actualVerifiedBy: interaction.user.id, updatedAt: new Date().toISOString() });
+        await triggerGoogleSync(context).catch(() => null);
+        await interaction.reply({ content: `Marked <@${userId}> as not actually attended.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      if (interaction.customId.startsWith('coach_actual_add:')) {
+        const [, eventId, pageRaw = '0'] = interaction.customId.split(':');
+        const event = loadDb().events?.[eventId];
+        if (!event) { await interaction.reply({ content: 'Event not found.', flags: MessageFlags.Ephemeral }); return; }
+        const payload = buildCoachPlayerPickerPayload(interaction.guild, loadConfig(), event.team, Number.parseInt(pageRaw, 10) || 0, `actualadd_${eventId}`);
+        await interaction.reply(payload);
+        return;
+      }
+
+      if (interaction.customId.startsWith('coach_actual_done:')) {
+        const eventId = interaction.customId.split(':')[1];
+        const db = loadDb();
+        const event = db.events?.[eventId];
+        for (const [userId, response] of Object.entries(event?.responses || {})) {
+          if (response.status === 'yes' && response.actualAttended === undefined) setResponse(eventId, userId, { actualAttended: true, actualVerifiedAt: new Date().toISOString(), actualVerifiedBy: interaction.user.id, updatedAt: new Date().toISOString() });
+        }
+        await triggerGoogleSync(context).catch(() => null);
+        await interaction.reply({ content: '✅ Actual attendance verification saved.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
       if (interaction.customId === 'coach_team_select') {
         const selectedTeam = interaction.values[0];
         const targetGuild = await resolveInteractionGuild(interaction, config);
@@ -4611,10 +5266,7 @@ module.exports = {
           .setTitle(`Coach UI — ${selectedTeamLabel}`)
           .setDescription(report)
           .setColor(0x3498db);
-        const coachRow = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId(`coach_set_team_badge:${selectedTeam}`).setLabel('🛡️ Team Badge').setStyle(ButtonStyle.Secondary)
-        );
-        await interaction.update({ content: 'Coach report loaded.', embeds: [embed], components: [coachRow] });
+        await interaction.update({ content: 'Coach report loaded.', embeds: [embed], components: buildCoachTeamRows(selectedTeam) });
         return;
       }
 
@@ -5915,11 +6567,34 @@ ${picker.text}`, embeds: [], components: picker.rows });
         content: [
           `Notes for <@${userId}> (${mode} profile):`,
           visibleNotes.length
-            ? visibleNotes.map((note, idx) => `${idx + 1}. [${new Date(note.createdAt).toISOString().slice(0, 10)}] ${note.authorDisplayName || note.authorTag || note.authorId || 'unknown'} — ${note.text}`).join('\n')
+            ? visibleNotes.map(renderNoteSummary).join('\n')
             : '*No visible notes yet.*'
         ].join('\n'),
         embeds: [],
         components: createPlayerNotesActionRows(userId, mode, true, updatedProfile)
+      });
+      return;
+    }
+
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('admin_player_note_chat_log:')) {
+      const [, userId, mode = 'player'] = interaction.customId.split(':');
+      const profile = getPlayerProfile(userId) || {};
+      const selectedNoteId = interaction.values[0];
+      const note = getProfileNotes(profile).find((entry) => entry.id === selectedNoteId);
+      if (!note || !Array.isArray(note.chatLog)) {
+        await interaction.update({ content: 'Selected note chat log no longer exists.', components: [] });
+        return;
+      }
+      const lines = formatChatLogLines(note.chatLog);
+      await interaction.update({
+        content: [
+          '💬 Saved Coach Chat Log',
+          `Player: <@${userId}>`,
+          `Note: ${note.text || selectedNoteId}`,
+          '',
+          lines.length ? lines.join('\n') : 'No saved chat log entries.'
+        ].join('\n').slice(0, 1900),
+        components: [createBackButtonRow(`admin_player_notes_back:${userId}:${mode}`, '⬅️ Back to Notes')]
       });
       return;
     }
@@ -6117,9 +6792,11 @@ ${picker.text}`, embeds: [], components: picker.rows });
           if (staffRoom?.isTextBased()) {
             const staffMessage = await staffRoom.send({
               content: formatAbsenceNotification({
+                ticketId: ticketChannel.id,
                 playerId: interaction.user.id,
-                playerName: playerDisplayName
-              }, event, 'open'),
+                playerName: playerDisplayName,
+                reason
+              }, event, 'open', 'coach'),
               components: [createAbsenceNotificationRow(ticketChannel.id, interaction.user.id, 'coach')]
             }).catch(() => null);
             if (staffMessage) {
@@ -6132,9 +6809,11 @@ ${picker.text}`, embeds: [], components: picker.rows });
           if (adminChannel?.isTextBased()) {
             const adminMessage = await adminChannel.send({
               content: formatAbsenceNotification({
+                ticketId: ticketChannel.id,
                 playerId: interaction.user.id,
-                playerName: playerDisplayName
-              }, event, 'open'),
+                playerName: playerDisplayName,
+                reason
+              }, event, 'open', 'admin'),
               components: [createAbsenceNotificationRow(ticketChannel.id, interaction.user.id, 'admin')]
             }).catch(() => null);
             if (adminMessage) {
@@ -6146,9 +6825,11 @@ ${picker.text}`, embeds: [], components: picker.rows });
           setAbsenceTicket(ticketChannel.id, { staffNotification, adminNotification });
         }
 
-        await context.sendLog(
-          `🔴 ${playerDisplayName} marked not attending for **${event.title}** (${eventDateLabel}). Reason: ${reason}\nTicket: <#${ticketChannel.id}>`
-        );
+        if (!adminNotification) {
+          await context.sendLog(
+            `🔴 ${playerDisplayName} marked not attending for **${event.title}** (${eventDateLabel}). Reason: ${reason}\nTicket: <#${ticketChannel.id}>`
+          );
+        }
       }
 
       await updateAttendancePromptToConfirmation(
@@ -6250,7 +6931,6 @@ ${picker.text}`, embeds: [], components: picker.rows });
           ...coachRoleIds.map((id) => ({ id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }))
         ]
       }).catch(() => null);
-      await triggerGoogleSync(context).catch(() => null);
       await interaction.editReply({ content: `✅ Vacation request submitted for ${startDate} to ${endDate}.` });
       if (channel) {
         await channel.send({
@@ -6268,6 +6948,26 @@ ${picker.text}`, embeds: [], components: picker.rows });
           )]
         }).catch(() => null);
       }
+      const pendingVacation = {
+        vacationId,
+        userId: interaction.user.id,
+        title: 'Vacation',
+        reason,
+        startDate,
+        endDate,
+        team: teams[0],
+        teams,
+        playerName,
+        requestedByRole: requestorRole,
+        status: 'pending',
+        ticketId: channel?.id || ''
+      };
+      const staffNotifications = await sendVacationStaffNotifications(guildForAction, config, pendingVacation);
+      upsertVacation(interaction.user.id, vacationId, {
+        ticketId: channel?.id || '',
+        staffNotifications
+      });
+      await triggerGoogleSync(context).catch(() => null);
       return;
     }
     if (interaction.isModalSubmit() && interaction.customId.startsWith('vacation_edit_modal:')) {
@@ -6280,15 +6980,16 @@ ${picker.text}`, embeds: [], components: picker.rows });
         await interaction.reply({ content: 'Vacation not found.', flags: MessageFlags.Ephemeral });
         return;
       }
-      upsertVacation(interaction.user.id, vacationId, { startDate, endDate, reason, status: 'pending', coachDecision: '', coachId: '', coachName: '', closedAt: '' });
+      clearVacationAttendance(interaction.user.id, vacationId);
+      let updatedVacation = upsertVacation(interaction.user.id, vacationId, { startDate, endDate, reason, status: 'pending', coachDecision: '', coachId: '', coachName: '', closedAt: '', closedReason: '' });
       await interaction.reply({ content: '✅ Vacation updated and sent for coach review.', flags: MessageFlags.Ephemeral });
-      const firstTeam = (existing.teams || [existing.team]).find(Boolean);
-      const coachChatId = loadConfig().channels.staffRooms?.[firstTeam];
-      if (coachChatId) {
-        const coachChannel = await interaction.guild.channels.fetch(coachChatId).catch(() => null);
-        if (coachChannel?.isTextBased()) {
-          await coachChannel.send(`📝 <@${interaction.user.id}> updated vacation **${vacationId}** (${startDate} → ${endDate}). Open/create chat if needed.`).catch(() => null);
-        }
+      const vacationGuild = await resolveInteractionGuild(interaction, config);
+      const channel = await createVacationReviewChannel(interaction, config, updatedVacation, interaction.user.id, 'edit');
+      if (channel) updatedVacation = upsertVacation(interaction.user.id, vacationId, { ticketId: channel.id });
+      const editedStaffNotifications = await updateVacationStaffNotifications(vacationGuild, config, updatedVacation);
+      if (!editedStaffNotifications && !(Array.isArray(updatedVacation.staffNotifications) && updatedVacation.staffNotifications.length)) {
+        const fallbackNotifications = await sendVacationStaffNotifications(vacationGuild, config, updatedVacation);
+        if (fallbackNotifications.length) upsertVacation(interaction.user.id, vacationId, { staffNotifications: fallbackNotifications });
       }
       await triggerGoogleSync(context).catch(() => null);
       return;
@@ -6423,7 +7124,7 @@ ${picker.text}`, embeds: [], components: picker.rows });
         content: [
           `Notes for <@${userId}> (${mode} profile):`,
           visibleNotes.length
-            ? visibleNotes.map((entry, idx) => `${idx + 1}. [${new Date(entry.createdAt).toISOString().slice(0, 10)}] ${entry.authorDisplayName || entry.authorTag || entry.authorId || 'unknown'} — ${entry.text}`).join('\n')
+            ? visibleNotes.map(renderNoteSummary).join('\n')
             : '*No visible notes yet.*',
           canAdmin ? '' : '_Hidden notes are admin-only._'
         ].join('\n'),
@@ -6493,7 +7194,14 @@ ${picker.text}`, embeds: [], components: picker.rows });
         updates.customName = `${updates.firstName} ${updates.lastName}`.trim();
       }
       if (action === 'set_nickname') updates.nickName = interaction.fields.getTextInputValue('nickname').trim();
-      if (action === 'set_phone') updates.phoneNumber = interaction.fields.getTextInputValue('phone_number').trim();
+      if (action === 'set_phone') {
+        const normalized = normalizePhoneNumber(interaction.fields.getTextInputValue('phone_number').trim());
+        if (!normalized) {
+          await interaction.editReply({ content: 'Phone number must be 10 digits (US format).', components: [createPlayerProfileActionRow(userId, mode), createPlayerProfileActionRow2(userId, mode), createBackButtonRow(mode === 'coach' ? 'admin_back_coach_management' : 'admin_back_player_management')] });
+          return;
+        }
+        updates.phoneNumber = normalized;
+      }
       if (action === 'set_face') {
         const faceImageUrl = interaction.fields.getTextInputValue('face_image_url').trim();
         if (faceImageUrl && !/^https?:\/\/\S+\.(png|webp|jpe?g)(?:\?\S*)?$/i.test(faceImageUrl)) {

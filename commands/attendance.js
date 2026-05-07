@@ -1,5 +1,5 @@
 const { SlashCommandBuilder, ChannelType, PermissionFlagsBits, MessageFlags, ActionRowBuilder, StringSelectMenuBuilder } = require('discord.js');
-const { loadDb, setFutureAvailability } = require('../utils/database');
+const { loadDb, setFutureAvailability, getPlayerProfile } = require('../utils/database');
 
 function isCoach(member, teamRoles) {
   return Object.values(teamRoles).some((team) => member.roles.cache.has(team.coach));
@@ -17,6 +17,26 @@ function hasPlayerRoleForTeam(member, teamRoles, team) {
 
 function getTeamLabel(config = {}, team = '') {
   return config.teams?.[team]?.label || team;
+}
+
+function getCoachRoleDefinitions(config = {}) {
+  const roles = Array.isArray(config.coachRoles) ? config.coachRoles : [];
+  return roles.length ? roles : [{ id: 'coach', label: 'Coach' }];
+}
+
+function getDefaultCoachRoleId(config = {}) {
+  const roles = getCoachRoleDefinitions(config);
+  return roles.find((role) => role.id === config.defaultCoachRoleId)?.id || roles[0]?.id || 'coach';
+}
+
+function getCoachTitle(config = {}, team = '', userId = '') {
+  const profile = getPlayerProfile(userId) || {};
+  const roleId = profile.coachPositions?.[team] || getDefaultCoachRoleId(config);
+  return getCoachRoleDefinitions(config).find((role) => role.id === roleId)?.label || 'Coach';
+}
+
+function formatPlayerMentionForAttendance(config = {}, team = '', userId = '', isCoach = false) {
+  return `<@${userId}>${isCoach ? ` (${getCoachTitle(config, team, userId)})` : ''}`;
 }
 
 function sanitizeChannelName(name) {
@@ -136,23 +156,23 @@ module.exports = {
           if (!isCoachForTeam && !isPlayerForTeam) continue;
 
           if (response.status === 'yes') {
-            if (isCoachForTeam) attendingCoaches.push(`<@${userId}>`);
-            if (isPlayerForTeam) attendingPlayers.push(`<@${userId}>`);
+            if (isCoachForTeam) attendingCoaches.push(`<@${userId}> — ${getCoachTitle(config, event.team, userId)}`);
+            if (isPlayerForTeam) attendingPlayers.push(formatPlayerMentionForAttendance(config, event.team, userId, isCoachForTeam));
           }
           if (response.status === 'confirmed_no') {
-            if (isCoachForTeam) confirmedNoCoaches.push(`<@${userId}>${response.reason ? ` — ${response.reason}` : ''}`);
-            if (isPlayerForTeam) confirmedNoPlayers.push(`<@${userId}>${response.reason ? ` — ${response.reason}` : ''}`);
+            if (isCoachForTeam) confirmedNoCoaches.push(`<@${userId}> — ${getCoachTitle(config, event.team, userId)}${response.onVacation ? ' 🌴 on vacation' : ''}${response.reason ? ` — ${response.reason}` : ''}`);
+            if (isPlayerForTeam) confirmedNoPlayers.push(`${formatPlayerMentionForAttendance(config, event.team, userId, isCoachForTeam)}${response.onVacation ? ' 🌴 on vacation' : ''}${response.reason ? ` — ${response.reason}` : ''}`);
           }
           if (response.status === 'pending_no') {
-            if (isCoachForTeam) pendingNoCoaches.push(`<@${userId}>${response.reason ? ` — ${response.reason}` : ''}`);
-            if (isPlayerForTeam) pendingNoPlayers.push(`<@${userId}>${response.reason ? ` — ${response.reason}` : ''}`);
+            if (isCoachForTeam) pendingNoCoaches.push(`<@${userId}> — ${getCoachTitle(config, event.team, userId)}${response.reason ? ` — ${response.reason}` : ''}`);
+            if (isPlayerForTeam) pendingNoPlayers.push(`${formatPlayerMentionForAttendance(config, event.team, userId, isCoachForTeam)}${response.reason ? ` — ${response.reason}` : ''}`);
           }
         }
 
         const respondedPlayerIds = new Set(Object.keys(responses).filter((id) => playerIds.includes(id)));
         const respondedCoachIds = new Set(Object.keys(responses).filter((id) => coachIds.includes(id)));
-        const noResponse = playerIds.filter((id) => !respondedPlayerIds.has(id)).map((id) => `<@${id}>`);
-        const coachesNoResponse = coachIds.filter((id) => !respondedCoachIds.has(id)).map((id) => `<@${id}>`);
+        const noResponse = playerIds.filter((id) => !respondedPlayerIds.has(id)).map((id) => formatPlayerMentionForAttendance(config, event.team, id, coachIds.includes(id)));
+        const coachesNoResponse = coachIds.filter((id) => !respondedCoachIds.has(id)).map((id) => `<@${id}> — ${getCoachTitle(config, event.team, id)}`);
 
         chunks.push([
           `📅 **${event.title}**`,

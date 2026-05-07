@@ -1,6 +1,7 @@
 const { SlashCommandBuilder, EmbedBuilder, MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const { loadDb, getPlayerProfile, getActiveVacationsForUser } = require('../utils/database');
 const { determineEventType, eventTypeLabel } = require('../utils/eventType');
+const { formatPhoneLink } = require('../utils/phone');
 
 function hasRole(member, storedRoles, roleId) {
   if (!roleId || roleId === 'ROLE_ID') return false;
@@ -16,12 +17,6 @@ function getPlayerTeams(member, teamRoles = {}, storedRoles = []) {
   return Object.entries(teamRoles)
     .filter(([, roles]) => hasRole(member, storedRoles, roles.player))
     .map(([team]) => team);
-}
-
-function formatPhoneNumber(value = '') {
-  const digits = String(value || '').replace(/\D/g, '');
-  if (digits.length === 10) return `(${digits.slice(0, 3)})${digits.slice(3, 6)}-${digits.slice(6)}`;
-  return value || 'not set';
 }
 
 async function resolveGuildMember(interaction, config) {
@@ -83,7 +78,9 @@ async function buildPlayerHubResponse(interaction, context) {
         const response = event.responses?.[userId];
         const statusText = response?.status === 'yes'
           ? '✅ Marked as attending'
-          : (['pending_no', 'confirmed_no'].includes(response?.status) ? `❌ Marked as not attending${response?.reason ? ` — ${response.reason}` : ''}` : '❓ Not answered');
+          : (response?.onVacation
+            ? `🌴 On vacation / ❌ Marked as not attending${response?.reason ? ` — ${response.reason}` : ''}`
+            : (['pending_no', 'confirmed_no'].includes(response?.status) ? `❌ Marked as not attending${response?.reason ? ` — ${response.reason}` : ''}` : '❓ Not answered'));
         return `${index + 1}. **${event.title}**\n   Team: **${config.teams?.[event.team]?.label || event.team}** · ${eventTypeLabel(determineEventType(event, config))}\n   When: ${when}\n   Where: ${location}\n   Status: ${statusText}`;
         }).join('\n\n')
         : 'No upcoming games/events found for your teams.';
@@ -105,7 +102,7 @@ async function buildPlayerHubResponse(interaction, context) {
         '',
         '### Upcoming Vacation Times',
         activeVacations.length
-          ? activeVacations.map((vac) => `• **${vac.title}** (${vac.team}) ${vac.startDate} → ${vac.endDate} — ${vac.status}`).join('\n')
+          ? activeVacations.map((vac) => `• **${vac.title}** (${vac.team}) ${vac.startDate} → ${vac.endDate} — ${vac.status || 'pending'} — ${vac.reason || 'no reason'}`).join('\n')
           : 'No active vacations.'
       ].join('\n'))
       .setColor(0x2ecc71)
@@ -121,7 +118,7 @@ async function buildPlayerHubResponse(interaction, context) {
             `• Gender: ${profile.gender || 'not set'}`,
             `• Nickname: ${profile.nickName || 'not set'}`,
             `• Joined discord server: ${member?.joinedAt ? member.joinedAt.toISOString().slice(0, 10) : 'unknown'}`,
-            `• Phone number: ${formatPhoneNumber(profile.phoneNumber)}`
+            `• Phone number: ${formatPhoneLink(profile.phoneNumber)}`
           ].join('\n')
         }
       )
