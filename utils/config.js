@@ -89,6 +89,7 @@ function buildRuntimeConfig(current = {}) {
           gender: baseTeams?.[teamKey]?.gender || '',
           captainRoleId: baseTeams?.[teamKey]?.captainRoleId || '',
           captainEmoji: baseTeams?.[teamKey]?.captainEmoji || '🅒',
+          viceCaptainEmoji: baseTeams?.[teamKey]?.viceCaptainEmoji || '🅥',
           eventNamePhrases: baseTeams?.[teamKey]?.eventNamePhrases || [],
           attendanceAutoSendDays: baseTeams?.[teamKey]?.attendanceAutoSendDays || 14,
           ...(currentTeams[teamKey] || {})

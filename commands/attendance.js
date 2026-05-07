@@ -35,8 +35,16 @@ function getCoachTitle(config = {}, team = '', userId = '') {
   return getCoachRoleDefinitions(config).find((role) => role.id === roleId)?.label || 'Coach';
 }
 
+function getPlayerLeadershipTitle(config = {}, team = '', userId = '') {
+  const profile = getPlayerProfile(userId) || {};
+  if (Array.isArray(profile.captainTeams) && profile.captainTeams.includes(team)) return `${config.teams?.[team]?.captainEmoji || '🅒'} Captain`;
+  if (Array.isArray(profile.viceCaptainTeams) && profile.viceCaptainTeams.includes(team)) return `${config.teams?.[team]?.viceCaptainEmoji || '🅥'} Vice Captain`;
+  return '';
+}
+
 function formatPlayerMentionForAttendance(config = {}, team = '', userId = '', isCoach = false) {
-  return `<@${userId}>${isCoach ? ` (${getCoachTitle(config, team, userId)})` : ''}`;
+  const title = getPlayerLeadershipTitle(config, team, userId) || (isCoach ? getCoachTitle(config, team, userId) : '');
+  return `<@${userId}>${title ? ` (${title})` : ''}`;
 }
 
 function sanitizeChannelName(name) {

@@ -86,6 +86,7 @@ async function buildPlayerHubResponse(interaction, context) {
         : 'No upcoming games/events found for your teams.';
 
     const teamLabels = playerTeams.map((team) => config.teams?.[team]?.label || team);
+    const playerPhotoUrl = profile.faceImageUrl || profile.facePngUrl || profile.faceUrl || interaction.user.displayAvatarURL();
       const embed = new EmbedBuilder()
       .setTitle('⚽ Player Hub')
       .setDescription([
@@ -106,7 +107,7 @@ async function buildPlayerHubResponse(interaction, context) {
           : 'No active vacations.'
       ].join('\n'))
       .setColor(0x2ecc71)
-      .setThumbnail(profile.faceUrl || interaction.user.displayAvatarURL())
+      .setThumbnail(playerPhotoUrl)
       .addFields(
         {
           name: 'Profile',

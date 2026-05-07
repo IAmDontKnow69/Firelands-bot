@@ -1,3 +1,6 @@
+const TIFFIN_OHIO_TIME_ZONE = 'America/New_York';
+process.env.TZ = TIFFIN_OHIO_TIME_ZONE;
+
 const {
   Client,
   GatewayIntentBits,
@@ -23,11 +26,9 @@ const cron = require('node-cron');
 const fs = require('fs');
 const path = require('path');
 
-const attendanceCommand = require('./commands/attendance');
 const playerCommand = require('./commands/player');
 const coachCommand = require('./commands/coach');
 const adminCommand = require('./commands/admin');
-const confirmCommand = require('./commands/confirm');
 const interactionHandler = require('./events/interactionCreate');
 const { fetchUpcomingEvents, fetchCalendarEvents, normalizeCalendarId } = require('./utils/googleCalendar');
 const { loadDb, saveDb, upsertEvent, setEventMessageRefs, upsertPlayerProfile, getPlayerProfile } = require('./utils/database');
@@ -68,11 +69,9 @@ const client = new Client({
 });
 
 client.commands = new Collection();
-client.commands.set(attendanceCommand.data.name, attendanceCommand);
 client.commands.set(playerCommand.data.name, playerCommand);
 client.commands.set(coachCommand.data.name, coachCommand);
 client.commands.set(adminCommand.data.name, adminCommand);
-client.commands.set(confirmCommand.data.name, confirmCommand);
 const missingAttendanceConfigWarnings = new Set();
 const REQUIRED_SETUP_TABS = ['Fixtures', 'Player and Coach Management', 'Attendance', 'Absences', 'Player and Coach Notes', 'Config', 'Command Logs', 'Backups'];
 const setupRestoreDrafts = new Map();
@@ -681,15 +680,8 @@ async function registerSlashCommands() {
   const rest = new REST({ version: '10' }).setToken(TOKEN);
 
   try {
-    const guildBody = [
-      attendanceCommand.data.toJSON(),
-      playerCommand.data.toJSON(),
-      coachCommand.data.toJSON(),
-      adminCommand.data.toJSON(),
-      confirmCommand.data.toJSON()
-    ];
     await rest.put(Routes.applicationGuildCommands(clientId, guildId), {
-      body: guildBody
+      body: [adminCommand.data.toJSON()]
     });
     await rest.put(Routes.applicationCommands(clientId), {
       body: [
@@ -706,9 +698,35 @@ async function registerSlashCommands() {
 function formatEventDate(dateValue) {
   const date = new Date(dateValue);
   return date.toLocaleString('en-US', {
+    timeZone: TIFFIN_OHIO_TIME_ZONE,
     weekday: 'short',
     month: 'short',
     day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  });
+}
+
+function formatEventLogDate(dateValue) {
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) return 'unknown date';
+  return date.toLocaleDateString('en-US', {
+    timeZone: TIFFIN_OHIO_TIME_ZONE,
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric'
+  });
+}
+
+function getTeamLabel(config = {}, team = '') {
+  return config.teams?.[team]?.label || team || 'Unknown team';
+}
+
+function formatEventTime(dateValue) {
+  const date = new Date(dateValue);
+  if (Number.isNaN(date.getTime())) return 'unknown time';
+  return date.toLocaleTimeString('en-US', {
+    timeZone: TIFFIN_OHIO_TIME_ZONE,
     hour: 'numeric',
     minute: '2-digit'
   });
@@ -728,7 +746,7 @@ function getDirectAttendancePromptContent(event = {}, userId = '', config = getC
   const eventTypeName = eventTypeLabel(determineEventType(event, config));
   return [
     userId ? `👋 Hey <@${userId}>,` : null,
-    `📣 You have a **${eventTypeName}** on **${new Date(event.date).toLocaleDateString()}** at **${new Date(event.date).toLocaleTimeString()}**.`,
+    `📣 You have a **${eventTypeName}** on **${formatEventLogDate(event.date)}** at **${formatEventTime(event.date)}**.`,
     '✅ Will you be attending?',
     event.location ? `📍 [${event.location}](${getMapsLink(event.location)})` : null
   ].filter(Boolean).join('\n');
@@ -1351,7 +1369,7 @@ async function postEventMessage(event) {
   }
 
   if (messageRefs.length) setEventMessageRefs(event.id, messageRefs);
-  await sendLog(`📌 Posted event: **${event.title}** (${event.team}) • Sent ${deliveredCount}/${members.length} attendance prompt DM(s).`);
+  await sendLog(`📌 Posted event: **${event.title}** for ${getTeamLabel(config, event.team)} on ${formatEventLogDate(event.date)} • Sent ${deliveredCount}/${members.length} attendance prompt DM(s).`);
 }
 
 async function updatePostedEventMessage(eventId, event) {
@@ -1621,11 +1639,8 @@ client.on('interactionCreate', async (interaction) => {
         }
       }
 
-      if (interaction.inGuild() && ['player', 'coach', 'attendance'].includes(interaction.commandName)) {
-        let mode = interaction.commandName === 'coach' ? 'coach' : 'player';
-        if (interaction.commandName === 'attendance') {
-          mode = interaction.options.getSubcommand(false) === 'report' ? 'coach' : 'player';
-        }
+      if (interaction.inGuild() && ['player', 'coach'].includes(interaction.commandName)) {
+        const mode = interaction.commandName === 'coach' ? 'coach' : 'player';
         const incompleteTeams = getIncompleteTeamsForMember(interaction.member, getConfig(), mode);
         if (incompleteTeams.length) {
           await interaction.reply({
