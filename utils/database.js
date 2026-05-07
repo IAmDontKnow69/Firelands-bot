@@ -61,6 +61,26 @@ function setEventMessageId(eventId, messageId) {
   saveDb(db);
 }
 
+function setEventMessageRefs(eventId, refs = []) {
+  const db = loadDb();
+  if (!db.events[eventId]) return;
+
+  const cleanRefs = Array.isArray(refs)
+    ? refs
+      .map((ref) => ({
+        channelId: String(ref?.channelId || '').trim(),
+        messageId: String(ref?.messageId || '').trim(),
+        userId: String(ref?.userId || '').trim(),
+        delivery: String(ref?.delivery || '').trim()
+      }))
+      .filter((ref) => ref.messageId)
+    : [];
+
+  db.events[eventId].attendanceMessages = cleanRefs;
+  db.events[eventId].discordMessageId = cleanRefs[0]?.messageId || db.events[eventId].discordMessageId || '';
+  saveDb(db);
+}
+
 function setResponse(eventId, userId, response) {
   const db = loadDb();
   if (!db.events[eventId]) return null;
@@ -178,6 +198,7 @@ module.exports = {
   saveDb,
   upsertEvent,
   setEventMessageId,
+  setEventMessageRefs,
   setResponse,
   clearResponse,
   markPostEventReminder,

@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { determineEventType, eventTypeLabel } = require('./eventType');
 
-const REQUIRED_SETUP_TABS = ['Fixtures', 'Player and Coach Management', 'Attendance', 'Absences', 'Player and Coach Notes', 'Config', 'Command Logs', 'Backups'];
+const REQUIRED_SETUP_TABS = ['Fixtures', 'Player and Coach Management', 'Attendance', 'Absences', 'Player and Coach Notes', 'Config', 'Command Logs', 'Bot Data', 'Backups'];
 const FIRELANDS_ORANGE = { red: 0.941, green: 0.518, blue: 0.075 };
 const FIRELANDS_DARK = { red: 0.149, green: 0.176, blue: 0.251 };
 
@@ -614,6 +614,54 @@ function buildPlayerCoachNoteRows(db = {}, notesSheetId) {
   return rows.sort((a, b) => new Date(a[7] || 0).getTime() - new Date(b[7] || 0).getTime());
 }
 
+function buildBotDataRows(db = {}, config = {}) {
+  const rows = [];
+  const pushRecord = (recordType, key, value, summary = '') => {
+    const json = JSON.stringify(value ?? null);
+    rows.push([
+      recordType,
+      key,
+      value?.updatedAt || value?.createdAt || toIso(),
+      summary || compactText(json, 180),
+      ...splitIntoCellChunks(json)
+    ]);
+  };
+
+  for (const [eventId, event] of Object.entries(db.events || {})) {
+    pushRecord('event', eventId, event, `${event.title || 'Untitled event'} • ${event.date || 'no date'}`);
+    for (const [index, ref] of Object.entries(event.attendanceMessages || [])) {
+      pushRecord('attendanceMessage', `${eventId}:${index}`, { eventId, ...ref }, `${event.title || eventId} • ${ref.delivery || 'message'} • ${ref.userId || ref.messageId || ''}`);
+    }
+  }
+
+  for (const [userId, teams] of Object.entries(db.futureAvailability || {})) {
+    pushRecord('futureAvailability', userId, teams, `Future availability for ${userId}`);
+  }
+
+  for (const [channelId, ticket] of Object.entries(db.absenceTickets || {})) {
+    pushRecord(ticket.recordType || 'absenceTicket', channelId, ticket, `${ticket.playerName || ticket.playerId || 'unknown'} • ${ticket.status || 'unknown'}`);
+  }
+
+  for (const [userId, vacations] of Object.entries(db.vacations || {})) {
+    for (const [vacationId, vacation] of Object.entries(vacations || {})) {
+      pushRecord('vacation', `${userId}:${vacationId}`, vacation, `${vacation.startDate || ''} to ${vacation.endDate || ''} • ${vacation.status || 'pending'}`);
+    }
+  }
+
+  for (const [userId, profile] of Object.entries(db.players || {})) {
+    pushRecord('playerProfile', userId, profile, profile.customName || profile.nickName || userId);
+  }
+
+  for (const [metaKey, metaValue] of Object.entries(db.meta || {})) {
+    pushRecord('meta', metaKey, metaValue, `meta.${metaKey}`);
+  }
+
+  pushRecord('databaseSnapshot', 'data.json', db, 'Complete local data.json snapshot');
+  pushRecord('configSnapshot', 'config.json', config, 'Complete runtime config snapshot');
+
+  return rows.sort((a, b) => `${a[0]}:${a[1]}`.localeCompare(`${b[0]}:${b[1]}`, undefined, { numeric: true }));
+}
+
 function isPlaceholderConfigValue(key = '', value = '') {
   const normalized = String(value ?? '').trim();
   if (!normalized || normalized.toLowerCase() === 'not set') return true;
@@ -1155,6 +1203,7 @@ async function syncAllToSheet(config = {}, db = {}, options = {}) {
     : normalizeA1Range(config.googleSync?.playersRange, 'Player and Coach Management!A2:Q');
   const absencesRange = normalizeA1Range(config.googleSync?.absencesRange, 'Absences!A2:X');
   const playerCoachNotesRange = normalizeA1Range(config.googleSync?.playerCoachNotesRange, 'Player and Coach Notes!A2:I');
+  const botDataRange = normalizeA1Range(config.googleSync?.botDataRange, 'Bot Data!A2:J');
   const fixtureHeaders = buildFixtureHeaders(config);
   const teamFixtureSections = options.setupFreshWipe ? [] : Object.keys(config.teams || {}).map((teamKey) => {
     const teamLabel = config.teams?.[teamKey]?.label || teamKey;
@@ -1184,6 +1233,7 @@ async function syncAllToSheet(config = {}, db = {}, options = {}) {
         { range: absencesRange, headers: ['ticketPreview', 'channelPreview', 'eventPreview', 'eventTitle', 'eventDate', 'eventLocation', 'team', 'playerPreview', 'playerName', 'attendanceStatus', 'reason', 'coachDecision', 'coachPreview', 'coachName', 'closedAt', 'createdAt', 'closedReason', 'ticketId', 'channelId', 'eventId', 'playerId', 'coachId', 'recordType'], description: 'Logs for not-attending reasons and coach outcomes.' },
         { range: configRange, headers: ['key', 'value', 'updatedAt'], description: 'Bot configuration values.' },
         { range: commandLogRange, headers: ['timestamp', 'source', 'command', 'subcommand', 'options', 'guildId', 'channelId', 'userId', 'username'], description: 'Log of all commands used in the bot.' },
+        { range: botDataRange, headers: ['recordType', 'recordKey', 'updatedAt', 'summary', 'jsonChunk1', 'jsonChunk2', 'jsonChunk3', 'jsonChunk4', 'jsonChunk5', 'jsonChunk6'], description: 'Complete raw local bot data snapshots and records.' },
         { range: 'Backups!A2:G', headers: ['slot', 'name', 'createdAt', 'createdBy', 'summary', 'buildVersion', 'snapshot'], description: 'Manual snapshot backups.' }
       ]
       : [
@@ -1196,7 +1246,8 @@ async function syncAllToSheet(config = {}, db = {}, options = {}) {
         { range: configBackupsRange, headers: ['backupOrder', 'timestamp', 'changedPath', 'reason', 'snapshotPreview', 'snapshot'], description: 'Last 5 config states before changes.' },
         { range: playersRange, headers: ['userIdPreview', 'customName', 'nickName', 'phoneNumber', 'gender', 'shirtNumber', 'shirtNumbersByTeam', 'teams', 'coachTeams', 'captainTeams', 'viceCaptainTeams', 'isGoalkeeper', 'isDefender', 'isMidfielder', 'isAttacker', 'coachPositionsByTeam', 'roles', 'joinedDiscordAt', 'notes', 'faceImageUrl', 'notesLog', 'updatedAt', 'userId', 'profileJson'], description: 'Player + coach management profiles, including team assignments, titles, and saved profile fields.' },
         { range: absencesRange, headers: ['ticketPreview', 'channelPreview', 'eventPreview', 'eventTitle', 'eventDate', 'eventLocation', 'team', 'playerPreview', 'playerName', 'attendanceStatus', 'reason', 'coachDecision', 'coachPreview', 'coachName', 'closedAt', 'createdAt', 'closedReason', 'ticketId', 'channelId', 'eventId', 'playerId', 'coachId', 'recordType'], description: 'Absence tickets and outcomes.' },
-        { range: playerCoachNotesRange, headers: ['notePreview', 'openNote', 'name', 'profileType', 'noteSummary', 'hidden', 'authorTag', 'createdAt', 'updatedAt', 'noteId', 'userId', 'authorId', 'note'], description: 'Player and coach notes with quick-open links.' }
+        { range: playerCoachNotesRange, headers: ['notePreview', 'openNote', 'name', 'profileType', 'noteSummary', 'hidden', 'authorTag', 'createdAt', 'updatedAt', 'noteId', 'userId', 'authorId', 'note'], description: 'Player and coach notes with quick-open links.' },
+        { range: botDataRange, headers: ['recordType', 'recordKey', 'updatedAt', 'summary', 'jsonChunk1', 'jsonChunk2', 'jsonChunk3', 'jsonChunk4', 'jsonChunk5', 'jsonChunk6'], description: 'Complete raw local bot data snapshots and records, including message refs, chat logs, future availability, vacations, meta, players, events, and config.' }
       ];
 
   const sheetIdByTitle = await ensureSheetLayout(sheets, spreadsheetId, sections);
@@ -1245,6 +1296,7 @@ async function syncAllToSheet(config = {}, db = {}, options = {}) {
       options
     );
   }
+  await writeRange(sheets, spreadsheetId, botDataRange, buildBotDataRows(db, config), options);
   if (!options.setupFreshWipe) {
     await writeRange(sheets, spreadsheetId, 'Home!A2:E', buildHomeRows(sections.slice(1), sheetIdByTitle), options);
   }

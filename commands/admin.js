@@ -32,12 +32,33 @@ function createAdminPanelSecondaryRow() {
   return null;
 }
 
+function getClubNextFiveEventLines(config = {}) {
+  const now = Date.now();
+  const events = Object.values(loadDb().events || {})
+    .filter((event) => event?.date && new Date(event.date).getTime() >= now)
+    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+    .slice(0, 5);
+
+  if (!events.length) return ['• No upcoming club events found.'];
+
+  return events.map((event, index) => {
+    const teamLabel = event.team && config.teams?.[event.team]
+      ? `${config.teams[event.team].emoji || '🔹'} ${config.teams[event.team].label || event.team}`
+      : '🏟️ Club';
+    return `• ${index + 1}. ${teamLabel} — ${event.title} — ${new Date(event.date).toLocaleString()}`;
+  });
+}
+
 function buildAdminPanelEmbed(config = {}) {
   const teamLabels = Object.entries(config.teams || {}).map(([team, meta]) => `${meta.emoji || '🔹'} ${meta.label || team}`).join(' | ');
+  const nextEventLines = getClubNextFiveEventLines(config);
   return new EmbedBuilder()
     .setTitle('🔥 Firelands Bot Admin UI')
     .setDescription([
       'Use this panel to run admin actions directly (no copy/paste commands needed).',
+      '',
+      '**Club Next 5 Events:**',
+      ...nextEventLines,
       '',
       '**Main menu buttons:**',
       '• 🛠️ Team Management — create teams and configure roles/channels/fixtures per team.',

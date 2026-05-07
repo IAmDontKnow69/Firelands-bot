@@ -3,6 +3,7 @@ const { loadConfig, updateConfig, saveConfig } = require('../utils/config');
 const { loadDb } = require('../utils/database');
 const { syncAllToSheet, syncConfigOnlyToSheet, loadConfigFromSheet } = require('../utils/googleSheetsSync');
 const { hasAdminAccess, adminAccessMessage } = require('../utils/adminAccess');
+const { syncProfilesForTeamRole } = require('../utils/roleRosterSync');
 
 const FIELD_MAP = {
   bot_token_reference: 'bot.tokenReference',
@@ -287,12 +288,15 @@ module.exports = {
     updateConfig(configPath, normalizedValue);
 
     const latestConfig = loadConfig();
+    const roleScan = field.endsWith('role_id')
+      ? await syncProfilesForTeamRole(interaction.guild, latestConfig, configPath)
+      : { scanned: false, count: 0 };
     if (latestConfig.googleSync?.enabled) {
       try {
         await syncConfigOnlyToSheet(latestConfig);
       } catch (error) {
         await interaction.reply({
-          content: `✅ Updated **${field}**. ⚠️ Google sync warning: ${error.message}`,
+          content: `✅ Updated **${field}**.${roleScan.scanned ? ` Synced ${roleScan.count} role member(s) into player profiles.` : ''} ⚠️ Google sync warning: ${error.message}`,
           flags: MessageFlags.Ephemeral
         });
         return;
@@ -300,7 +304,7 @@ module.exports = {
     }
 
     await interaction.reply({
-      content: `✅ Updated **${field}**. ${field === 'bot_token_reference' ? 'Restart bot to use new token.' : ''}`,
+      content: `✅ Updated **${field}**.${roleScan.scanned ? ` Synced ${roleScan.count} role member(s) into player profiles.` : ''} ${field === 'bot_token_reference' ? 'Restart bot to use new token.' : ''}`,
       flags: MessageFlags.Ephemeral
     });
   }
