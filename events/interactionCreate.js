@@ -157,7 +157,7 @@ function getTeamManagementSummary() {
   const config = loadConfig();
   const teams = Object.entries(config.teams || {});
   const teamLines = teams.length
-    ? teams.map(([teamKey, meta]) => `• ${(meta?.emoji || '🔹')} ${meta?.label || teamKey} (\`${teamKey}\`) — Badge: ${meta?.badgeUrl ? `[open](${meta.badgeUrl})` : 'not set'}`)
+    ? teams.map(([, meta]) => `• ${(meta?.emoji || '🔹')} ${meta?.label || 'Unnamed Team'} — Badge: ${meta?.badgeUrl ? `[open](${meta.badgeUrl})` : 'not set'}`)
     : ['• no teams configured'];
   return [
     '🛠️ **Team Management**',
@@ -201,7 +201,7 @@ function getFixtureSettingsSummary() {
     'Manage fixture classification and location nicknames.',
     '',
     'Buttons in this menu:',
-    '• 🧭 Event Type Rules — control auto-detection and exact-name mappings.',
+    '• 🧭 Event Type Rules — control auto-detection and title wording mappings.',
     '• 📍 Event Addresses — list captured event addresses.',
     '• ⬅️ Back — return to Club Management.'
   ].join('\n');
@@ -367,16 +367,16 @@ function createEventTypeRulesRow(config = loadConfig()) {
       .setLabel(autoDetectEnabled ? '🟢 Auto Detect: ON' : '🔴 Auto Detect: OFF')
       .setStyle(autoDetectEnabled ? ButtonStyle.Success : ButtonStyle.Danger),
     new ButtonBuilder().setCustomId('admin_event_type_rule:sync_event_types').setLabel('🔄 Sync Event Types').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId('admin_event_type_rule:set_practice_exact').setLabel('📝 Practice Exact Names').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('admin_event_type_rule:set_match_exact').setLabel('🏁 Match Exact Names').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('admin_event_type_rule:set_other_exact').setLabel('🧩 Other Exact Names').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder().setCustomId('admin_event_type_rule:set_practice_exact').setLabel('📝 Practice Wording').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_event_type_rule:set_match_exact').setLabel('🏁 Match Wording').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('admin_event_type_rule:set_other_exact').setLabel('➖ Not Set Wording').setStyle(ButtonStyle.Secondary)
   );
 }
 
 function createEventTypeRulesRow2() {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('admin_event_type_rule:add_exact_name').setLabel('➕ Add Exact Name').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId('admin_event_type_rule:delete_exact_name').setLabel('🗑️ Delete Exact Name').setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId('admin_event_type_rule:add_exact_name').setLabel('➕ Add Wording').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId('admin_event_type_rule:delete_exact_name').setLabel('🗑️ Delete Wording').setStyle(ButtonStyle.Danger),
     new ButtonBuilder().setCustomId('admin_event_type_rule:manual_set_event_type').setLabel('🎯 Manual Event Type').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId('admin_back_fixture_settings').setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
   );
@@ -463,13 +463,47 @@ function buildFixtureSettingsPanel(config, guild, team, notice = '') {
   };
 }
 
+function getFixtureTeams(event = {}) {
+  return Array.from(new Set([
+    event.team,
+    ...(Array.isArray(event.teams) ? event.teams : [])
+  ].filter(Boolean)));
+}
+
+function fixtureHasTeam(event = {}, team) {
+  return getFixtureTeams(event).includes(team);
+}
+
+function getFixtureTeamSummary(config, event = {}) {
+  const teams = getFixtureTeams(event);
+  if (!teams.length) return 'Unassigned';
+  return teams.map((team) => getTeamMeta(config, team).label || team).join(', ');
+}
+
+function replaceFixtureTeam(event = {}, team) {
+  event.team = team;
+  event.teams = [team];
+}
+
+function addFixtureTeam(event = {}, team) {
+  const teams = Array.from(new Set([...getFixtureTeams(event), team]));
+  if (!event.team) event.team = teams[0] || team;
+  event.teams = teams;
+}
+
+function removeFixtureTeam(event = {}, team) {
+  const teams = getFixtureTeams(event).filter((item) => item !== team);
+  event.team = event.team === team ? (teams[0] || '') : (event.team || '');
+  event.teams = teams;
+}
+
 function getUpcomingFixtures(db = {}) {
   return Object.entries(db.events || {})
     .map(([id, event]) => ({ id, ...event }))
     .filter((event) => new Date(event.date).getTime() >= Date.now())
     .sort((a, b) => {
-      const aUnassigned = !a.team ? 0 : 1;
-      const bUnassigned = !b.team ? 0 : 1;
+      const aUnassigned = getFixtureTeams(a).length ? 1 : 0;
+      const bUnassigned = getFixtureTeams(b).length ? 1 : 0;
       if (aUnassigned !== bUnassigned) return aUnassigned - bUnassigned;
       return new Date(a.date).getTime() - new Date(b.date).getTime();
     });
@@ -480,31 +514,37 @@ function createFixturePagerRows(config, team, page = 0, events = [], mode = 'adm
   const totalPages = Math.max(1, Math.ceil(events.length / perPage));
   const safePage = Math.min(Math.max(page, 0), totalPages - 1);
   const pageItems = events.slice(safePage * perPage, safePage * perPage + perPage);
+  const rows = [];
 
-  const numberRow = new ActionRowBuilder();
-  pageItems.forEach((event, index) => {
-    numberRow.addComponents(
-      new ButtonBuilder()
-        .setCustomId(`${mode}:${team}:${event.id}:${safePage}`)
-        .setLabel(String(index + 1))
-        .setStyle(ButtonStyle.Primary)
-    );
-  });
+  for (let start = 0; start < pageItems.length; start += 5) {
+    const numberRow = new ActionRowBuilder();
+    pageItems.slice(start, start + 5).forEach((event, offset) => {
+      const index = start + offset;
+      numberRow.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`${mode}:${team}:${event.id}:${safePage}`)
+          .setLabel(String(index + 1))
+          .setStyle(ButtonStyle.Primary)
+      );
+    });
+    rows.push(numberRow);
+  }
 
+  const pagePrefix = mode === 'admin_fixture_unpick' ? 'admin_fixture_unpick_page' : 'admin_fixture_page';
   const navRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`admin_fixture_page:${team}:${Math.max(0, safePage - 1)}`).setLabel('<').setStyle(ButtonStyle.Secondary).setDisabled(safePage <= 0),
-    new ButtonBuilder().setCustomId(`admin_fixture_page:${team}:${Math.min(totalPages - 1, safePage + 1)}`).setLabel('>').setStyle(ButtonStyle.Secondary).setDisabled(safePage >= totalPages - 1),
+    new ButtonBuilder().setCustomId(`${pagePrefix}:${team}:${Math.max(0, safePage - 1)}`).setLabel('Previous').setStyle(ButtonStyle.Secondary).setDisabled(safePage <= 0),
+    new ButtonBuilder().setCustomId(`${pagePrefix}:${team}:${Math.min(totalPages - 1, safePage + 1)}`).setLabel('Next').setStyle(ButtonStyle.Secondary).setDisabled(safePage >= totalPages - 1),
     new ButtonBuilder().setCustomId(`admin_back_team_config:${team}`).setLabel('⬅️ Back').setStyle(ButtonStyle.Secondary)
   );
 
   const lines = pageItems.map((event, index) => {
     const when = new Date(event.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    return `${index + 1}. ${when} — ${event.title} (Current: ${getTeamMeta(config, event.team).label || 'Unassigned'})`;
+    return `${index + 1}. ${when} — ${event.title} (Current: ${getFixtureTeamSummary(config, event)})`;
   });
 
   return {
     text: [`Pick fixture for **${getTeamMeta(config, team).label}** (page ${safePage + 1}/${totalPages})`, ...lines].join('\n'),
-    rows: pageItems.length ? [numberRow, navRow] : [navRow]
+    rows: [...rows, navRow]
   };
 }
 
@@ -597,7 +637,7 @@ function getTeamConfigSummary(config, guild, team) {
     .slice(0, 5)
     .map((event, index) => `• ${index + 1}. ${event.title} — ${new Date(event.date).toLocaleString()}`);
   return [
-    `⚙️ Now Configuring: ${meta.emoji} ${meta.label} (\`${team}\`)`,
+    `⚙️ Now Configuring: ${meta.emoji} ${meta.label}`,
     '',
     '**ID Setup Progress**',
     `• **${progress.completed}/${progress.total} (${progress.percent}%)** ${progress.isComplete ? '✅ Ready' : '⚠️ Incomplete'}`,
@@ -773,26 +813,27 @@ function createForceAttendancePickerRows(team, events = [], page = 0) {
   };
 }
 
-async function postAttendancePromptForEvent(interaction, event, config) {
-  const teamChatChannelId = config.channels.teamChats?.[event.team];
+async function postAttendancePromptForEvent(interaction, event, config, teamOverride = event.team) {
+  const promptEvent = { ...event, team: teamOverride || event.team };
+  const teamChatChannelId = config.channels.teamChats?.[promptEvent.team];
   const eventsChannelId = teamChatChannelId || config.channels.events;
   if (!eventsChannelId) throw new Error('Events channel ID is not configured.');
 
   const channel = await interaction.client.channels.fetch(eventsChannelId);
   if (!channel || !channel.isTextBased()) throw new Error('Events channel not found or not text based.');
 
-  const teamRoleId = config.roles?.[event.team]?.player;
-  if (!teamRoleId || teamRoleId === 'ROLE_ID') throw new Error(`Player role is not configured for ${event.team}.`);
+  const teamRoleId = config.roles?.[promptEvent.team]?.player;
+  if (!teamRoleId || teamRoleId === 'ROLE_ID') throw new Error(`Player role is not configured for ${promptEvent.team}.`);
 
   const teamRole = interaction.guild?.roles?.cache?.get(teamRoleId)
     || await interaction.guild.roles.fetch(teamRoleId).catch(() => null);
   const members = teamRole ? Array.from(teamRole.members.values()) : [];
-  if (!members.length) throw new Error(`No players found in role for ${event.team}.`);
+  if (!members.length) throw new Error(`No players found in role for ${promptEvent.team}.`);
 
   let firstMessageId = '';
   for (const member of members) {
     const message = await channel.send({
-      content: buildAttendancePromptContent(event, member.id, config),
+      content: buildAttendancePromptContent(promptEvent, member.id, config),
       components: [createAttendanceResponseRow(event.id, member.id)]
     });
     if (!firstMessageId) firstMessageId = message.id;
@@ -843,15 +884,19 @@ function buildAttendancePromptContent(event, memberId) {
   ].filter(Boolean).join('\n');
 }
 
-function buildAttendanceConfirmationContent(event, responderTitle, responderName, statusLabel, reason = '') {
+function buildAttendanceConfirmationContent(event, responderTitle, responderName, statusLabel, reason = '', options = {}) {
+  const isAttending = statusLabel === 'attending';
+  const prettyStatus = isAttending ? 'Attending' : 'Not attending';
   const lines = [
-    statusLabel === 'attending' ? '✅ Attendance confirmed' : '🔴 Not attending confirmed',
-    `${responderTitle}: **${responderName}**`,
-    `Response: **${statusLabel}**`,
-    `Event: **${event.title}**`,
-    `When: ${new Date(event.date).toLocaleString()}`
+    isAttending ? '✅ **Attendance confirmed**' : '🔴 **Not attending confirmed**',
+    '',
+    `**${responderTitle}:** ${responderName}`,
+    `**Response:** ${prettyStatus}`,
+    `**Event:** ${event.title}`,
+    `**When:** ${new Date(event.date).toLocaleString()}`
   ];
-  if (reason) lines.push(`Reason: ${reason}`);
+  if (reason) lines.push(`**Reason:** ${reason}`);
+  if (options.absenceChannelId) lines.push(`**Not attending chat:** <#${options.absenceChannelId}>`);
   lines.push('', 'Need to change it? Use **Undo Response** below.');
   return lines.join('\n');
 }
@@ -866,11 +911,11 @@ async function resolveAttendancePromptMessage(interaction, event, messageRef = {
   return channel.messages.fetch(messageId).catch(() => null);
 }
 
-async function updateAttendancePromptToConfirmation(interaction, event, responderTitle, responderName, statusLabel, userId, reason = '', messageRef = {}) {
+async function updateAttendancePromptToConfirmation(interaction, event, responderTitle, responderName, statusLabel, userId, reason = '', messageRef = {}, options = {}) {
   const message = await resolveAttendancePromptMessage(interaction, event, messageRef);
   if (!message) return;
   await message.edit({
-    content: buildAttendanceConfirmationContent(event, responderTitle, responderName, statusLabel, reason),
+    content: buildAttendanceConfirmationContent(event, responderTitle, responderName, statusLabel, reason, options),
     components: [createAttendanceUndoRow(messageRef.eventId || event.id, userId)]
   }).catch(() => null);
 }
@@ -1017,11 +1062,17 @@ function formatAbsenceNotification(ticket = {}, event = {}, status = 'open') {
   const eventLabel = event?.title || ticket.eventId || 'Unknown event';
   const dateLabel = event?.date ? getCompactDateLabel(event.date) : 'unknown date';
   if (status === 'closed') {
-    return [
-      `✅ Absence Ticket Closed`,
+    const lines = [
+      '✅ Absence Ticket Closed',
       `👤 ${playerName}`,
       `📅 ${dateLabel} — ${eventLabel}`
-    ].join('\n');
+    ];
+    if (ticket.coachDecision === 'confirmed_not_attending') {
+      lines.push(`🔴 Not attending confirmed for ${playerName} by ${ticket.coachName || 'staff'} on ${eventLabel}.`);
+    } else if (ticket.closedReason) {
+      lines.push(`Status: ${ticket.closedReason}`);
+    }
+    return lines.join('\n');
   }
   return [
     `🚨 Attendance update: marked **not attending**`,
@@ -1333,9 +1384,12 @@ function createPlayerProfileActionRow(userId, mode = 'player') {
 function createPlayerProfileActionRow2(userId, mode = 'player') {
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`admin_player_action:set_face:${userId}:${mode}`).setLabel('🖼️ Face URL').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_player_action:set_teams:${userId}:${mode}`).setLabel('🧩 Teams').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`admin_player_action:set_gender:${userId}:${mode}`).setLabel('⚧️ Gender').setStyle(ButtonStyle.Secondary)
   );
+
+  if (mode !== 'coach') {
+    row.addComponents(new ButtonBuilder().setCustomId(`admin_player_action:set_teams:${userId}:${mode}`).setLabel('🧩 Teams').setStyle(ButtonStyle.Secondary));
+  }
 
   if (mode === 'coach') {
     row.addComponents(
@@ -1884,7 +1938,7 @@ function createAttendanceTypeRow(userId, mode = 'player') {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`admin_player_attendance_type:${userId}:${mode}:practice`).setLabel('🏃 Practices').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`admin_player_attendance_type:${userId}:${mode}:match`).setLabel('⚽ Matches').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`admin_player_attendance_type:${userId}:${mode}:other`).setLabel('📌 Other').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`admin_player_attendance_type:${userId}:${mode}:other`).setLabel('📌 Not Set').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`admin_player_attendance_type:${userId}:${mode}:all`).setLabel('📚 All').setStyle(ButtonStyle.Primary)
   );
 }
@@ -2086,6 +2140,7 @@ async function handlePanelGoogleSync(interaction) {
         date: event.date,
         location: event.location || existing.location || '',
         team: existing.team || event.team,
+        teams: getFixtureTeams(existing).length ? getFixtureTeams(existing) : (event.team ? [event.team] : []),
         discordMessageId: existing.discordMessageId || '',
         responses: existing.responses || {}
       });
@@ -2389,17 +2444,17 @@ module.exports = {
           await interaction.update({
             content: [
               '🧭 **Event Type Rules**',
-              'Control how fixtures are classified as practice/match/other.',
+              'Control how fixtures are classified as Practice, Match, or Not Set.',
               '',
               'Buttons in this menu:',
               '• Auto Detect toggle — switch title-based auto classification ON/OFF.',
-              '• Practice/Match/Other Exact Names — save exact title matches per type.',
+              '• Practice/Match/Not Set Wording — save title wording; if an event title contains that wording, it becomes that type.',
               '• Manual Event Type — change a specific event type manually.',
               '',
               `• Auto Detect: **${rules.autoDetect ? 'ON' : 'OFF'}**`,
-              `• Practice Exact Names: ${rules.practiceExactNames.join(', ') || 'none'}`,
-              `• Match Exact Names: ${rules.matchExactNames.join(', ') || 'none'}`,
-              `• Other Exact Names: ${rules.otherExactNames.join(', ') || 'none'}`
+              `• Practice Wording: ${rules.practiceExactNames.join(', ') || 'none'}`,
+              `• Match Wording: ${rules.matchExactNames.join(', ') || 'none'}`,
+              `• Not Set Wording: ${rules.otherExactNames.join(', ') || 'none'}`
             ].join('\n'),
             embeds: [],
             components: [createEventTypeRulesRow(loadConfig()), createEventTypeRulesRow2()]
@@ -2599,13 +2654,13 @@ module.exports = {
         if (selected === 'add_exact_name' || selected === 'delete_exact_name') {
           const modal = new ModalBuilder()
             .setCustomId(`admin_event_type_exact_single_modal:${selected}`)
-            .setTitle(selected === 'add_exact_name' ? 'Add Exact Event Name' : 'Delete Exact Event Name');
+            .setTitle(selected === 'add_exact_name' ? 'Add Event Type Wording' : 'Delete Event Type Wording');
           modal.addComponents(
             new ActionRowBuilder().addComponents(
-              new TextInputBuilder().setCustomId('event_type').setLabel('Type (practice/match/other)').setStyle(TextInputStyle.Short).setRequired(true)
+              new TextInputBuilder().setCustomId('event_type').setLabel('Type (practice/match/not set)').setStyle(TextInputStyle.Short).setRequired(true)
             ),
             new ActionRowBuilder().addComponents(
-              new TextInputBuilder().setCustomId('exact_name').setLabel('Exact event name').setStyle(TextInputStyle.Short).setRequired(true)
+              new TextInputBuilder().setCustomId('exact_name').setLabel('Title wording to match').setStyle(TextInputStyle.Short).setRequired(true)
             )
           );
           await interaction.showModal(modal);
@@ -2615,7 +2670,7 @@ module.exports = {
         if (['set_practice_exact', 'set_match_exact', 'set_other_exact'].includes(selected)) {
           const modal = new ModalBuilder()
             .setCustomId(`admin_event_type_exact_modal:${selected}`)
-            .setTitle('Set Exact Event Names');
+            .setTitle('Set Event Type Wording');
           const current = selected === 'set_practice_exact'
             ? latestConfig.eventTypes?.practiceExactNames
             : selected === 'set_match_exact'
@@ -2625,7 +2680,7 @@ module.exports = {
             new ActionRowBuilder().addComponents(
               new TextInputBuilder()
                 .setCustomId('exact_names')
-                .setLabel('Comma-separated exact names')
+                .setLabel('Comma-separated title wording')
                 .setStyle(TextInputStyle.Paragraph)
                 .setRequired(true)
                 .setValue((current || []).join(', '))
@@ -3051,12 +3106,7 @@ module.exports = {
           return;
         }
         if (selectedAction === 'fixture_team') {
-          const db = loadDb();
-          const upcomingEvents = Object.entries(db.events || {})
-            .map(([id, event]) => ({ id, ...event }))
-            .filter((event) => new Date(event.date).getTime() >= Date.now())
-            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
-            .slice(0, 25);
+          const upcomingEvents = getUpcomingFixtures(loadDb());
 
           if (!upcomingEvents.length) {
             await interaction.update({
@@ -3067,26 +3117,11 @@ module.exports = {
             return;
           }
 
-          const row = new ActionRowBuilder().addComponents(
-            new StringSelectMenuBuilder()
-              .setCustomId(`admin_set_fixture_team:${team}`)
-              .setPlaceholder(`Select fixture for ${teamLabel}`)
-              .addOptions(
-                upcomingEvents.map((event) => {
-                  const when = new Date(event.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-                  return {
-                    label: `${when} — ${event.title}`.slice(0, 100),
-                    value: event.id,
-                    description: `Current: ${getTeamMeta(latestConfig, event.team).label || 'Unassigned'}`.slice(0, 100)
-                  };
-                })
-              )
-          );
-
+          const pager = createFixturePagerRows(latestConfig, team, 0, upcomingEvents);
           await interaction.update({
-            content: `Pick a fixture to assign to **${teamLabel}**.`,
+            content: pager.text,
             embeds: [],
-            components: [row, createBackButtonRow(`admin_back_team_config:${team}`)]
+            components: pager.rows
           });
           return;
         }
@@ -3129,7 +3164,7 @@ module.exports = {
           return;
         }
         if (selectedAction === 'show_team_events') {
-          const teamEvents = getUpcomingFixtures(loadDb()).filter((event) => event.team === team);
+          const teamEvents = getUpcomingFixtures(loadDb()).filter((event) => fixtureHasTeam(event, team));
           const pageSize = 20;
           const page = 0;
           const totalPages = Math.max(1, Math.ceil(teamEvents.length / pageSize));
@@ -3152,7 +3187,7 @@ module.exports = {
           const now = Date.now();
           const candidates = Object.entries(loadDb().events || {})
             .map(([id, event]) => ({ id, ...event }))
-            .filter((event) => event.team === team && new Date(event.date).getTime() >= now && !event.discordMessageId)
+            .filter((event) => fixtureHasTeam(event, team) && new Date(event.date).getTime() >= now && !event.discordMessageId)
             .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
           const picker = createForceAttendancePickerRows(team, candidates, 0);
           await interaction.update({ content: picker.text, embeds: [], components: picker.rows });
@@ -3505,7 +3540,7 @@ module.exports = {
           content: [
             buildAttendanceStatsMessage(userId, loadConfig()),
             '',
-            'Pick what attendance type to view: Practices, Matches, Other, or All.'
+            'Pick what attendance type to view: Practices, Matches, Not Set, or All.'
           ].join('\n'),
           embeds: [],
           components: createAttendanceResultRows(userId, mode, 'all')
@@ -3843,6 +3878,12 @@ module.exports = {
         }
 
         if (interaction.customId === 'absence_ticket_confirm' || interaction.customId.startsWith('absence_ticket_confirm:')) {
+          const member = await interaction.guild.members.fetch(playerId).catch(() => null);
+          const playerProfile = getPlayerProfile(playerId) || {};
+          const playerName = playerProfile.customName || member?.displayName || member?.user?.globalName || member?.user?.username || `<@${playerId}>`;
+          const coachProfile = getPlayerProfile(interaction.user.id) || {};
+          const coachName = coachProfile.customName || interaction.member?.displayName || interaction.user?.globalName || interaction.user?.username || interaction.user.tag;
+
           setResponse(eventId, playerId, {
             status: 'confirmed_no',
             confirmed: true,
@@ -3854,26 +3895,14 @@ module.exports = {
             status: 'closed',
             coachDecision: 'confirmed_not_attending',
             coachId: interaction.user.id,
-            coachName: interaction.user.tag,
+            coachName,
             closedAt: new Date().toISOString(),
             closedReason: 'Coach confirmed not attending.'
           });
           await triggerGoogleSync(context);
           await interaction.editReply({ content: `✅ Absence confirmed for <@${playerId}>. Closing this absence chat now.` });
-          const member = await interaction.guild.members.fetch(playerId).catch(() => null);
-
-          const playerProfile = getPlayerProfile(playerId) || {};
-          const playerName = playerProfile.customName || member?.displayName || member?.user?.globalName || member?.user?.username || `<@${playerId}>`;
-          const coachProfile = getPlayerProfile(interaction.user.id) || {};
-          const coachName = coachProfile.customName || interaction.member?.displayName || interaction.user?.globalName || interaction.user?.username || interaction.user.tag;
           const confirmMessage = `🔴 Not attending confirmed for ${playerName} by ${coachName} on ${event.title}.`;
           await context.sendLog(confirmMessage);
-
-          const staffRoomId = config.channels?.staffRooms?.[event.team];
-          if (staffRoomId) {
-            const staffRoom = await interaction.guild.channels.fetch(staffRoomId).catch(() => null);
-            if (staffRoom?.isTextBased()) await staffRoom.send(confirmMessage).catch(() => null);
-          }
 
           await closeAbsenceTicketChannel(interaction.channel, 'Absence confirmed by coach');
           return;
@@ -3936,6 +3965,7 @@ module.exports = {
               date: matched.date,
               location: matched.location || '',
               team: matched.team || '',
+              teams: matched.team ? [matched.team] : [],
               responses: {},
               discordMessageId: '',
               updatedAt: new Date().toISOString()
@@ -4138,10 +4168,12 @@ module.exports = {
           await interaction.update({ content: 'Could not resolve the server for this coach report.', embeds: [], components: [] });
           return;
         }
-        const report = coachCommand.buildReport(targetGuild, selectedTeam, teamRolesMap);
+        const latestConfig = loadConfig();
+        const selectedTeamLabel = getTeamMeta(latestConfig, selectedTeam).label;
+        const report = coachCommand.buildReport(targetGuild, selectedTeam, teamRolesMap, latestConfig);
 
         const embed = new EmbedBuilder()
-          .setTitle(`Coach UI — ${selectedTeam}`)
+          .setTitle(`Coach UI — ${selectedTeamLabel}`)
           .setDescription(report)
           .setColor(0x3498db);
         const coachRow = new ActionRowBuilder().addComponents(
@@ -4374,7 +4406,7 @@ module.exports = {
         if (['set_practice_exact', 'set_match_exact', 'set_other_exact'].includes(selected)) {
           const modal = new ModalBuilder()
             .setCustomId(`admin_event_type_exact_modal:${selected}`)
-            .setTitle('Set Exact Event Names');
+            .setTitle('Set Event Type Wording');
           const current = selected === 'set_practice_exact'
             ? latestConfig.eventTypes?.practiceExactNames
             : selected === 'set_match_exact'
@@ -4384,7 +4416,7 @@ module.exports = {
             new ActionRowBuilder().addComponents(
               new TextInputBuilder()
                 .setCustomId('exact_names')
-                .setLabel('Comma-separated exact names')
+                .setLabel('Comma-separated title wording')
                 .setStyle(TextInputStyle.Paragraph)
                 .setRequired(true)
                 .setValue((current || []).join(', '))
@@ -4445,7 +4477,7 @@ module.exports = {
                 .addOptions([
                   { label: 'Practice', value: 'practice' },
                   { label: 'Match', value: 'match' },
-                  { label: 'Other', value: 'other' }
+                  { label: 'Not Set', value: 'other' }
                 ])
             ),
             createBackButtonRow('admin_back_club_management')
@@ -4511,6 +4543,7 @@ module.exports = {
               date: event.date,
               location: event.location || existing.location || '',
               team: existing.team || event.team,
+              teams: getFixtureTeams(existing).length ? getFixtureTeams(existing) : (event.team ? [event.team] : []),
               discordMessageId: existing.discordMessageId || '',
               responses: existing.responses || {},
               updatedAt: new Date().toISOString()
@@ -4790,7 +4823,7 @@ module.exports = {
           return;
         }
         if (selectedAction === 'show_team_events') {
-          const teamEvents = getUpcomingFixtures(loadDb()).filter((event) => event.team === team);
+          const teamEvents = getUpcomingFixtures(loadDb()).filter((event) => fixtureHasTeam(event, team));
           const pageSize = 20;
           const page = 0;
           const totalPages = Math.max(1, Math.ceil(teamEvents.length / pageSize));
@@ -4814,7 +4847,7 @@ module.exports = {
           const now = Date.now();
           const candidates = Object.entries(loadDb().events || {})
             .map(([id, event]) => ({ id, ...event }))
-            .filter((event) => event.team === team && new Date(event.date).getTime() >= now && !event.discordMessageId)
+            .filter((event) => fixtureHasTeam(event, team) && new Date(event.date).getTime() >= now && !event.discordMessageId)
             .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
           const picker = createForceAttendancePickerRows(team, candidates, 0);
           await interaction.update({ content: picker.text, embeds: [], components: picker.rows });
@@ -4849,7 +4882,7 @@ module.exports = {
         const [, team, pageRaw] = interaction.customId.split(':');
         const page = Number.parseInt(pageRaw || '0', 10) || 0;
         const isUnpick = interaction.customId.startsWith('admin_fixture_unpick_page:');
-        const sourceEvents = isUnpick ? getUpcomingFixtures(loadDb()).filter((event) => event.team === team) : getUpcomingFixtures(loadDb());
+        const sourceEvents = isUnpick ? getUpcomingFixtures(loadDb()).filter((event) => fixtureHasTeam(event, team)) : getUpcomingFixtures(loadDb());
         const pager = createFixturePagerRows(loadConfig(), team, page, sourceEvents, isUnpick ? 'admin_fixture_unpick' : 'admin_fixture_pick');
         await interaction.update({ content: pager.text, embeds: [], components: pager.rows });
         return;
@@ -4858,7 +4891,7 @@ module.exports = {
       if (interaction.customId.startsWith('admin_team_events_page:')) {
         const [, team, pageRaw] = interaction.customId.split(':');
         const pageSize = 20;
-        const events = getUpcomingFixtures(loadDb()).filter((event) => event.team === team);
+        const events = getUpcomingFixtures(loadDb()).filter((event) => fixtureHasTeam(event, team));
         const totalPages = Math.max(1, Math.ceil(events.length / pageSize));
         const page = Math.max(0, Math.min(totalPages - 1, Number.parseInt(pageRaw || '0', 10) || 0));
         const visible = events.slice(page * pageSize, (page + 1) * pageSize);
@@ -4874,6 +4907,38 @@ module.exports = {
           content: [`📆 Events attached to **${teamLabel}** (page ${page + 1}/${totalPages}):`, ...lines].join('\n'),
           embeds: [],
           components: [pagerRow, ...createTeamConfigFixtureSettingsRows(team), createBackButtonRow(`admin_back_team_config:${team}`)]
+        });
+        return;
+      }
+
+      if (interaction.customId.startsWith('admin_fixture_conflict:')) {
+        await interaction.deferUpdate();
+        const [, team, eventId, pageRaw, decision] = interaction.customId.split(':');
+        const db = loadDb();
+        const target = db.events[eventId];
+
+        if (!target) {
+          await interaction.editReply({
+            content: 'Fixture was not found in synced events.',
+            embeds: [],
+            components: [createTeamConfigActionRow(config, team), createBackButtonRow('admin_back_team_management')]
+          });
+          return;
+        }
+
+        if (decision === 'replace') replaceFixtureTeam(target, team);
+        else addFixtureTeam(target, team);
+
+        saveDb(db);
+        await triggerGoogleSync(context);
+
+        const pager = createFixturePagerRows(loadConfig(), team, Number.parseInt(pageRaw || '0', 10) || 0, getUpcomingFixtures(loadDb()));
+        await interaction.editReply({
+          content: decision === 'replace'
+            ? `✅ Replaced fixture team for **${target.title}** with **${getTeamMeta(config, team).label}**.`
+            : `✅ Added **${getTeamMeta(config, team).label}** to **${target.title}** while keeping existing team assignment(s).`,
+          embeds: [],
+          components: pager.rows
         });
         return;
       }
@@ -4894,16 +4959,39 @@ module.exports = {
           return;
         }
 
-        target.team = isUnpick ? '' : team;
+        if (isUnpick) {
+          removeFixtureTeam(target, team);
+        } else if (fixtureHasTeam(target, team) || !getFixtureTeams(target).length) {
+          addFixtureTeam(target, team);
+        } else {
+          const existingTeams = getFixtureTeamSummary(config, target);
+          const teamLabel = getTeamMeta(config, team).label;
+          await interaction.editReply({
+            content: `**${target.title}** is already attached to **${existingTeams}**. Replace the existing team assignment with **${teamLabel}**, or add **${teamLabel}** to this fixture too?`,
+            embeds: [],
+            components: [
+              new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId(`admin_fixture_conflict:${team}:${eventId}:${pageRaw || 0}:replace`).setLabel('Replace Team').setStyle(ButtonStyle.Danger),
+                new ButtonBuilder().setCustomId(`admin_fixture_conflict:${team}:${eventId}:${pageRaw || 0}:add`).setLabel('Add Team').setStyle(ButtonStyle.Success),
+                new ButtonBuilder().setCustomId(`admin_fixture_page:${team}:${pageRaw || 0}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary)
+              )
+            ]
+          });
+          return;
+        }
+
         saveDb(db);
         await triggerGoogleSync(context);
 
+        const refreshedEvents = isUnpick
+          ? getUpcomingFixtures(loadDb()).filter((event) => fixtureHasTeam(event, team))
+          : getUpcomingFixtures(loadDb());
         await interaction.editReply({
           content: isUnpick
             ? `✅ Removed **${target.title}** from **${getTeamMeta(config, team).label}** fixtures.`
             : `✅ Assigned **${target.title}** to **${getTeamMeta(config, team).label}**.`,
           embeds: [],
-          components: createFixturePagerRows(loadConfig(), team, Number.parseInt(pageRaw || '0', 10) || 0, (isUnpick ? getUpcomingFixtures(loadDb()).filter((event) => event.team === team) : getUpcomingFixtures(loadDb())), isUnpick ? 'admin_fixture_unpick' : 'admin_fixture_pick').rows
+          components: createFixturePagerRows(loadConfig(), team, Number.parseInt(pageRaw || '0', 10) || 0, refreshedEvents, isUnpick ? 'admin_fixture_unpick' : 'admin_fixture_pick').rows
         });
         return;
       }
@@ -5121,7 +5209,7 @@ module.exports = {
         const now = Date.now();
         const candidates = Object.entries(loadDb().events || {})
           .map(([id, event]) => ({ id, ...event }))
-          .filter((event) => event.team === team && new Date(event.date).getTime() >= now && !event.discordMessageId)
+          .filter((event) => fixtureHasTeam(event, team) && new Date(event.date).getTime() >= now && !event.discordMessageId)
           .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
         const picker = createForceAttendancePickerRows(team, candidates, page);
         await interaction.update({ content: picker.text, embeds: [], components: picker.rows });
@@ -5136,7 +5224,7 @@ module.exports = {
         const now = Date.now();
         const candidates = Object.entries(loadDb().events || {})
           .map(([id, event]) => ({ id, ...event }))
-          .filter((event) => event.team === team && new Date(event.date).getTime() >= now && !event.discordMessageId)
+          .filter((event) => fixtureHasTeam(event, team) && new Date(event.date).getTime() >= now && !event.discordMessageId)
           .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
         const picked = candidates[(page * 10) + index];
         if (!picked) {
@@ -5148,10 +5236,10 @@ module.exports = {
         }
 
         const latestConfig = loadConfig();
-        await postAttendancePromptForEvent(interaction, picked, latestConfig);
+        await postAttendancePromptForEvent(interaction, picked, latestConfig, team);
         const updatedCandidates = Object.entries(loadDb().events || {})
           .map(([id, event]) => ({ id, ...event }))
-          .filter((event) => event.team === team && new Date(event.date).getTime() >= now && !event.discordMessageId)
+          .filter((event) => fixtureHasTeam(event, team) && new Date(event.date).getTime() >= now && !event.discordMessageId)
           .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
         const picker = createForceAttendancePickerRows(team, updatedCandidates, page);
         await interaction.editReply({ content: `✅ Attendance prompt sent for **${picked.title}**.
@@ -5193,6 +5281,7 @@ ${picker.text}`, embeds: [], components: picker.rows });
             date: event.date,
             location: event.location || existing.location || '',
             team: event.team || existing.team || team,
+            teams: getFixtureTeams(existing).length ? getFixtureTeams(existing) : (event.team || existing.team || team ? [event.team || existing.team || team] : []),
             discordMessageId: existing.discordMessageId || '',
             responses: existing.responses || {},
             updatedAt: new Date().toISOString()
@@ -5204,7 +5293,7 @@ ${picker.text}`, embeds: [], components: picker.rows });
         const maxDays = window === 'next_event' ? 365 : (window === 'next_30_days' ? 30 : 14);
         const candidates = Object.entries(db.events || {})
           .map(([id, event]) => ({ id, ...event }))
-          .filter((event) => event.team === team && new Date(event.date).getTime() >= now && !event.discordMessageId)
+          .filter((event) => fixtureHasTeam(event, team) && new Date(event.date).getTime() >= now && !event.discordMessageId)
           .filter((event) => (new Date(event.date).getTime() - now) <= (maxDays * 24 * 60 * 60 * 1000))
           .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
@@ -5508,8 +5597,6 @@ ${picker.text}`, embeds: [], components: picker.rows });
       });
       const eventDateLabel = getCompactDateLabel(event.date);
       await interaction.deferUpdate();
-      await updateAttendancePromptToConfirmation(interaction, event, responderTitle, responderName, 'not attending', interaction.user.id, reason, { ...modalPayload, eventId });
-      await triggerGoogleSync(context);
 
       const coachTitle = isCoachResponder ? getCoachPositionLabel(getCoachPositionForTeam(profile || {}, event.team, config), config) : '';
       const baseChannelName = buildAbsenceTicketChannelName(config, event, profile, memberForRole, interaction.user);
@@ -5625,6 +5712,19 @@ ${picker.text}`, embeds: [], components: picker.rows });
         );
       }
 
+      await updateAttendancePromptToConfirmation(
+        interaction,
+        event,
+        responderTitle,
+        responderName,
+        'not attending',
+        interaction.user.id,
+        reason,
+        { ...modalPayload, eventId },
+        { absenceChannelId: ticketChannel?.id || '' }
+      );
+      await triggerGoogleSync(context);
+
       return;
     }
 
@@ -5634,12 +5734,13 @@ ${picker.text}`, embeds: [], components: picker.rows });
         return;
       }
       const action = interaction.customId.split(':')[1];
-      const type = interaction.fields.getTextInputValue('event_type').trim().toLowerCase();
+      const rawType = interaction.fields.getTextInputValue('event_type').trim().toLowerCase();
+      const type = ['not set', 'not_set', 'unset', 'none'].includes(rawType) ? 'other' : rawType;
       const name = interaction.fields.getTextInputValue('exact_name').trim();
       const map = { practice: 'practiceExactNames', match: 'matchExactNames', other: 'otherExactNames' };
       const key = map[type];
       if (!key || !name) {
-        await interaction.reply({ content: 'Use a valid type (practice/match/other) and exact name.', flags: MessageFlags.Ephemeral });
+        await interaction.reply({ content: 'Use a valid type (practice/match/not set) and title wording.', flags: MessageFlags.Ephemeral });
         return;
       }
       const latest = loadConfig();
@@ -5652,12 +5753,12 @@ ${picker.text}`, embeds: [], components: picker.rows });
       const rules = getEventTypeConfig(loadConfig());
       await interaction.reply({
         content: [
-          `✅ Exact name ${action === 'add_exact_name' ? 'added' : 'deleted'} for ${type}: **${name}**`,
+          `✅ Title wording ${action === 'add_exact_name' ? 'added' : 'deleted'} for ${eventTypeLabel(type)}: **${name}**`,
           `• Practice: ${rules.practiceExactNames.join(', ') || 'none'}`,
           `• Match: ${rules.matchExactNames.join(', ') || 'none'}`,
-          `• Other: ${rules.otherExactNames.join(', ') || 'none'}`
+          `• Not Set: ${rules.otherExactNames.join(', ') || 'none'}`
         ].join('\n'),
-        components: [createEventTypeRulesRow(rules), createEventTypeRulesRow2()],
+        components: [createEventTypeRulesRow(loadConfig()), createEventTypeRulesRow2()],
         flags: MessageFlags.Ephemeral
       });
       return;
@@ -5770,10 +5871,10 @@ ${picker.text}`, embeds: [], components: picker.rows });
       const rules = getEventTypeConfig(loadConfig());
       await interaction.reply({
         content: [
-          '✅ Event type exact-name rules updated.',
+          '✅ Event type wording rules updated.',
           `• Practice: ${rules.practiceExactNames.join(', ') || 'none'}`,
           `• Match: ${rules.matchExactNames.join(', ') || 'none'}`,
-          `• Other: ${rules.otherExactNames.join(', ') || 'none'}`
+          `• Not Set: ${rules.otherExactNames.join(', ') || 'none'}`
         ].join('\n'),
         components: [createEventTypeRulesRow(), createEventTypeRulesRow2()],
         flags: MessageFlags.Ephemeral
@@ -6305,7 +6406,7 @@ ${picker.text}`, embeds: [], components: picker.rows });
       const teamKey = `team${nextTeamNumber}`;
 
       if (config.teams?.[teamKey]) {
-        await interaction.reply({ content: `Team \`${teamKey}\` already exists.`, flags: MessageFlags.Ephemeral });
+        await interaction.reply({ content: 'That generated team base name already exists. Please try creating the team again.', flags: MessageFlags.Ephemeral });
         return;
       }
       if (!['male', 'female', 'mixed'].includes(teamGender)) {
@@ -6330,13 +6431,13 @@ ${picker.text}`, embeds: [], components: picker.rows });
         await triggerGoogleSync(context);
       } catch (error) {
         await interaction.editReply({
-          content: `✅ Team created: **${teamLabel}** (\`${teamKey}\`). Configure roles/chats from Admin panel. ⚠️ Sync warning: ${error.message}`
+          content: `✅ Team created: **${teamLabel}**. Configure roles/chats from Admin panel. ⚠️ Sync warning: ${error.message}`
         });
         return;
       }
 
       await interaction.editReply({
-        content: `${renderProgressMessage(100, `Team created: **${teamLabel}**.`)}\nSaved in config at \`teams.${teamKey}.label\`.\n\n${getTeamManagementSummary()}`,
+        content: `${renderProgressMessage(100, `Team created: **${teamLabel}**.`)}\n\n${getTeamManagementSummary()}`,
         embeds: [],
         components: [...createTeamButtonsRows(loadConfig()), createTeamManagementRow()]
       });

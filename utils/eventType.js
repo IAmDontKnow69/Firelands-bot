@@ -4,11 +4,6 @@ function normalizeList(values = []) {
     .filter(Boolean);
 }
 
-function titleEqualsOneOf(title = '', candidates = []) {
-  const normalizedTitle = String(title || '').trim().toLowerCase();
-  return normalizeList(candidates).includes(normalizedTitle);
-}
-
 function titleContainsOneOf(title = '', candidates = []) {
   const normalizedTitle = String(title || '').toLowerCase();
   return normalizeList(candidates).some((candidate) => normalizedTitle.includes(candidate));
@@ -34,9 +29,9 @@ function determineEventType(event = {}, config = {}) {
   const rules = getEventTypeConfig(config);
   const title = event.title || '';
 
-  if (titleEqualsOneOf(title, rules.practiceExactNames)) return 'practice';
-  if (titleEqualsOneOf(title, rules.matchExactNames)) return 'match';
-  if (titleEqualsOneOf(title, rules.otherExactNames)) return 'other';
+  if (titleContainsOneOf(title, rules.practiceExactNames)) return 'practice';
+  if (titleContainsOneOf(title, rules.matchExactNames)) return 'match';
+  if (titleContainsOneOf(title, rules.otherExactNames)) return 'other';
 
   if (!rules.autoDetect) return 'other';
 
@@ -48,7 +43,7 @@ function determineEventType(event = {}, config = {}) {
 function eventTypeLabel(type) {
   if (type === 'match') return 'Match';
   if (type === 'practice') return 'Practice';
-  return 'Other';
+  return 'Not Set';
 }
 
 module.exports = {

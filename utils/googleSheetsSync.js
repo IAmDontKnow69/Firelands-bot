@@ -328,6 +328,17 @@ function buildFixtureAddressColumns(config = {}) {
     .slice(0, 20);
 }
 
+function getFixtureTeams(event = {}) {
+  return Array.from(new Set([
+    event.team,
+    ...(Array.isArray(event.teams) ? event.teams : [])
+  ].filter(Boolean)));
+}
+
+function getFixtureTeamCell(event = {}) {
+  return getFixtureTeams(event).join(',');
+}
+
 function buildFixtureHeaders(config = {}) {
   return ['eventId', 'title', 'eventType', 'date', 'addressNickname', 'location', ...buildFixtureAddressColumns(config), 'team', 'discordMessageId', 'updatedAt'];
 }
@@ -341,7 +352,7 @@ function buildFixtureRows(db = {}, config = {}) {
       eventType: determineEventType(event, config),
       date: event.date || '',
       location: event.location || '',
-      team: event.team || '',
+      team: getFixtureTeamCell(event),
       discordMessageId: event.discordMessageId || '',
       updatedAt: event.updatedAt || toIso()
     }))
@@ -371,7 +382,7 @@ function buildFixtureRowsForTeam(db = {}, team = '', config = {}) {
   const filteredDb = {
     ...db,
     events: Object.fromEntries(
-      Object.entries(db.events || {}).filter(([, event]) => (event?.team || '') === team)
+      Object.entries(db.events || {}).filter(([, event]) => getFixtureTeams(event).includes(team))
     )
   };
   return buildFixtureRows(filteredDb, config);

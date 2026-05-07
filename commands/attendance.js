@@ -15,6 +15,10 @@ function hasPlayerRoleForTeam(member, teamRoles, team) {
   return !!teamRoles[team] && member.roles.cache.has(teamRoles[team].player);
 }
 
+function getTeamLabel(config = {}, team = '') {
+  return config.teams?.[team]?.label || team;
+}
+
 function sanitizeChannelName(name) {
   return name
     .toLowerCase()
@@ -218,6 +222,7 @@ module.exports = {
     }
 
     const team = interaction.options.getString('team', true);
+    const teamLabel = getTeamLabel(config, team);
     const dateInput = interaction.options.getString('date', true).trim();
     const parsedDate = new Date(`${dateInput}T00:00:00Z`);
 
@@ -246,10 +251,10 @@ module.exports = {
       });
 
       await interaction.reply({
-        content: `✅ You are marked as **available** for **${team}** on **${dateInput}**.`,
+        content: `✅ You are marked as **available** for **${teamLabel}** on **${dateInput}**.`,
         flags: MessageFlags.Ephemeral
       });
-      await context.sendLog(`🟢 ${interaction.user.tag} marked available for ${team} on ${dateInput}.`);
+      await context.sendLog(`🟢 ${interaction.user.tag} marked available for ${teamLabel} on ${dateInput}.`);
       return;
     }
 
@@ -304,14 +309,14 @@ module.exports = {
         }
       }
 
-      await context.sendLog(`🔴 ${interaction.user.tag} marked unavailable for ${team} on ${dateInput}. Chat: <#${discussionChannel.id}>`);
+      await context.sendLog(`🔴 ${interaction.user.tag} marked unavailable for ${teamLabel} on ${dateInput}. Chat: <#${discussionChannel.id}>`);
     } catch (error) {
       console.error('Failed to create future availability discussion channel:', error);
-      await context.sendLog(`⚠️ Failed to create future unavailability chat for ${interaction.user.tag} (${team}, ${dateInput}).`);
+      await context.sendLog(`⚠️ Failed to create future unavailability chat for ${interaction.user.tag} (${teamLabel}, ${dateInput}).`);
     }
 
     await interaction.reply({
-      content: `🔴 You are marked as **unavailable** for **${team}** on **${dateInput}**. Coaches will be notified in a private chat.`,
+      content: `🔴 You are marked as **unavailable** for **${teamLabel}** on **${dateInput}**. Coaches will be notified in a private chat.`,
       flags: MessageFlags.Ephemeral
     });
   }

@@ -1,6 +1,68 @@
-const { SlashCommandBuilder, ChannelType, MessageFlags } = require('discord.js');
-const { loadDb, setResponse, deleteAbsenceTicket, setAbsenceTicket } = require('../utils/database');
+const { SlashCommandBuilder, ChannelType, MessageFlags, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { loadDb, setResponse, setAbsenceTicket } = require('../utils/database');
 const { syncAllToSheet } = require('../utils/googleSheetsSync');
+
+function getCompactDateLabel(eventDate) {
+  const date = new Date(eventDate);
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(date.getUTCDate()).padStart(2, '0');
+  const yy = String(date.getUTCFullYear()).slice(-2);
+  return `${mm}/${dd}/${yy}`;
+}
+
+function createAbsenceLogRow(ticketChannelId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`absence_ticket_log:${ticketChannelId}`)
+      .setLabel('📜 Absence Log')
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function formatClosedAbsenceNotification(ticket = {}, event = {}) {
+  const playerName = ticket.playerName || `<@${ticket.playerId}>`;
+  const eventLabel = event?.title || ticket.eventId || 'Unknown event';
+  const dateLabel = event?.date ? getCompactDateLabel(event.date) : 'unknown date';
+  return [
+    '✅ Absence Ticket Closed',
+    `👤 ${playerName}`,
+    `📅 ${dateLabel} — ${eventLabel}`,
+    `🔴 Not attending confirmed for ${playerName} by ${ticket.coachName || 'staff'} on ${eventLabel}.`
+  ].join('\n');
+}
+
+async function collectChatLog(channel) {
+  const fetched = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+  if (!fetched) return [];
+  return Array.from(fetched.values())
+    .sort((a, b) => a.createdTimestamp - b.createdTimestamp)
+    .map((msg) => {
+      const date = new Date(msg.createdTimestamp);
+      return {
+        ts: date.toISOString(),
+        day: date.toISOString().slice(0, 10),
+        time: date.toISOString().slice(11, 16),
+        userId: msg.author?.id || '',
+        name: msg.member?.displayName || msg.author?.username || 'unknown',
+        message: msg.content || '(no text)'
+      };
+    });
+}
+
+async function updateAbsenceNotifications(interaction, ticket, event) {
+  const notices = [ticket.staffNotification, ticket.adminNotification].filter(Boolean);
+  for (const notice of notices) {
+    const noticeChannel = await interaction.guild.channels.fetch(notice.channelId).catch(() => null);
+    if (!noticeChannel?.isTextBased()) continue;
+    const message = await noticeChannel.messages.fetch(notice.messageId).catch(() => null);
+    if (!message) continue;
+    await message.edit({
+      content: formatClosedAbsenceNotification(ticket, event),
+      components: [createAbsenceLogRow(interaction.channelId)]
+    }).catch(() => null);
+  }
+}
+
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -35,21 +97,28 @@ module.exports = {
       return;
     }
 
+    const coachName = interaction.member?.displayName || interaction.user.globalName || interaction.user.username || interaction.user.tag;
+    const chatLog = await collectChatLog(interaction.channel);
+    const closedTicket = {
+      ...ticket,
+      status: 'closed',
+      coachDecision: 'confirmed_not_attending',
+      coachId: interaction.user.id,
+      coachName,
+      closedAt: new Date().toISOString(),
+      closedReason: 'Coach confirmed not attending.',
+      ...(chatLog.length ? { chatLog } : {})
+    };
+
     setResponse(ticket.eventId, ticket.playerId, {
       status: 'confirmed_no',
       confirmed: true,
       confirmedBy: interaction.user.id,
       confirmedAt: new Date().toISOString(),
       coachId: interaction.user.id,
-      coachName: interaction.user.tag
+      coachName
     });
-    setAbsenceTicket(interaction.channelId, {
-      coachDecision: 'confirmed_not_attending',
-      coachId: interaction.user.id,
-      coachName: interaction.user.tag,
-      closedAt: new Date().toISOString(),
-      closedReason: 'Coach confirmed not attending.'
-    });
+    setAbsenceTicket(interaction.channelId, closedTicket);
 
     const latestConfig = context.getConfig();
     if (latestConfig.googleSync?.enabled) {
@@ -60,11 +129,11 @@ module.exports = {
       }
     }
 
-    deleteAbsenceTicket(interaction.channelId);
+    await updateAbsenceNotifications(interaction, closedTicket, event);
 
     await interaction.editReply({ content: `✅ Confirmed absence for <@${ticket.playerId}>.` });
     await context.sendLog(
-      `✅ Absence confirmed by ${interaction.user.tag} for <@${ticket.playerId}> on **${event.title}** (${new Date(event.date).toISOString().slice(0, 10)}).`
+      `🔴 Not attending confirmed for ${closedTicket.playerName || `<@${ticket.playerId}>`} by ${coachName} on **${event.title}**.`
     );
 
     setTimeout(async () => {
